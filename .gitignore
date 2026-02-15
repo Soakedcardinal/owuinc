@@ -1,0 +1,10 @@
+__pycache__
+.mypy_cache
+.pytest_cache
+.venv
+.env
+docs/build
+docs/modules
+.aider*
+archive
+owuinc.egg-info

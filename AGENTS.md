@@ -1,0 +1,28 @@
+
+# owuinc: OpenWebUI → Nextcloud Integration  
+File, task & calendar management via Nextcloud APIs
+
+## Structure
+- README.md - 
+- owuinc/owuinc.py - main module  
+- tests/ - tests
+- ROADMAP.md - todo list / backlog / dev plan
+- CONTRIBUTING.md - developer guide
+
+## Architecture
+Intentional Single-file monolithic structure.
+Tools class:
+- Valves (Pydantic): config filled by OpenWebUI
+- Helpers: internal utilities
+- Cached webdav_client / caldav_client
+
+## Rules
+- Each Tools method must have a token efficient Sphinx-style docstring, proper type hints and return a dict
+- Helper methods must go in Helpers class.
+
+## Envirornment
+- use .venv/bin/python
+- add deps to requirements.txt
+
+## Packaging / Distribution.
+Designed for OpenWebUI community distribution (not PyPI). Module setup is only for running tests.

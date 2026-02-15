@@ -1,0 +1,25 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run Pre-Commit Hooks",
+            "type": "shell",
+            "command": ".venv/bin/pre-commit run --all-files",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Tests",
+            "type": "shell",
+            "command": ".venv/bin/pytest",
+            "problemMatcher": []
+        },
+        {
+            "label": "Build Documentation",
+            "type": "shell",
+            "command": "rm -r docs/build; .venv/bin/sphinx-build -M html docs/source docs/build/html",
+            "problemMatcher": []
+        }
+    ]
+}

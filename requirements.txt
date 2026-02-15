@@ -1,0 +1,12 @@
+icalendar
+caldav
+webdavclient3
+pydantic
+pre-commit
+types-requests
+pytest
+python-dotenv
+requests
+sphinx
+sphinx-rtd-theme
+setuptools

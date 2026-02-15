@@ -1,0 +1,10 @@
+{
+  "python.defaultInterpreterPath": "~/owuinc/.venv/bin/python3",
+  "python.terminal.activateEnvironment": true,
+  "python.testing.pytestArgs": [
+    ".",
+    "-s"
+  ],
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": true
+}
