@@ -1,7 +1,7 @@
 """
 title: owuinc
 author: Duncan Nicholson
-git_url: https://github.com/soakedcardinal/
+git_url: https://github.com/soakedcardinal/owuinc
 description: file, task, and calendar management
 requirements: caldav,icalendar,webdavclient3
 version: 1.0.0
