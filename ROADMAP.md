@@ -1,7 +1,7 @@
 ### **Phase 1: Stability & Critical Fixes**
 
+*   [ ] add valves for default calendar/task list
 *   [ ] Add fallback timezone if __user__["timezone"] not set (e.g. utc)
-
 *   [ ] Audit test_helpers.py
 *   [ ] Implement proper input validation beyond path validation.
 
