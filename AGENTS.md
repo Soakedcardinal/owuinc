@@ -3,14 +3,13 @@
 File, task & calendar management via Nextcloud APIs
 
 ## Structure
-- README.md - 
 - owuinc/owuinc.py - main module  
 - tests/ - tests
-- ROADMAP.md - todo list / backlog / dev plan
+- ROADMAP.md - backlog/dev plan
 - CONTRIBUTING.md - developer guide
 
 ## Architecture
-Intentional Single-file monolithic structure.
+Intentional single-file monolithic structure.
 Tools class:
 - Valves (Pydantic): config filled by OpenWebUI
 - Helpers: internal utilities

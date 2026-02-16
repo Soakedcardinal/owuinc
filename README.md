@@ -1,19 +1,19 @@
 # owuinc
 
-Seamlessly connect OpenWebUI Models to your Nextcloud.
+Connect OpenWebUI Models to Nextcloud.
 
 ## Features
 
 ### File Operations
-*   **Directory Management**: `mkdir`, `ls`, `mv`, `cp`, `rm`
-*   **Content Manipulation**: `write_file`, `cat`, `append_file`
+*   `mkdir`, `ls`, `mv`, `cp`, `rm`
+*   `write_file`, `cat`, `append_file`
 
 ### Task Management
-*   Create, Read, Update, Delete tasks
+*   Create, read, edit, & delete tasks
 *   Support sub-tasks
 
 ### Calendar Events
-*   Create, Read, Update, Delete events
+*   Create, read, edit, & delete events
 *   Support for recurring events
 *   Support Alarms
 
@@ -21,5 +21,4 @@ Seamlessly connect OpenWebUI Models to your Nextcloud.
 *   **Configurable Sandbox**: Prevent the model from accessing unauthorized directories.
 
 ## Setup
-
 See [INSTALL.md](INSTALL.md)
