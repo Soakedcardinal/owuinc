@@ -122,11 +122,16 @@ class Tools:
         self._caldav_client = None
 
     class Valves(BaseModel):
-        NEXTCLOUD_BASE_URL: str = Field("",description="Nextcloud server address")
+        NEXTCLOUD_BASE_URL: str = Field("", description="Nextcloud server address")
         WEBDAV_USERNAME: str = Field("")
         NEXTCLOUD_USERNAME: str = Field("")
         NEXTCLOUD_APP_PASSWORD: str = Field("", json_schema_extra={"secret": True})
-        SANDBOX_DIR: str = Field(default="owuinc", description="A relative directory path (or an empty string) that will be prefixed to every file/directory operation performed by the Tools class.")
+        SANDBOX_DIR: str = Field(
+            default="owuinc",
+            description="A relative directory path (or an empty string) \
+            that will be prefixed to every file/directory operation performed \
+            by the Tools class.",
+        )
         logging_enabled: bool = Field(default=False)
         pass  # required for parsing
 

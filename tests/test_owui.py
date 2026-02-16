@@ -1,12 +1,13 @@
-import pytest
+import inspect
 import json
 import os
 import re
-import uuid
 import time
+import uuid
+from typing import cast
+
 import dotenv
 import requests
-import inspect
 
 
 def load_required_env() -> tuple[str, str, str, str]:
@@ -16,21 +17,31 @@ def load_required_env() -> tuple[str, str, str, str]:
         "URL": os.getenv("URL"),
         "KEY": os.getenv("KEY"),
         "USER_ID": os.getenv("USER_ID"),
-        "FOLDER_ID": os.getenv("FOLDER_ID")
+        "FOLDER_ID": os.getenv("FOLDER_ID"),
     }
     missing = [k for k, v in required.items() if not v]
     if missing:
+        found = {k: v for k, v in required.items() if v}
         raise ValueError(
             f"Missing required environment variables: {', '.join(missing)}\n"
-            f"Found: {k: v for k, v in required.items() if v}"
+            f"Found: {found}"
         )
-    return (required["URL"], required["KEY"],
-            required["USER_ID"], required["FOLDER_ID"])
+    return cast(
+        tuple[str, str, str, str],
+        (
+            required["URL"],
+            required["KEY"],
+            required["USER_ID"],
+            required["FOLDER_ID"],
+        ),
+    )
+
 
 URL, KEY, USER_ID, FOLDER_ID = load_required_env()
 header = {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"}
 header_2 = {"Authorization": f"Bearer {KEY}"}
-preamble = """Run the test immediately by invoking the specified tool and verify the results.
+preamble = """Run the test immediately by invoking the \
+specified tool and verify the results.
 
 Stop immediately if errors occur.
 
@@ -40,10 +51,12 @@ Stop immediately if errors occur.
 *   No preamble, no postscript, no partial sentences."""
 
 
-def create_chat(prompt, title="owuinc test chat", tool_ids=["owuinc"], model="owuinc-test") -> str:
-    """https://docs.openwebui.com/tutorials/integrations/backend-controlled-ui-compatible-flow"""
+# https://docs.openwebui.com/tutorials/integrations/backend-controlled-ui-compatible-flow
+def create_chat(
+    prompt, title="owuinc test chat", tool_ids=["owuinc"], model="owuinc-test"
+) -> str:
     ts = int(time.time())
-    ts2=ts + 1000
+    ts2 = ts + 1000
 
     user_msg_id = str(uuid.uuid4())
     assistant_msg_id = str(uuid.uuid4())
@@ -107,7 +120,7 @@ def create_chat(prompt, title="owuinc test chat", tool_ids=["owuinc"], model="ow
     assert resp.ok, f"creating chat failed. Status Code: {resp.status_code}"
     chat_id = resp.json()["id"]
 
-    assert chat_id, f"creating chat failed. no chat id"
+    assert chat_id, "creating chat failed. no chat id"
     print(f"chat id: {chat_id!r}")
     chat_endpoint = f"{URL}/v1/chats/{chat_id}"
 
@@ -137,14 +150,14 @@ def create_chat(prompt, title="owuinc test chat", tool_ids=["owuinc"], model="ow
         f"{URL}/chat/completions",
         headers=header,
         data=json.dumps(completion_payload),
-        stream=True
+        stream=True,
     )
     assert resp.ok, f"trigger completion failed. Status Code: {resp.status_code}"
 
     # wait for assistant completion
     start = time.time()
     while time.time() - start < 60:
-        print(f"waiting for assistant completion...")
+        print("waiting for assistant completion...")
         resp = requests.get(chat_endpoint, headers=header_2)
         # Find the assistant message
         msg = (
@@ -161,7 +174,7 @@ def create_chat(prompt, title="owuinc test chat", tool_ids=["owuinc"], model="ow
         time.sleep(2)
     else:
         raise TimeoutError("Assistant response timeout")
-    assert msg, f"assistant completion failed. no msg"
+    assert msg, "assistant completion failed. no msg"
 
     # mark as completed
     completed_payload = {
@@ -191,7 +204,7 @@ def create_chat(prompt, title="owuinc test chat", tool_ids=["owuinc"], model="ow
         .get(assistant_msg_id, {})
         .get("content", "")
     )
-    assert msg, f"get final chat failed. no msg"
+    assert msg, "get final chat failed. no msg"
     msg = re.sub(r"<details[^>]*>.*?</details>", "", msg, flags=re.DOTALL)
     return msg
 
@@ -432,7 +445,7 @@ def test_event_lifecyle():
 
 # todo depends on get_current_time
 def test_event_timing():
-    tool_ids=["owuinc","get_current_time"]
+    tool_ids = ["owuinc", "get_current_time"]
     test_name = inspect.currentframe().f_code.co_name
     prompt = (
         preamble
