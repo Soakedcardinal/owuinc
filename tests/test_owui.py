@@ -420,7 +420,7 @@ def test_event_lifecyle():
     prompt = (
         preamble
         + """
-    1. `get_calendar_events(calendar_name='test123')`: Empty"""
+    1. `get_calendar_events(calendar_name='owuinc-test')`: Empty"""
     )
     text = create_chat(prompt, f"{test_name} setup").strip()
     print_resp(text)
@@ -430,11 +430,13 @@ def test_event_lifecyle():
     prompt = (
         preamble
         + """
-    1. `create_calendar_event(summary='foo',calendar_name='test123')`: returns a UID
-    2. `get_calendar_events(calendar_name='test123')`: contains UID from step 1
-    3. `edit_calendar_event(uid=<uid from step 1>,new_summary='bar')`: True
-    4. `get_calendar_events(calendar_name='test123')`: contains event with summary='bar'
-    5. `delete_calendar_event(uid=<uid from step 1>,calendar_name='test123')`: True
+    1. `create_calendar_event(summary='foo',calendar_name='owuinc-test')`: returns a UID
+    2. `get_calendar_events(calendar_name='owuinc-test')`: contains UID from step 1
+    3. `edit_calendar_event(uid=<uid from step 1>, calendar_name='owuinc-test', \
+        new_summary='bar')`: True
+    4. `get_calendar_events(calendar_name='owuinc-test')`: \
+        contains event with summary='bar'
+    5. `delete_calendar_event(uid=<uid from step 1>,calendar_name='owuinc-test')`: True
     """
     )
     text = create_chat(prompt, f"{test_name}").strip()
@@ -445,20 +447,35 @@ def test_event_lifecyle():
 
 # todo depends on get_current_time
 def test_event_timing():
-    tool_ids = ["owuinc", "get_current_time"]
+
     test_name = inspect.currentframe().f_code.co_name
+    setup_prompt = (
+        preamble
+        + """
+    1. `get_calendar_events(calendar_name='owuinc-test')`: Empty"""
+    )
+    text = create_chat(setup_prompt, f"{test_name} setup").strip()
+    print_resp(text)
+    assert "fail" not in text, "setup failed: 'fail' found in response"
+    assert "pass" in text, "setup failed: 'pass' not found in response"
+
+    tool_ids = ["owuinc", "get_current_time"]
     prompt = (
         preamble
         + """
-    1. call `get_current_time()`: returns time
-    2. create_calendar_event summary='foo', calendar_name='test123' \
-         starting tomorrow at 9am: returns a UID
-    3. get_calendar_events(calendar_name='test123'): contains an event \
-        with start time tomorrow at 9am
-    4. Edit the event and move the start time back one day.
-    5. Verify the test123 calendar now contains an event with the updated \
-         start time
-    6. delete_calendar_event(summary='foo',calendar_name='test123'): True"""
+    1. `get_current_time`: returns time
+    2. `create_calendar_event(summary='foo', calendar_name='owuinc-test', \
+         start=<tomorrow at 9AM>)`: returns a uid
+    3. `get_calendar_events(calendar_name='owuinc-test')`: contains an event \
+        with start time tomorrow at 9AM
+    4. `edit_calendar_event(uid='<uid from step 2>', \
+        calendar_name='owuinc-test', \
+        new_start=<the day after tomorrow at 2PM>, \
+        new_end=<the day after tomorrow at 2PM>)`: True
+    5. `get_calendar_events(calendar_name='owuinc-test')`: \
+        contains an event with the updated start time
+    6. `delete_calendar_event(uid='<uid from step 2>', \
+        calendar_name='owuinc-test')`: True"""
     )
     text = create_chat(prompt, f"{test_name}", tool_ids).strip()
     print_resp(text)
