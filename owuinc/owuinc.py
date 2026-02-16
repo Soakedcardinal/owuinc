@@ -32,7 +32,6 @@ from webdav3.exceptions import RemoteResourceNotFound  # isort: skip
 from webdav3.exceptions import ResourceLocked  # isort: skip
 from webdav3.exceptions import WebDavException  # isort: skip
 
-
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
@@ -123,13 +122,13 @@ class Tools:
         self._caldav_client = None
 
     class Valves(BaseModel):
-        BASE_URL: str = Field("")
+        NEXTCLOUD_BASE_URL: str = Field("",description="Nextcloud server address")
         WEBDAV_USERNAME: str = Field("")
-        NEXTCLOUD_USERNAME: str = Field("", json_schema_extra={"secret": True})
-        NEXTCLOUD_PASSWORD: str = Field("", json_schema_extra={"secret": True})
-        SANDBOX_DIR: str = Field("")
-        logging_enabled: bool = Field(default=False, description="Enable debug logging")
-        pass  # Note this 'pass' helps for parsing
+        NEXTCLOUD_USERNAME: str = Field("")
+        NEXTCLOUD_APP_PASSWORD: str = Field("", json_schema_extra={"secret": True})
+        SANDBOX_DIR: str = Field(default="owuinc", description="A relative directory path (or an empty string) that will be prefixed to every file/directory operation performed by the Tools class.")
+        logging_enabled: bool = Field(default=False)
+        pass  # required for parsing
 
     class Helpers:
         def __init__(self, valves):
@@ -138,10 +137,10 @@ class Tools:
         def get_valve_hash(self):
             return hash(
                 (
-                    self.valves.BASE_URL,
+                    self.valves.NEXTCLOUD_BASE_URL,
                     self.valves.WEBDAV_USERNAME,
                     self.valves.NEXTCLOUD_USERNAME,
-                    self.valves.NEXTCLOUD_PASSWORD,
+                    self.valves.NEXTCLOUD_APP_PASSWORD,
                 )
             )
 
@@ -221,7 +220,7 @@ class Tools:
         vh = self.H.get_valve_hash()
         if self._webdav_client is None or self._valve_hash != vh:
             self._valve_hash = vh
-            base = self.valves.BASE_URL
+            base = self.valves.NEXTCLOUD_BASE_URL
             wd_user = self.valves.WEBDAV_USERNAME
             url = f"{base}/remote.php/dav/files/{wd_user}/"
             logger.debug(f"webdav_client url: {url!r}")
@@ -229,7 +228,7 @@ class Tools:
                 {
                     "webdav_hostname": url,
                     "webdav_login": self.valves.NEXTCLOUD_USERNAME,
-                    "webdav_password": self.valves.NEXTCLOUD_PASSWORD,
+                    "webdav_password": self.valves.NEXTCLOUD_APP_PASSWORD,
                 }
             )
         return self._webdav_client
@@ -239,11 +238,11 @@ class Tools:
         vh = self.H.get_valve_hash()
         if self._caldav_client is None or self._valve_hash != vh:
             self._valve_hash = vh
-            base = self.valves.BASE_URL
+            base = self.valves.NEXTCLOUD_BASE_URL
             url = f"{base}/remote.php/dav/"
             self._caldav_client = get_davclient(
                 username=self.valves.NEXTCLOUD_USERNAME,
-                password=self.valves.NEXTCLOUD_PASSWORD,
+                password=self.valves.NEXTCLOUD_APP_PASSWORD,
                 url=url,
                 features="nextcloud",
                 enable_rfc6764=False,
