@@ -134,14 +134,13 @@ class Tools:
         )
         DEFAULT_CALENDAR: str = Field(
             default="main",
-            description="Default calendar for event operations",
+            description="Default calendar for event operations"
         )
         DEFAULT_TASK_LIST: str = Field(
             default="todo",
-            description="Default task list for task operations",
+            description="Default task list for task operations"
         )
         logging_enabled: bool = Field(default=False)
-
         pass  # required for parsing
 
     class Helpers:
