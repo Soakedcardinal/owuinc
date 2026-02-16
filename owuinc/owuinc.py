@@ -36,6 +36,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+# logger.setLevel(logging.DEBUG)
 
 
 def caldav_safe(func: Callable) -> Callable:
@@ -111,12 +112,6 @@ class Tools:
         self.valves = self.Valves()
         self.H = self.Helpers(self.valves)
 
-        if self.valves.logging_enabled:
-            logger.setLevel(logging.DEBUG)
-            logging.getLogger("caldav").setLevel(logging.DEBUG)
-            logging.getLogger("webdavclient3").setLevel(logging.DEBUG)
-            logging.getLogger("icalendar").setLevel(logging.DEBUG)
-
         self._valve_hash = None
         self._webdav_client = None
         self._caldav_client = None
@@ -140,7 +135,6 @@ class Tools:
             default="todo",
             description="Default task list for task operations"
         )
-        logging_enabled: bool = Field(default=False)
         pass  # required for parsing
 
     class Helpers:
@@ -251,8 +245,9 @@ class Tools:
         vh = self.H.get_valve_hash()
         if self._caldav_client is None or self._valve_hash != vh:
             self._valve_hash = vh
-            base = self.valves.NEXTCLOUD_BASE_URL
-            url = f"{base}/remote.php/dav/"
+            url = f"{self.valves.NEXTCLOUD_BASE_URL}/remote.php/dav/"
+            logger.debug(f"caldav_client url: {url!r}")
+
             self._caldav_client = get_davclient(
                 username=self.valves.NEXTCLOUD_USERNAME,
                 password=self.valves.NEXTCLOUD_APP_PASSWORD,
