@@ -128,12 +128,10 @@ class Tools:
             by the Tools class.",
         )
         DEFAULT_CALENDAR: str = Field(
-            default="main",
-            description="Default calendar for event operations"
+            default="main", description="Default calendar for event operations"
         )
         DEFAULT_TASK_LIST: str = Field(
-            default="todo",
-            description="Default task list for task operations"
+            default="todo", description="Default task list for task operations"
         )
         pass  # required for parsing
 
