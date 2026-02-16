@@ -132,7 +132,16 @@ class Tools:
             that will be prefixed to every file/directory operation performed \
             by the Tools class.",
         )
+        DEFAULT_CALENDAR: str = Field(
+            default="main",
+            description="Default calendar for event operations",
+        )
+        DEFAULT_TASK_LIST: str = Field(
+            default="todo",
+            description="Default task list for task operations",
+        )
         logging_enabled: bool = Field(default=False)
+
         pass  # required for parsing
 
     class Helpers:
@@ -357,9 +366,10 @@ class Tools:
         ]
 
     @caldav_safe
-    def get_tasks(self, list_name: str = "todo") -> list[dict]:
+    def get_tasks(self, list_name: str | None = None) -> list[dict]:
         """Retrieve task from specified list"""
         task_map: dict[str, dict] = {}
+        list_name = list_name or self.valves.DEFAULT_TASK_LIST
         for todo in (
             self.caldav_client.principal().calendar(name=list_name.strip()).todos()
         ):
@@ -408,7 +418,7 @@ class Tools:
         summary: str | None = None,
         uid: str | None = None,
         new_summary: str | None = None,
-        list_name: str = "todo",
+        list_name: str | None = None,
         new_priority: int | None = None,
         new_location: str | None = None,
         new_description: str | None = None,
@@ -418,6 +428,7 @@ class Tools:
         """Update task properties by summary or uid"""
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
+        list_name = list_name or self.valves.DEFAULT_TASK_LIST
         cal = self.caldav_client.principal().calendar(name=list_name.strip())
         if uid:
             todo = cal.todo_by_uid(uid)
@@ -451,11 +462,12 @@ class Tools:
         self,
         summary: Optional[str] = None,
         uid: Optional[str] = None,
-        list_name: str = "todo",
+        list_name: str | None = None,
     ) -> None:
         """Delete task from specified list by summary or uid"""
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
+        list_name = list_name or self.valves.DEFAULT_TASK_LIST
         cal = self.caldav_client.principal().calendar(name=list_name.strip())
         if uid:
             todo = cal.todo_by_uid(uid)
@@ -485,7 +497,7 @@ class Tools:
     def create_calendar_event(
         self,
         summary: str,
-        calendar_name: str = "main",
+        calendar_name: str | None = None,
         start: Optional[str] = None,
         end: Optional[str] = None,
         description: Optional[str] = None,
@@ -494,10 +506,10 @@ class Tools:
         rrule: Optional[str] = None,
         __user__: dict = {},
     ) -> str:
-        """Add event to specified calendar. Returns a uid on success."""
+        """Add event to specified calendar."""
         zi = ZoneInfo(__user__["timezone"])
         now = datetime.now(zi).replace(second=0, microsecond=0)
-
+        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         cal = self.caldav_client.principal().calendar(name=calendar_name.strip())
 
         uid = str(uuid.uuid4())
@@ -544,7 +556,7 @@ class Tools:
     def add_task(
         self,
         summary: str,
-        list_name: str = "todo",
+        list_name: str | None = None,
         priority: Optional[int] = 0,
         description: Optional[str] = None,
         categories: Optional[List[str]] = None,
@@ -552,6 +564,7 @@ class Tools:
         location: Optional[str] = None,
     ) -> str:
         """Add task to specified list. Returns uid of created task."""
+        list_name = list_name or self.valves.DEFAULT_TASK_LIST
         uid = str(uuid.uuid4())
         p = self.caldav_client.principal()
         valid_lists = [
@@ -576,9 +589,10 @@ class Tools:
         self,
         summary: str,
         uid: Optional[str] = None,
-        list_name: str = "todo",
+        list_name: str | None = None,
     ) -> None:
         """Mark a task as completed"""
+        list_name = list_name or self.valves.DEFAULT_TASK_LIST
         cal = self.caldav_client.principal().calendar(name=list_name)
         if uid:
             todo = cal.todo_by_uid(uid)
@@ -604,7 +618,7 @@ class Tools:
         __user__: dict = {},
         summary: Optional[str] = None,
         uid: Optional[str] = None,
-        calendar_name: str = "main",
+        calendar_name: str | None = None,
         new_summary: Optional[str] = None,
         new_start: Optional[str] = None,
         new_end: Optional[str] = None,
@@ -618,6 +632,7 @@ class Tools:
             raise Exception("Error: must provide a summary or uid")
         tz = __user__["timezone"]
         zi = ZoneInfo(tz)
+        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         cal = self.caldav_client.principal().calendar(name=calendar_name.strip())
         if uid:
             e = cal.event_by_uid(uid)
@@ -669,15 +684,16 @@ class Tools:
     @caldav_safe
     def get_calendar_events(
         self,
-        calendar_name: str = "main",
+        calendar_name: str | None = None,
         __user__: dict = {},
     ) -> list[dict[str, Any]]:
         """Retreive upcoming events on specified calendar"""
         # future events. Prevent RRULE expansion
         event_data = []
+        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         for e in (
             self.caldav_client.principal()
-            .calendar(name=calendar_name)
+            .calendar(name=calendar_name.strip())
             .search(start=datetime.now(ZoneInfo(__user__["timezone"])), expand=False)
         ):
             event_dict = {}
@@ -711,11 +727,12 @@ class Tools:
         self,
         uid: Optional[str] = None,
         summary: Optional[str] = None,
-        calendar_name: str = "main",
+        calendar_name: str | None = None,
     ) -> None:
         """Delete event from specified calendar"""
         if not (summary or uid):
             raise Exception("must provide a summary or uid")
+        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         cal = self.caldav_client.principal().calendar(name=calendar_name.strip())
         if uid:
             e = cal.event_by_uid(uid)
