@@ -2,9 +2,9 @@
 title: owuinc
 author: Duncan Nicholson
 git_url: https://github.com/soakedcardinal/owuinc
-description: file, task, and calendar management
+description: Manage calendars, tasks, and files via WebDAV and CalDAV.
 requirements: caldav,icalendar,webdavclient3
-version: 1.0.3
+version: 1.0.4
 license: MIT
 """
 
@@ -25,12 +25,13 @@ from caldav.lib.error import NotFoundError
 from icalendar import Alarm, Calendar, Event
 from pydantic import BaseModel, Field
 from webdav3.client import Client
-
-from webdav3.exceptions import ConnectionException  # isort: skip
-from webdav3.exceptions import LocalResourceNotFound  # isort: skip
-from webdav3.exceptions import RemoteResourceNotFound  # isort: skip
-from webdav3.exceptions import ResourceLocked  # isort: skip
-from webdav3.exceptions import WebDavException  # isort: skip
+from webdav3.exceptions import (
+    ConnectionException,
+    LocalResourceNotFound,
+    RemoteResourceNotFound,
+    ResourceLocked,
+    WebDavException,
+)
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -49,9 +50,15 @@ def caldav_safe(func: Callable) -> Callable:
             if result is not None:
                 response["data"] = result
             return response
+
         except NotFoundError as e:
-            logger.info(f"{op}: resource not found - {e}")
-            return {"result": False, "error": "not_found", "details": str(e)}
+            logger.info(f"{op}: {e}")
+
+            # Extract just the message, or fall back to string representation
+            msg = e.args[0] if hasattr(e, "args") and e.args else str(e)
+
+            return {"result": "False", "details": msg}
+
         except Exception as e:
             logger.error(
                 f"{op}: unexpected error - {type(e).__name__}: {e}\
@@ -128,12 +135,10 @@ class Tools:
             by the Tools class.",
         )
         DEFAULT_CALENDAR: str = Field(
-            default="main",
-            description="Default calendar for event operations"
+            default="main", description="Default calendar for event operations"
         )
         DEFAULT_TASK_LIST: str = Field(
-            default="todo",
-            description="Default task list for task operations"
+            default="todo", description="Default task list for task operations"
         )
         pass  # required for parsing
 
@@ -737,7 +742,9 @@ class Tools:
                 if summary.strip() in c["summary"]:
                     matches.append(c["uid"])
             if len(matches) > 1:
-                raise Exception(f"multiple matches for summary {summary}")
+                raise Exception(f"multiple matches for summary {summary!r}")
             elif len(matches) == 1:
                 e = cal.event_by_uid(matches[0])
+            if len(matches) < 1:
+                raise NotFoundError(f"match not found for {summary!r}")
         e.delete()
