@@ -4,7 +4,7 @@ author: Duncan Nicholson
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage calendars, tasks, and files via WebDAV and CalDAV.
 requirements: caldav,icalendar,webdavclient3
-version: 1.0.3
+version: 1.0.4
 license: MIT
 """
 

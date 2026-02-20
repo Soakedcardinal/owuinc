@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="owuinc",
-    version="1.0.3",
+    version="1.0.4",
     author="Duncan Nicholson",
     description="openwebui nextcloud integration",
     url="https://github.com/soakedcardinal/owuinc",
