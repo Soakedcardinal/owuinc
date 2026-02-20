@@ -43,7 +43,7 @@ header_2 = {"Authorization": f"Bearer {KEY}"}
 preamble = """Run the test immediately by invoking the \
 specified tool and verify the results.
 
-Stop immediately if errors occur.
+Stop immediately if anything unexpected happens.
 
 **STRICT OUTPUT CONSTRAINTS:**
 *   Output **ONLY** the strings "pass" or "fail".
@@ -414,13 +414,13 @@ def test_task_lifecyle():
     assert "fail" not in text, "'fail' found in response"
     assert "pass" in text, "'pass' not found in response"
 
-
 def test_event_lifecyle():
     test_name = inspect.currentframe().f_code.co_name
     prompt = (
         preamble
         + """
-    1. `get_calendar_events(calendar_name='owuinc-test')`: Empty"""
+    1. `delete_calendar_event( summary='foo', calendar_name='owuinc-test')` returns `{"result": "True"}` or
+            `{"result": "False", "details": "delete_calendar_event: match not found for 'foo'"}`"""
     )
     text = create_chat(prompt, f"{test_name} setup").strip()
     print_resp(text)
@@ -452,7 +452,8 @@ def test_event_timing():
     setup_prompt = (
         preamble
         + """
-    1. `get_calendar_events(calendar_name='owuinc-test')`: Empty"""
+    1. `delete_calendar_event( summary='foo', calendar_name='owuinc-test')` returns `{"result": "True"}` or
+            `{"result": "False", "details": "delete_calendar_event: match not found for 'foo'"}`"""
     )
     text = create_chat(setup_prompt, f"{test_name} setup").strip()
     print_resp(text)
@@ -467,7 +468,7 @@ def test_event_timing():
     2. `create_calendar_event(summary='foo', calendar_name='owuinc-test', \
          start=<tomorrow at 9AM>)`: returns a uid
     3. `get_calendar_events(calendar_name='owuinc-test')`: contains an event \
-        with start time tomorrow at 9AM
+        with summary 'foo' and start time tomorrow at 9AM
     4. `edit_calendar_event(uid='<uid from step 2>', \
         calendar_name='owuinc-test', \
         new_start=<the day after tomorrow at 2PM>, \
