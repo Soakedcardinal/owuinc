@@ -1,0 +1,6 @@
+pytest
+pre-commit
+types-requests
+sphinx
+sphinx-rtd-theme
+setuptools
