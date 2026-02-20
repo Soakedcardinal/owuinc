@@ -9,8 +9,7 @@ source .venv/bin/activate
 
 # deps
 pip install -U pip
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
+pip install -r requirements.txt -r requirements-dev.txt
 pip install -e .
 
 # hooks

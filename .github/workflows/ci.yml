@@ -1,12 +1,17 @@
+# .github/workflows/ci.yml
+
+# github actions workflow name
 name: CI
 
 on:
   push:
-    branches: [ main, staging ]
+    branches: [ staging ]
   pull_request:
     branches: [ main ]
 
 jobs:
+
+  # job name
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -28,7 +33,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install -r requirements.txt -r requirements-dev.txt
         pip install -e .
 
     # Run tests with pytest
