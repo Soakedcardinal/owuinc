@@ -55,7 +55,7 @@ def caldav_safe(func: Callable) -> Callable:
             logger.info(f"{op}: {e}")
 
             # Extract just the message, or fall back to string representation
-            msg = e.args[0] if hasattr(e, 'args') and e.args else str(e)
+            msg = e.args[0] if hasattr(e, "args") and e.args else str(e)
 
             return {"result": "False", "details": msg}
 
