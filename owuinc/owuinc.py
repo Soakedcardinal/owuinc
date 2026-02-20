@@ -50,9 +50,15 @@ def caldav_safe(func: Callable) -> Callable:
             if result is not None:
                 response["data"] = result
             return response
+
         except NotFoundError as e:
-            logger.info(f"{op}: resource not found - {e}")
-            return {"result": False, "error": "not_found", "details": str(e)}
+            logger.info(f"{op}: {e}")
+
+            # Extract just the message, or fall back to string representation
+            msg = e.args[0] if hasattr(e, 'args') and e.args else str(e)
+
+            return {"result": "False", "details": msg}
+
         except Exception as e:
             logger.error(
                 f"{op}: unexpected error - {type(e).__name__}: {e}\
@@ -736,7 +742,9 @@ class Tools:
                 if summary.strip() in c["summary"]:
                     matches.append(c["uid"])
             if len(matches) > 1:
-                raise Exception(f"multiple matches for summary {summary}")
+                raise Exception(f"multiple matches for summary {summary!r}")
             elif len(matches) == 1:
                 e = cal.event_by_uid(matches[0])
+            if len(matches) < 1:
+                raise NotFoundError(f"match not found for {summary!r}")
         e.delete()
