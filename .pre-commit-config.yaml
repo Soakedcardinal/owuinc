@@ -6,7 +6,7 @@ repos:
         language_version: python3
 
   - repo: https://github.com/PyCQA/isort
-    rev: 5.13.2
+    rev: 8.0.0
     hooks:
       - id: isort
         name: isort (import order)
