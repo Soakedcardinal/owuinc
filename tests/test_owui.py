@@ -414,13 +414,18 @@ def test_task_lifecyle():
     assert "fail" not in text, "'fail' found in response"
     assert "pass" in text, "'pass' not found in response"
 
+
 def test_event_lifecyle():
     test_name = inspect.currentframe().f_code.co_name
     prompt = (
         preamble
         + """
-    1. `delete_calendar_event( summary='foo', calendar_name='owuinc-test')` returns `{"result": "True"}` or
-            `{"result": "False", "details": "delete_calendar_event: match not found for 'foo'"}`"""
+    1. `delete_calendar_event( summary='foo', calendar_name='owuinc-test')` returns \
+        `{"result": "True"}` or
+        `{ \
+            "result": "False",
+            "details": "delete_calendar_event: match not found for 'foo'" \
+        }`"""
     )
     text = create_chat(prompt, f"{test_name} setup").strip()
     print_resp(text)
@@ -452,8 +457,12 @@ def test_event_timing():
     setup_prompt = (
         preamble
         + """
-    1. `delete_calendar_event( summary='foo', calendar_name='owuinc-test')` returns `{"result": "True"}` or
-            `{"result": "False", "details": "delete_calendar_event: match not found for 'foo'"}`"""
+    1. `delete_calendar_event( summary='foo', calendar_name='owuinc-test')` \
+        returns `{"result": "True"}` or
+        `{\
+            "result": "False", \
+            "details": "delete_calendar_event: match not found for 'foo'"\
+        }`"""
     )
     text = create_chat(setup_prompt, f"{test_name} setup").strip()
     print_resp(text)
