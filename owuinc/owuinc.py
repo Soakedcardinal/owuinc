@@ -25,12 +25,13 @@ from caldav.lib.error import NotFoundError
 from icalendar import Alarm, Calendar, Event
 from pydantic import BaseModel, Field
 from webdav3.client import Client
-
-from webdav3.exceptions import ConnectionException  # isort: skip
-from webdav3.exceptions import LocalResourceNotFound  # isort: skip
-from webdav3.exceptions import RemoteResourceNotFound  # isort: skip
-from webdav3.exceptions import ResourceLocked  # isort: skip
-from webdav3.exceptions import WebDavException  # isort: skip
+from webdav3.exceptions import (
+    ConnectionException,
+    LocalResourceNotFound,
+    RemoteResourceNotFound,
+    ResourceLocked,
+    WebDavException,
+)
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
