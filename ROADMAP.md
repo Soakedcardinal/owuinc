@@ -2,6 +2,7 @@
 
 
 ### **Phase 1: Stability & Critical Fixes**
+*   [ ] create cal/task lists / sandbox dir automatically if they don't exist
 *   [ ] move from a single sandbox to file/directory whitelist?
 *   [ ] Fix intermittent bug: no url valve when using for multiple instances of tool (?) -> Validate base URL?
 *   [ ] Add fallback timezone if __user__["timezone"] not set (e.g. utc)
