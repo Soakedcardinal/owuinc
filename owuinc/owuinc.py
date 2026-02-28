@@ -241,8 +241,8 @@ class Tools:
             whitelist = {s.strip() for s in whitelist_str.split(",") if s.strip()}
             return item in whitelist
 
-        def validate_calendar(self,
-            whitelist_str: str, calendar_name: str | None, default: str
+        def validate_calendar(
+            self, whitelist_str: str, calendar_name: str | None, default: str
         ) -> str:
             """Validate calendar against whitelist."""
             if not whitelist_str:
@@ -254,8 +254,8 @@ class Tools:
                 raise Exception(f"{calendar_name!r} not in whitelist")
             return calendar_name
 
-        def validate_task_list(self,
-            whitelist_str: str, list_name: str | None, default: str
+        def validate_task_list(
+            self, whitelist_str: str, list_name: str | None, default: str
         ) -> str:
             """Validate task list against whitelist."""
             if not whitelist_str:
@@ -411,7 +411,7 @@ class Tools:
         ]
 
     @caldav_safe
-    def get_tasks(self, list_name: str | None = None) -> list[dict]:
+    def get_tasks(self, list_name: str | None = None) -> list[dict] | Any:
         """Retrieve task from specified list"""
         try:
             list_name = Tools.H.validate_task_list(
@@ -423,9 +423,7 @@ class Tools:
             return {"result": "False", "details": f"get_tasks: {e}"}
 
         task_map: dict[str, dict] = {}
-        for todo in (
-            self.caldav_client.principal().calendar(name=list_name.strip()).todos()
-        ):
+        for todo in self.caldav_client.principal().calendar(name=list_name).todos():
             task_map[todo.component["uid"]] = {
                 key: todo.component.get(key)
                 for key in [
@@ -477,7 +475,7 @@ class Tools:
         new_description: str | None = None,
         new_url: str | None = None,
         new_categories: list[str] | None = None,
-    ) -> None:
+    ):
         """Update task properties by summary or uid"""
         try:
             list_name = Tools.H.validate_task_list(
@@ -490,7 +488,7 @@ class Tools:
 
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
-        cal = self.caldav_client.principal().calendar(name=list_name.strip())
+        cal = self.caldav_client.principal().calendar(name=list_name)
         if uid:
             todo = cal.todo_by_uid(uid)
         elif summary:  # find the uid
@@ -524,7 +522,7 @@ class Tools:
         summary: Optional[str] = None,
         uid: Optional[str] = None,
         list_name: str | None = None,
-    ) -> None:
+    ):
         """Delete task from specified list by summary or uid"""
         try:
             list_name = Tools.H.validate_task_list(
@@ -537,7 +535,7 @@ class Tools:
 
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
-        cal = self.caldav_client.principal().calendar(name=list_name.strip())
+        cal = self.caldav_client.principal().calendar(name=list_name)
         if uid:
             todo = cal.todo_by_uid(uid)
         elif summary:  # find the uid
@@ -580,7 +578,7 @@ class Tools:
         alarms: List[str] = ["0min"],
         rrule: Optional[str] = None,
         __user__: dict = {},
-    ) -> str:
+    ):
         """Add event to specified calendar."""
         try:
             calendar_name = Tools.H.validate_calendar(
@@ -593,7 +591,7 @@ class Tools:
 
         zi = ZoneInfo(__user__["timezone"])
         now = datetime.now(zi).replace(second=0, microsecond=0)
-        cal = self.caldav_client.principal().calendar(name=calendar_name.strip())
+        cal = self.caldav_client.principal().calendar(name=calendar_name)
 
         uid = str(uuid.uuid4())
         e = Event()
@@ -645,7 +643,7 @@ class Tools:
         categories: Optional[List[str]] = None,
         url: Optional[str] = None,
         location: Optional[str] = None,
-    ) -> str:
+    ):
         """Add task to specified list. Returns uid of created task."""
         try:
             list_name = Tools.H.validate_task_list(
@@ -664,7 +662,7 @@ class Tools:
         if list_name not in valid_lists:
             logger.error("invalid task list")
             raise Exception("invalid task list")
-        p.calendar(name=list_name.strip()).save_todo(
+        p.calendar(name=list_name).save_todo(
             uid=uid,
             summary=summary,
             priority=priority,
@@ -681,7 +679,7 @@ class Tools:
         summary: str,
         uid: Optional[str] = None,
         list_name: str | None = None,
-    ) -> None:
+    ):
         """Mark a task as completed"""
         try:
             list_name = Tools.H.validate_task_list(
@@ -725,7 +723,7 @@ class Tools:
         new_location: Optional[str] = None,
         new_alarms: Optional[List[str]] = None,
         new_rrule: Optional[str] = None,
-    ) -> None:
+    ):
         """Update event properties by summary or uid."""
         try:
             calendar_name = Tools.H.validate_calendar(
@@ -740,7 +738,7 @@ class Tools:
             raise Exception("Error: must provide a summary or uid")
         tz = __user__["timezone"]
         zi = ZoneInfo(tz)
-        cal = self.caldav_client.principal().calendar(name=calendar_name.strip())
+        cal = self.caldav_client.principal().calendar(name=calendar_name)
         if uid:
             e = cal.event_by_uid(uid)
         elif summary:
@@ -793,7 +791,7 @@ class Tools:
         self,
         calendar_name: str | None = None,
         __user__: dict = {},
-    ) -> list[dict[str, Any]]:
+    ):
         """Retrieve upcoming events on specified calendar"""
         try:
             calendar_name = Tools.H.validate_calendar(
@@ -808,7 +806,7 @@ class Tools:
         event_data = []
         for e in (
             self.caldav_client.principal()
-            .calendar(name=calendar_name.strip())
+            .calendar(name=calendar_name)
             .search(start=datetime.now(ZoneInfo(__user__["timezone"])), expand=False)
         ):
             event_dict = {}
@@ -843,7 +841,7 @@ class Tools:
         uid: Optional[str] = None,
         summary: Optional[str] = None,
         calendar_name: str | None = None,
-    ) -> None:
+    ):
         """Delete event from specified calendar"""
         try:
             calendar_name = Tools.H.validate_calendar(
@@ -856,7 +854,7 @@ class Tools:
 
         if not (summary or uid):
             raise Exception("must provide a summary or uid")
-        cal = self.caldav_client.principal().calendar(name=calendar_name.strip())
+        cal = self.caldav_client.principal().calendar(name=calendar_name)
         if uid:
             e = cal.event_by_uid(uid)
         elif summary:
