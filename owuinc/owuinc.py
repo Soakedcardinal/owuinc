@@ -135,16 +135,16 @@ class Tools:
             by the Tools class.",
         )
         DEFAULT_CALENDAR: str = Field(
-            default="", description="Default calendar for event operations"
+            default="owuinc", description="Default calendar for event operations"
         )
         DEFAULT_TASK_LIST: str = Field(
-            default="", description="Default task list for task operations"
+            default="owuinc", description="Default task list for task operations"
         )
         CALENDAR_WHITELIST: str = Field(
-            default="", description="Comma-separated list of allowed calendars"
+            default="owuinc", description="Comma-separated list of allowed calendars"
         )
         TASK_LIST_WHITELIST: str = Field(
-            default="", description="Comma-separated list of allowed task lists"
+            default="owuinc", description="Comma-separated list of allowed task lists"
         )
         pass  # required for parsing
 
