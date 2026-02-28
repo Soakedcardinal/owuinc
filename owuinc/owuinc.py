@@ -33,12 +33,13 @@ from webdav3.exceptions import (
     WebDavException,
 )
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-# logger.setLevel(logging.DEBUG)
-
+DEBUG=False
+def log(msg):
+    if DEBUG:
+        print(msg)
+def log_err(msg):
+    if DEBUG:
+        print("ERROR: "+msg)
 
 def caldav_safe(func: Callable) -> Callable:
     @functools.wraps(func)
@@ -52,7 +53,7 @@ def caldav_safe(func: Callable) -> Callable:
             return response
 
         except NotFoundError as e:
-            logger.info(f"{op}: {e}")
+            log(f"{op}: {e}")
 
             # Extract just the message, or fall back to string representation
             msg = e.args[0] if hasattr(e, "args") and e.args else str(e)
@@ -60,7 +61,7 @@ def caldav_safe(func: Callable) -> Callable:
             return {"result": "False", "details": msg}
 
         except Exception as e:
-            logger.error(
+            log_err(
                 f"{op}: unexpected error - {type(e).__name__}: {e}\
                 \nTraceback: {traceback.format_exc()}"
             )
@@ -80,32 +81,32 @@ def webdav_safe(func: Callable) -> Callable:
                 response["data"] = result
             return response
         except RemoteResourceNotFound as e:
-            logger.error(
+            log_err(
                 f"{op}: resource not found - {e}\nTraceback: {traceback.format_exc()}"
             )
             return {"result": "False", "details": f"{op}: not found"}
         except LocalResourceNotFound as e:
-            logger.error(
+            log_err(
                 f"{op}: local file not found - {e}\nTraceback: {traceback.format_exc()}"
             )
             return {"result": "False", "details": f"{op}: local file not found"}
         except ResourceLocked as e:
-            logger.error(
+            log_err(
                 f"{op}: resource locked - {e}\nTraceback: {traceback.format_exc()}"
             )
             return {"result": "False", "details": f"{op}: resource locked"}
         except ConnectionException as e:
-            logger.error(
+            log_err(
                 f"{op}: connection failed - {e}\nTraceback: {traceback.format_exc()}"
             )
             return {"result": "False", "details": f"{op}: connection failed"}
         except WebDavException as e:
-            logger.error(
+            log_err(
                 f"{op}: WebDAV error - {e}\nTraceback: {traceback.format_exc()}"
             )
             return {"result": "False", "details": f"{op}: {str(e)}"}
         except Exception as e:
-            logger.error(
+            log_err(
                 f"{op}: unexpected error - {type(e).__name__}: {e}\
                 \nTraceback: {traceback.format_exc()}"
             )
@@ -275,7 +276,7 @@ class Tools:
             base = self.valves.NEXTCLOUD_BASE_URL
             wd_user = self.valves.WEBDAV_USERNAME
             url = f"{base}/remote.php/dav/files/{wd_user}/"
-            logger.debug(f"webdav_client url: {url!r}")
+            log(f"webdav_client url: {url!r}")
             self._webdav_client = Client(
                 {
                     "webdav_hostname": url,
@@ -291,7 +292,7 @@ class Tools:
         if self._caldav_client is None or self._valve_hash != vh:
             self._valve_hash = vh
             url = f"{self.valves.NEXTCLOUD_BASE_URL}/remote.php/dav/"
-            logger.debug(f"caldav_client url: {url!r}")
+            log(f"caldav_client url: {url!r}")
 
             self._caldav_client = get_davclient(
                 username=self.valves.NEXTCLOUD_USERNAME,
@@ -660,7 +661,7 @@ class Tools:
             c.name for c in p.calendars() if self.H.get_cal_type(c) == "todo"
         ]
         if list_name not in valid_lists:
-            logger.error("invalid task list")
+            log_err("invalid task list")
             raise Exception("invalid task list")
         p.calendar(name=list_name).save_todo(
             uid=uid,
