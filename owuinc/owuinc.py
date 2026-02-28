@@ -9,7 +9,6 @@ license: MIT
 """
 
 import functools
-import logging
 import os
 import re
 import traceback
@@ -33,13 +32,25 @@ from webdav3.exceptions import (
     WebDavException,
 )
 
-DEBUG=False
+DEBUG = False
+
+
 def log(msg):
     if DEBUG:
         print(msg)
+
+
 def log_err(msg):
     if DEBUG:
-        print("ERROR: "+msg)
+        print("ERROR: " + msg)
+
+
+def log_sep(msg):
+    if DEBUG:
+        print("\n" + "=" * 60)
+        print(f"  {msg}")
+        print("=" * 60 + "\n")
+
 
 def caldav_safe(func: Callable) -> Callable:
     @functools.wraps(func)
@@ -91,9 +102,7 @@ def webdav_safe(func: Callable) -> Callable:
             )
             return {"result": "False", "details": f"{op}: local file not found"}
         except ResourceLocked as e:
-            log_err(
-                f"{op}: resource locked - {e}\nTraceback: {traceback.format_exc()}"
-            )
+            log_err(f"{op}: resource locked - {e}\nTraceback: {traceback.format_exc()}")
             return {"result": "False", "details": f"{op}: resource locked"}
         except ConnectionException as e:
             log_err(
@@ -101,9 +110,7 @@ def webdav_safe(func: Callable) -> Callable:
             )
             return {"result": "False", "details": f"{op}: connection failed"}
         except WebDavException as e:
-            log_err(
-                f"{op}: WebDAV error - {e}\nTraceback: {traceback.format_exc()}"
-            )
+            log_err(f"{op}: WebDAV error - {e}\nTraceback: {traceback.format_exc()}")
             return {"result": "False", "details": f"{op}: {str(e)}"}
         except Exception as e:
             log_err(
@@ -117,7 +124,17 @@ def webdav_safe(func: Callable) -> Callable:
 
 class Tools:
     def __init__(self):
+        log_sep("Tools.__init__()")
         self.valves = self.Valves()
+        log(f"  NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
+        log(f"  WEBDAV_USERNAME={self.valves.WEBDAV_USERNAME!r}")
+        log(f"  NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
+        log(f"  NEXTCLOUD_APP_PASSWORD_LEN={len(self.valves.NEXTCLOUD_APP_PASSWORD)}")
+        log(f"  SANDBOX_DIR={self.valves.SANDBOX_DIR!r}")
+        log(f"  DEFAULT_CALENDAR={self.valves.DEFAULT_CALENDAR!r}")
+        log(f"  DEFAULT_TASK_LIST={self.valves.DEFAULT_TASK_LIST!r}")
+        log(f"  CALENDAR_WHITELIST={self.valves.CALENDAR_WHITELIST!r}")
+        log(f"  TASK_LIST_WHITELIST={self.valves.TASK_LIST_WHITELIST!r}")
         self.H = self.Helpers(self.valves)
 
         self._valve_hash = None
@@ -151,10 +168,18 @@ class Tools:
 
     class Helpers:
         def __init__(self, valves):
+            log_sep("Helpers.__init__()")
             self.valves = valves
+            log("  Helpers initialized with valves reference")
 
         def get_valve_hash(self):
-            return hash(
+            log("get_valve_hash() called")
+            log(f"  NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
+            log(f"  WEBDAV_USERNAME={self.valves.WEBDAV_USERNAME!r}")
+            log(f"  NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
+            pw_len = len(self.valves.NEXTCLOUD_APP_PASSWORD)
+            log(f"  NEXTCLOUD_APP_PASSWORD_LEN={pw_len}")
+            hash_value = hash(
                 (
                     self.valves.NEXTCLOUD_BASE_URL,
                     self.valves.WEBDAV_USERNAME,
@@ -162,6 +187,8 @@ class Tools:
                     self.valves.NEXTCLOUD_APP_PASSWORD,
                 )
             )
+            log(f"  hash={hash_value}")
+            return hash_value
 
         @staticmethod
         def validate_path(path, sandbox):
@@ -271,36 +298,73 @@ class Tools:
     @property
     def webdav_client(self):
         vh = self.H.get_valve_hash()
+        log(
+            f"webdav_client: _valve_hash={self._valve_hash}, \
+                vh={vh}, \
+                cached={self._webdav_client is not None}"
+        )
         if self._webdav_client is None or self._valve_hash != vh:
+            old_hash = self._valve_hash
             self._valve_hash = vh
+            log(f"webdav_client: RECREATING (hash changed from {old_hash} to {vh})")
+            log(f"  NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
+            log(f"  WEBDAV_USERNAME={self.valves.WEBDAV_USERNAME!r}")
+            log(f"  NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
             base = self.valves.NEXTCLOUD_BASE_URL
             wd_user = self.valves.WEBDAV_USERNAME
             url = f"{base}/remote.php/dav/files/{wd_user}/"
-            log(f"webdav_client url: {url!r}")
-            self._webdav_client = Client(
-                {
-                    "webdav_hostname": url,
-                    "webdav_login": self.valves.NEXTCLOUD_USERNAME,
-                    "webdav_password": self.valves.NEXTCLOUD_APP_PASSWORD,
-                }
-            )
+            log(f"webdav_client: creating Client with url={url!r}")
+            try:
+                self._webdav_client = Client(
+                    {
+                        "webdav_hostname": url,
+                        "webdav_login": self.valves.NEXTCLOUD_USERNAME,
+                        "webdav_password": self.valves.NEXTCLOUD_APP_PASSWORD,
+                    }
+                )
+                log("webdav_client: Client created successfully")
+            except Exception as e:
+                log_err(
+                    f"webdav_client: failed to create Client: {type(e).__name__}: {e}"
+                )
+                raise
+        else:
+            log("webdav_client: using cached client")
         return self._webdav_client
 
     @property
     def caldav_client(self):
         vh = self.H.get_valve_hash()
+        log(
+            f"caldav_client: _valve_hash={self._valve_hash},\
+                vh={vh}, \
+                cached={self._caldav_client is not None}"
+        )
         if self._caldav_client is None or self._valve_hash != vh:
+            old_hash = self._valve_hash
             self._valve_hash = vh
+            log(f"caldav_client: RECREATING (hash changed from {old_hash} to {vh})")
+            log(f"  NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
+            log(f"  NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
             url = f"{self.valves.NEXTCLOUD_BASE_URL}/remote.php/dav/"
-            log(f"caldav_client url: {url!r}")
-
-            self._caldav_client = get_davclient(
-                username=self.valves.NEXTCLOUD_USERNAME,
-                password=self.valves.NEXTCLOUD_APP_PASSWORD,
-                url=url,
-                features="nextcloud",
-                enable_rfc6764=False,
-            )
+            log(f"caldav_client: creating get_davclient with url={url!r}")
+            try:
+                self._caldav_client = get_davclient(
+                    username=self.valves.NEXTCLOUD_USERNAME,
+                    password=self.valves.NEXTCLOUD_APP_PASSWORD,
+                    url=url,
+                    features="nextcloud",
+                    enable_rfc6764=False,
+                )
+                log("caldav_client: get_davclient created successfully")
+            except Exception as e:
+                log_err(
+                    f"caldav_client: failed to create get_davclient: \
+                        {type(e).__name__}: {e}"
+                )
+                raise
+        else:
+            log("caldav_client: using cached client")
         return self._caldav_client
 
     @webdav_safe
@@ -399,17 +463,19 @@ class Tools:
     @caldav_safe
     def get_task_lists(self) -> list[str]:
         """Retrieve available task lists"""
+        whitelist = self.valves.TASK_LIST_WHITELIST
+        log(f"get_task_lists() - TASK_LIST_WHITELIST={whitelist!r}")
         all_lists = [
             c.name
             for c in self.caldav_client.principal().calendars()
             if self.H.get_cal_type(c) == "todo"
         ]
-        # whitelisted
-        return [
-            name
-            for name in all_lists
-            if self.H.is_whitelisted(self.valves.TASK_LIST_WHITELIST, name)
+        log(f"get_task_lists() - found {len(all_lists)} todo lists")
+        whitelisted = [
+            name for name in all_lists if self.H.is_whitelisted(whitelist, name)
         ]
+        log(f"get_task_lists() - whitelisted: {whitelisted}")
+        return whitelisted
 
     @caldav_safe
     def get_tasks(self, list_name: str | None = None) -> list[dict] | Any:
@@ -555,16 +621,19 @@ class Tools:
     @caldav_safe
     def get_calendars(self) -> list[str]:
         """Retrieve only whitelisted calendars"""
+        log(f"get_calendars() - CALENDAR_WHITELIST={self.valves.CALENDAR_WHITELIST!r}")
         all_calendars = [
             c.name
             for c in self.caldav_client.principal().calendars()
             if self.H.get_cal_type(c) == "event"
         ]
+        log(f"get_calendars() - found {len(all_calendars)} event calendars")
         whitelisted = [
             name
             for name in all_calendars
             if self.H.is_whitelisted(self.valves.CALENDAR_WHITELIST, name)
         ]
+        log(f"get_calendars() - whitelisted: {whitelisted}")
         return whitelisted
 
     @caldav_safe
