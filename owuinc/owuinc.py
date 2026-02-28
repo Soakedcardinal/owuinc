@@ -453,7 +453,7 @@ class Tools:
     def get_tasks(self, list_name: str | None = None) -> list[dict] | Any:
         """Retrieve task from specified list"""
         try:
-            list_name = Tools.H.validate_task_list(
+            list_name = self.H.validate_task_list(
                 self.valves.TASK_LIST_WHITELIST,
                 list_name,
                 self.valves.DEFAULT_TASK_LIST,
@@ -517,7 +517,7 @@ class Tools:
     ):
         """Update task properties by summary or uid"""
         try:
-            list_name = Tools.H.validate_task_list(
+            list_name = self.H.validate_task_list(
                 self.valves.TASK_LIST_WHITELIST,
                 list_name,
                 self.valves.DEFAULT_TASK_LIST,
@@ -564,7 +564,7 @@ class Tools:
     ):
         """Delete task from specified list by summary or uid"""
         try:
-            list_name = Tools.H.validate_task_list(
+            list_name = self.H.validate_task_list(
                 self.valves.TASK_LIST_WHITELIST,
                 list_name,
                 self.valves.DEFAULT_TASK_LIST,
@@ -623,7 +623,7 @@ class Tools:
     ):
         """Add event to specified calendar."""
         try:
-            calendar_name = Tools.H.validate_calendar(
+            calendar_name = self.H.validate_calendar(
                 self.valves.CALENDAR_WHITELIST,
                 calendar_name,
                 self.valves.DEFAULT_CALENDAR,
@@ -688,7 +688,7 @@ class Tools:
     ):
         """Add task to specified list. Returns uid of created task."""
         try:
-            list_name = Tools.H.validate_task_list(
+            list_name = self.H.validate_task_list(
                 self.valves.TASK_LIST_WHITELIST,
                 list_name,
                 self.valves.DEFAULT_TASK_LIST,
@@ -724,7 +724,7 @@ class Tools:
     ):
         """Mark a task as completed"""
         try:
-            list_name = Tools.H.validate_task_list(
+            list_name = self.H.validate_task_list(
                 self.valves.TASK_LIST_WHITELIST,
                 list_name,
                 self.valves.DEFAULT_TASK_LIST,
@@ -768,7 +768,7 @@ class Tools:
     ):
         """Update event properties by summary or uid."""
         try:
-            calendar_name = Tools.H.validate_calendar(
+            calendar_name = self.H.validate_calendar(
                 self.valves.CALENDAR_WHITELIST,
                 calendar_name,
                 self.valves.DEFAULT_CALENDAR,
@@ -836,7 +836,7 @@ class Tools:
     ):
         """Retrieve upcoming events on specified calendar"""
         try:
-            calendar_name = Tools.H.validate_calendar(
+            calendar_name = self.H.validate_calendar(
                 self.valves.CALENDAR_WHITELIST,
                 calendar_name,
                 self.valves.DEFAULT_CALENDAR,
@@ -886,7 +886,7 @@ class Tools:
     ):
         """Delete event from specified calendar"""
         try:
-            calendar_name = Tools.H.validate_calendar(
+            calendar_name = self.H.validate_calendar(
                 self.valves.CALENDAR_WHITELIST,
                 calendar_name,
                 self.valves.DEFAULT_CALENDAR,
