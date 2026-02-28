@@ -1,24 +1,39 @@
 # Contributing to owuinc
 
-## 1. only if needed/first run: create new venv 
+## 1. first run only: create new venv 
+clean up if needed
 ```bash
-rm -r .venv .pytest_cache .mypy_cache __pycache__ 
+rm -r .venv .pytest_cache .mypy_cache __pycache__ || true
 python3 -m venv .venv
 ```
 
-## 2. activate venv
+create venv
+```bash
+python3 -m venv .venv
+```
+
+activate venv
 ```bash
 source .venv/bin/activate
 ```
 
-## 3. deps
+Update pip
 ```bash
 pip install -U pip
+```
+
+Install deps
+```bash
 pip install -r requirements.txt -r requirements-dev.txt
+```
+
+Install main module
+```bash
 pip install -e .
 ```
 
-## 4. hooks
+
+# Workflow
 ```bash
 pre-commit install
 pre-commit run --all-files

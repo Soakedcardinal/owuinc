@@ -7,6 +7,7 @@
 - [ ] Add fallback timezone if `__user__["timezone"]` not set (e.g. utc)
 - [ ] Audit test_helpers.py
 - [ ] Implement proper input validation beyond path validation
+- [ ] Render API docs
 
 ## Event & Task Management
 - [ ] Accept UID for all task/event methods
