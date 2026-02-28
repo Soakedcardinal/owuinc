@@ -53,7 +53,7 @@ Stop immediately if anything unexpected happens.
 
 # https://docs.openwebui.com/tutorials/integrations/backend-controlled-ui-compatible-flow
 def create_chat(
-    prompt, title="owuinc test chat", tool_ids=["owuinc"], model="owuinc-test"
+    prompt, title="owuinc test chat", tool_ids=["owuinc_test"], model="owuinc-test"
 ) -> str:
     ts = int(time.time())
     ts2 = ts + 1000
