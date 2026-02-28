@@ -137,10 +137,6 @@ class Tools:
         log(f"  TASK_LIST_WHITELIST={self.valves.TASK_LIST_WHITELIST!r}")
         self.H = self.Helpers(self.valves)
 
-        self._valve_hash = None
-        self._webdav_client = None
-        self._caldav_client = None
-
     class Valves(BaseModel):
         NEXTCLOUD_BASE_URL: str = Field("", description="Nextcloud server address")
         WEBDAV_USERNAME: str = Field("")
@@ -297,75 +293,51 @@ class Tools:
 
     @property
     def webdav_client(self):
-        vh = self.H.get_valve_hash()
-        log(
-            f"webdav_client: _valve_hash={self._valve_hash}, \
-                vh={vh}, \
-                cached={self._webdav_client is not None}"
-        )
-        if self._webdav_client is None or self._valve_hash != vh:
-            old_hash = self._valve_hash
-            self._valve_hash = vh
-            log(f"webdav_client: RECREATING (hash changed from {old_hash} to {vh})")
-            log(f"  NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
-            log(f"  WEBDAV_USERNAME={self.valves.WEBDAV_USERNAME!r}")
-            log(f"  NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
-            base = self.valves.NEXTCLOUD_BASE_URL
-            wd_user = self.valves.WEBDAV_USERNAME
-            url = f"{base}/remote.php/dav/files/{wd_user}/"
-            log(f"webdav_client: creating Client with url={url!r}")
-            try:
-                self._webdav_client = Client(
-                    {
-                        "webdav_hostname": url,
-                        "webdav_login": self.valves.NEXTCLOUD_USERNAME,
-                        "webdav_password": self.valves.NEXTCLOUD_APP_PASSWORD,
-                    }
-                )
-                log("webdav_client: Client created successfully")
-            except Exception as e:
-                log_err(
-                    f"webdav_client: failed to create Client: {type(e).__name__}: {e}"
-                )
-                raise
-        else:
-            log("webdav_client: using cached client")
-        return self._webdav_client
+        log("webdav_client: creating new Client")
+        log(f"  NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
+        log(f"  WEBDAV_USERNAME={self.valves.WEBDAV_USERNAME!r}")
+        log(f"  NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
+        base = self.valves.NEXTCLOUD_BASE_URL
+        wd_user = self.valves.WEBDAV_USERNAME
+        url = f"{base}/remote.php/dav/files/{wd_user}/"
+        log(f"webdav_client: creating Client with url={url!r}")
+        try:
+            webdav_client = Client(
+                {
+                    "webdav_hostname": url,
+                    "webdav_login": self.valves.NEXTCLOUD_USERNAME,
+                    "webdav_password": self.valves.NEXTCLOUD_APP_PASSWORD,
+                }
+            )
+            log("webdav_client: Client created successfully")
+            return webdav_client
+        except Exception as e:
+            log_err(f"webdav_client: failed to create Client: {type(e).__name__}: {e}")
+            raise
 
     @property
     def caldav_client(self):
-        vh = self.H.get_valve_hash()
-        log(
-            f"caldav_client: _valve_hash={self._valve_hash},\
-                vh={vh}, \
-                cached={self._caldav_client is not None}"
-        )
+        log("caldav_client: creating new get_davclient")
         log(f"NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
         log(f"NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
-        if self._caldav_client is None or self._valve_hash != vh:
-            old_hash = self._valve_hash
-            self._valve_hash = vh
-            log(f"caldav_client: RECREATING (hash changed from {old_hash} to {vh})")
-            url = f"{self.valves.NEXTCLOUD_BASE_URL}/remote.php/dav/"
-            log(f"caldav_client: creating get_davclient with url={url!r}")
-            try:
-                self._caldav_client = get_davclient(
-                    username=self.valves.NEXTCLOUD_USERNAME,
-                    password=self.valves.NEXTCLOUD_APP_PASSWORD,
-                    url=url,
-                    features="nextcloud",
-                    enable_rfc6764=False,
-                )
-                log("caldav_client: get_davclient created successfully")
-            except Exception as e:
-                log_err(
-                    f"caldav_client: failed to create get_davclient: \
-                        {type(e).__name__}: {e}"
-                )
-                raise
-        else:
-            log("caldav_client: using cached client")
-        return self._caldav_client
+        url = f"{self.valves.NEXTCLOUD_BASE_URL}/remote.php/dav/"
+        log(f"caldav_client: creating get_davclient with url={url!r}")
+        try:
+            caldav_client = get_davclient(
+                username=self.valves.NEXTCLOUD_USERNAME,
+                password=self.valves.NEXTCLOUD_APP_PASSWORD,
+                url=url,
+                features="nextcloud",
+                enable_rfc6764=False,
+            )
+            log("caldav_client: get_davclient created successfully")
+            return caldav_client
+        except Exception as e:
+            log_err(
+                f"caldav_client: failed to create get_davclient: \
+                    {type(e).__name__}: {e}"
+            )
+            raise
 
     @webdav_safe
     def mkdir(
