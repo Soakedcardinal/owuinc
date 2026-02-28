@@ -2,12 +2,11 @@
 
 
 ### **Phase 1: Stability & Critical Fixes**
-
-*   [ ] Fix intermittent bug: no url valve when using for multiple instances of tool (?)
+*   [ ] move from a single sandbox to file/directory whitelist?
+*   [ ] Fix intermittent bug: no url valve when using for multiple instances of tool (?) -> Validate base URL?
 *   [ ] Add fallback timezone if __user__["timezone"] not set (e.g. utc)
 *   [ ] Audit test_helpers.py
 *   [ ] Implement proper input validation beyond path validation.
-*   [ ] Validate calendar_name and list_name
 
 ### **Phase 2: Core Functionality & Data Integrity**
 *Focus: Improving the logic for handling events, tasks, and Nextcloud-specific data.*
@@ -31,7 +30,7 @@
     *   [ ] Improve existing tests for tasks and calendar events.
     *   [ ] Add code coverage reporting (`pytest-cov`).
 *   **Static Analysis & Complexity**
-    *   [ ] Improve type hints for better static analysis.
+    *   [ ] Improve type hints for better tool schema parsing and static analysis
 
 ### **Phase 4: Configuration & Architecture**
 *Focus: Structuring the project for future scale.*
