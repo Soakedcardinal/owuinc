@@ -590,8 +590,8 @@ class Tools:
                 calendar_name,
                 self.valves.DEFAULT_CALENDAR,
             )
-        except Exception as e:
-            return {"result": "False", "details": f"create_calendar_event: {e}"}
+        except Exception as x:
+            return {"result": "False", "details": f"create_calendar_event: {x}"}
 
         zi = ZoneInfo(__user__["timezone"])
         now = datetime.now(zi).replace(second=0, microsecond=0)
@@ -735,8 +735,8 @@ class Tools:
                 calendar_name,
                 self.valves.DEFAULT_CALENDAR,
             )
-        except Exception as e:
-            return {"result": "False", "details": f"edit_calendar_event: {e}"}
+        except Exception as x:
+            return {"result": "False", "details": f"edit_calendar_event: {x}"}
 
         if not (summary or uid):
             raise Exception("Error: must provide a summary or uid")
@@ -803,8 +803,8 @@ class Tools:
                 calendar_name,
                 self.valves.DEFAULT_CALENDAR,
             )
-        except Exception as e:
-            return {"result": "False", "details": f"get_calendar_events: {e}"}
+        except Exception as x:
+            return {"result": "False", "details": f"get_calendar_events: {x}"}
 
         # future events. Prevent RRULE expansion
         event_data = []
@@ -853,8 +853,8 @@ class Tools:
                 calendar_name,
                 self.valves.DEFAULT_CALENDAR,
             )
-        except Exception as e:
-            return {"result": "False", "details": f"delete_calendar_event: {e}"}
+        except Exception as x:
+            return {"result": "False", "details": f"delete_calendar_event: {x}"}
 
         if not (summary or uid):
             raise Exception("must provide a summary or uid")
