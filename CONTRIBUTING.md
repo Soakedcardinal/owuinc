@@ -1,10 +1,12 @@
 # Contributing to owuinc
 
-Run the following commands to initialize the environment:
 
 ```bash
+# create new venv
 rm -r .venv .pytest_cache .mypy_cache __pycache__ 
 python3 -m venv .venv
+
+# activate venv
 source .venv/bin/activate
 
 # deps
