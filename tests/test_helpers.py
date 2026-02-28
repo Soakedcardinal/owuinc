@@ -188,3 +188,25 @@ class TestValidatePathComplexScenarios:
             tools.H.validate_path("  foo/bar  ", "/test/sandbox")
             == "/test/sandbox/foo/bar"
         )
+
+
+class TestIsWhitelisted:
+    """Test whitelist validation logic"""
+
+    def test_empty_whitelist_returns_false(self, tools):
+        assert tools.H.is_whitelisted("", "cal1") is False
+
+    def test_item_in_whitelist(self, tools):
+        assert tools.H.is_whitelisted("cal1, cal2", "cal1") is True
+
+    def test_item_not_in_whitelist(self, tools):
+        assert tools.H.is_whitelisted("cal1, cal2", "cal3") is False
+
+    def test_whitespace_normalized(self, tools):
+        assert tools.H.is_whitelisted("  cal1  ,  cal2  ", "cal1") is True
+
+    def test_trailing_comma_filtered(self, tools):
+        assert tools.H.is_whitelisted("cal1, cal2,", "cal1") is True
+
+    def test_case_sensitive(self, tools):
+        assert tools.H.is_whitelisted("cal1", "CAL1") is False

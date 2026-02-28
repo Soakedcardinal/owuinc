@@ -135,10 +135,16 @@ class Tools:
             by the Tools class.",
         )
         DEFAULT_CALENDAR: str = Field(
-            default="main", description="Default calendar for event operations"
+            default="", description="Default calendar for event operations"
         )
         DEFAULT_TASK_LIST: str = Field(
-            default="todo", description="Default task list for task operations"
+            default="", description="Default task list for task operations"
+        )
+        CALENDAR_WHITELIST: str = Field(
+            default="", description="Comma-separated list of allowed calendars"
+        )
+        TASK_LIST_WHITELIST: str = Field(
+            default="", description="Comma-separated list of allowed task lists"
         )
         pass  # required for parsing
 
@@ -226,6 +232,42 @@ class Tools:
                 return "mixed"
             else:
                 return "unknown"
+
+        @staticmethod
+        def is_whitelisted(whitelist_str: str, item: str) -> bool:
+            """Check if item is in whitelist"""
+            if not whitelist_str:
+                return False
+            whitelist = {s.strip() for s in whitelist_str.split(",") if s.strip()}
+            return item in whitelist
+
+        @staticmethod
+        def validate_calendar(
+            whitelist_str: str, calendar_name: str | None, default: str
+        ) -> str:
+            """Validate calendar against whitelist."""
+            if not whitelist_str:
+                raise Exception("Calendar whitelist not configured")
+            calendar_name = (calendar_name or default).strip()
+            if not calendar_name:
+                raise Exception("Calendar whitelist not configured")
+            if not Helpers.is_whitelisted(whitelist_str, calendar_name):
+                raise Exception(f"{calendar_name!r} not in whitelist")
+            return calendar_name
+
+        @staticmethod
+        def validate_task_list(
+            whitelist_str: str, list_name: str | None, default: str
+        ) -> str:
+            """Validate task list against whitelist."""
+            if not whitelist_str:
+                raise Exception("Task list whitelist not configured")
+            list_name = (list_name or default).strip()
+            if not list_name:
+                raise Exception("Task list whitelist not configured")
+            if not Helpers.is_whitelisted(whitelist_str, list_name):
+                raise Exception(f"{list_name!r} not in whitelist")
+            return list_name
 
     @property
     def webdav_client(self):
@@ -358,17 +400,31 @@ class Tools:
     @caldav_safe
     def get_task_lists(self) -> list[str]:
         """Retrieve available task lists"""
-        return [
+        all_lists = [
             c.name
             for c in self.caldav_client.principal().calendars()
             if self.H.get_cal_type(c) == "todo"
+        ]
+        # whitelisted
+        return [
+            name
+            for name in all_lists
+            if self.H.is_whitelisted(self.valves.TASK_LIST_WHITELIST, name)
         ]
 
     @caldav_safe
     def get_tasks(self, list_name: str | None = None) -> list[dict]:
         """Retrieve task from specified list"""
+        try:
+            list_name = Tools.H.validate_task_list(
+                self.valves.TASK_LIST_WHITELIST,
+                list_name,
+                self.valves.DEFAULT_TASK_LIST,
+            )
+        except Exception as e:
+            return {"result": "False", "details": f"get_tasks: {e}"}
+
         task_map: dict[str, dict] = {}
-        list_name = list_name or self.valves.DEFAULT_TASK_LIST
         for todo in (
             self.caldav_client.principal().calendar(name=list_name.strip()).todos()
         ):
@@ -425,9 +481,17 @@ class Tools:
         new_categories: list[str] | None = None,
     ) -> None:
         """Update task properties by summary or uid"""
+        try:
+            list_name = Tools.H.validate_task_list(
+                self.valves.TASK_LIST_WHITELIST,
+                list_name,
+                self.valves.DEFAULT_TASK_LIST,
+            )
+        except Exception as e:
+            return {"result": "False", "details": f"edit_task: {e}"}
+
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
-        list_name = list_name or self.valves.DEFAULT_TASK_LIST
         cal = self.caldav_client.principal().calendar(name=list_name.strip())
         if uid:
             todo = cal.todo_by_uid(uid)
@@ -464,9 +528,17 @@ class Tools:
         list_name: str | None = None,
     ) -> None:
         """Delete task from specified list by summary or uid"""
+        try:
+            list_name = Tools.H.validate_task_list(
+                self.valves.TASK_LIST_WHITELIST,
+                list_name,
+                self.valves.DEFAULT_TASK_LIST,
+            )
+        except Exception as e:
+            return {"result": "False", "details": f"delete_task: {e}"}
+
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
-        list_name = list_name or self.valves.DEFAULT_TASK_LIST
         cal = self.caldav_client.principal().calendar(name=list_name.strip())
         if uid:
             todo = cal.todo_by_uid(uid)
@@ -485,12 +557,18 @@ class Tools:
 
     @caldav_safe
     def get_calendars(self) -> list[str]:
-        """Retreive all available calendars"""
-        return [
+        """Retrieve only whitelisted calendars"""
+        all_calendars = [
             c.name
             for c in self.caldav_client.principal().calendars()
             if self.H.get_cal_type(c) == "event"
         ]
+        whitelisted = [
+            name
+            for name in all_calendars
+            if self.H.is_whitelisted(self.valves.CALENDAR_WHITELIST, name)
+        ]
+        return whitelisted
 
     @caldav_safe
     def create_calendar_event(
@@ -506,9 +584,17 @@ class Tools:
         __user__: dict = {},
     ) -> str:
         """Add event to specified calendar."""
+        try:
+            calendar_name = Tools.H.validate_calendar(
+                self.valves.CALENDAR_WHITELIST,
+                calendar_name,
+                self.valves.DEFAULT_CALENDAR,
+            )
+        except Exception as e:
+            return {"result": "False", "details": f"create_calendar_event: {e}"}
+
         zi = ZoneInfo(__user__["timezone"])
         now = datetime.now(zi).replace(second=0, microsecond=0)
-        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         cal = self.caldav_client.principal().calendar(name=calendar_name.strip())
 
         uid = str(uuid.uuid4())
@@ -563,7 +649,15 @@ class Tools:
         location: Optional[str] = None,
     ) -> str:
         """Add task to specified list. Returns uid of created task."""
-        list_name = list_name or self.valves.DEFAULT_TASK_LIST
+        try:
+            list_name = Tools.H.validate_task_list(
+                self.valves.TASK_LIST_WHITELIST,
+                list_name,
+                self.valves.DEFAULT_TASK_LIST,
+            )
+        except Exception as e:
+            return {"result": "False", "details": f"add_task: {e}"}
+
         uid = str(uuid.uuid4())
         p = self.caldav_client.principal()
         valid_lists = [
@@ -591,7 +685,15 @@ class Tools:
         list_name: str | None = None,
     ) -> None:
         """Mark a task as completed"""
-        list_name = list_name or self.valves.DEFAULT_TASK_LIST
+        try:
+            list_name = Tools.H.validate_task_list(
+                self.valves.TASK_LIST_WHITELIST,
+                list_name,
+                self.valves.DEFAULT_TASK_LIST,
+            )
+        except Exception as e:
+            return {"result": "False", "details": f"complete_task: {e}"}
+
         cal = self.caldav_client.principal().calendar(name=list_name)
         if uid:
             todo = cal.todo_by_uid(uid)
@@ -627,11 +729,19 @@ class Tools:
         new_rrule: Optional[str] = None,
     ) -> None:
         """Update event properties by summary or uid."""
+        try:
+            calendar_name = Tools.H.validate_calendar(
+                self.valves.CALENDAR_WHITELIST,
+                calendar_name,
+                self.valves.DEFAULT_CALENDAR,
+            )
+        except Exception as e:
+            return {"result": "False", "details": f"edit_calendar_event: {e}"}
+
         if not (summary or uid):
             raise Exception("Error: must provide a summary or uid")
         tz = __user__["timezone"]
         zi = ZoneInfo(tz)
-        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         cal = self.caldav_client.principal().calendar(name=calendar_name.strip())
         if uid:
             e = cal.event_by_uid(uid)
@@ -686,10 +796,18 @@ class Tools:
         calendar_name: str | None = None,
         __user__: dict = {},
     ) -> list[dict[str, Any]]:
-        """Retreive upcoming events on specified calendar"""
+        """Retrieve upcoming events on specified calendar"""
+        try:
+            calendar_name = Tools.H.validate_calendar(
+                self.valves.CALENDAR_WHITELIST,
+                calendar_name,
+                self.valves.DEFAULT_CALENDAR,
+            )
+        except Exception as e:
+            return {"result": "False", "details": f"get_calendar_events: {e}"}
+
         # future events. Prevent RRULE expansion
         event_data = []
-        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         for e in (
             self.caldav_client.principal()
             .calendar(name=calendar_name.strip())
@@ -729,9 +847,17 @@ class Tools:
         calendar_name: str | None = None,
     ) -> None:
         """Delete event from specified calendar"""
+        try:
+            calendar_name = Tools.H.validate_calendar(
+                self.valves.CALENDAR_WHITELIST,
+                calendar_name,
+                self.valves.DEFAULT_CALENDAR,
+            )
+        except Exception as e:
+            return {"result": "False", "details": f"delete_calendar_event: {e}"}
+
         if not (summary or uid):
             raise Exception("must provide a summary or uid")
-        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         cal = self.caldav_client.principal().calendar(name=calendar_name.strip())
         if uid:
             e = cal.event_by_uid(uid)
