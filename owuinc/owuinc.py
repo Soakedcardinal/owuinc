@@ -241,8 +241,7 @@ class Tools:
             whitelist = {s.strip() for s in whitelist_str.split(",") if s.strip()}
             return item in whitelist
 
-        @staticmethod
-        def validate_calendar(
+        def validate_calendar(self,
             whitelist_str: str, calendar_name: str | None, default: str
         ) -> str:
             """Validate calendar against whitelist."""
@@ -251,12 +250,11 @@ class Tools:
             calendar_name = (calendar_name or default).strip()
             if not calendar_name:
                 raise Exception("Calendar whitelist not configured")
-            if not Helpers.is_whitelisted(whitelist_str, calendar_name):
+            if not self.is_whitelisted(whitelist_str, calendar_name):
                 raise Exception(f"{calendar_name!r} not in whitelist")
             return calendar_name
 
-        @staticmethod
-        def validate_task_list(
+        def validate_task_list(self,
             whitelist_str: str, list_name: str | None, default: str
         ) -> str:
             """Validate task list against whitelist."""
@@ -265,7 +263,7 @@ class Tools:
             list_name = (list_name or default).strip()
             if not list_name:
                 raise Exception("Task list whitelist not configured")
-            if not Helpers.is_whitelisted(whitelist_str, list_name):
+            if not self.is_whitelisted(whitelist_str, list_name):
                 raise Exception(f"{list_name!r} not in whitelist")
             return list_name
 
