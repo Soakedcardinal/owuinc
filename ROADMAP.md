@@ -1,5 +1,9 @@
+
+
+
 ### **Phase 1: Stability & Critical Fixes**
 
+*   [ ] Fix intermittent bug: no url valve when using for multiple instances of tool (?)
 *   [ ] Add fallback timezone if __user__["timezone"] not set (e.g. utc)
 *   [ ] Audit test_helpers.py
 *   [ ] Implement proper input validation beyond path validation.
