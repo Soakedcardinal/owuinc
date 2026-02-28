@@ -6,7 +6,6 @@
 * Click the gear icon next to the new `owuinc` tool to open Valves
 
 # 2. Configure Valves
-* NextCloud > 
 
 * Go to NextCloud 
 * In the Files app > Files settings, locate your WebDAV username from the WebDAV URL `https://your-nextcloud-domain.com/remote.php/dav/files/<WEBDAV_USERNAME>`
@@ -19,23 +18,27 @@
     * Nextcloud Username
     * Nextcloud App Password
 
-* Set the `Sandbox Dir` valve to somewhere under your nextcloud root to prevent unwanted file access. Must be a relative folder name (e.g. `sandbox`), or empty to use the root. 
+* Set the `Sandbox Dir` valve to somewhere under your nextcloud root. Must be a relative folder name (e.g. `sandbox`), or empty to use the root. 
 * No leading `/` – the code adds it.
 
-* Fill in `Default Calendar` and `Default Task List` to your match your desired calendar/task list names. If you don't specify, the code will try to use `main` calendar and `todo` task lists - if these don't exist it will cause an error.
+* Configure calendars and task lists:
+    * Set `Default Calendar` to a calendar name in your whitelist
+    * Set `Default Task List` to a task list name in your whitelist
+    * Set `Calendar Whitelist` to comma-separated list of allowed calendars (e.g., `work, personal`)
+    * Set `Task List Whitelist` to comma-separated list of allowed task lists (e.g., `main-tasks, shopping`)
+    
+* IMPORTANT: Calendars and task lists are ONLY accessible if explicitly listed in the respective whitelist. Both the whitelist AND default values must be configured for operations to work.
 
 # 3. Configure Model
 * Pick or create a model to use e.g. `owuinc`.
 * Open the model page in OpenWebUI > Workspace > Models > `owuinc`
 
-* Add to the system prompt (update the defaults to match your nextcloud setup):
+* Add to the system prompt (update the defaults to match your valves):
 ```text
-You are a digital assistant.
-
 Task Priorities: 1 = high, 9 = low, 0 = none
 Calendar Functions: Provide `start` and `end` arguments as an ISO 8601-style string without a timezone offset, e.g. `2026-02-01T15:30`. 
-Default `calendar_name`: `main`
-Default `list_name`: `todo`
+Default `calendar_name`: `<Default Calendar>`
+Default `list_name`: `<Default Task List>`
 ```
 
 * Set Advanced Params > Show > Function Calling to `Native`
