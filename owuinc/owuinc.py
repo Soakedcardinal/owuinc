@@ -340,12 +340,12 @@ class Tools:
                 vh={vh}, \
                 cached={self._caldav_client is not None}"
         )
+        log(f"NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
+        log(f"NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
         if self._caldav_client is None or self._valve_hash != vh:
             old_hash = self._valve_hash
             self._valve_hash = vh
             log(f"caldav_client: RECREATING (hash changed from {old_hash} to {vh})")
-            log(f"  NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
-            log(f"  NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
             url = f"{self.valves.NEXTCLOUD_BASE_URL}/remote.php/dav/"
             log(f"caldav_client: creating get_davclient with url={url!r}")
             try:
