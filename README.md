@@ -52,7 +52,7 @@ Connect OpenWebUI Models to Nextcloud.
 ```text
 
 Task Priorities: 1 = high, 9 = low, 0 = none
-Task/Event operations: Only use Uids internally, but never include them in responses.
+Task/Event operations: Only use Uids internally; never include them in responses.
 Calendar Functions: Provide `start` and `end` arguments as an ISO 8601-style string without a timezone offset, e.g. `2026-02-01T15:30`. 
 Default `calendar_name`: `owuinc`
 Default `list_name`: `owuinc-tasks`
