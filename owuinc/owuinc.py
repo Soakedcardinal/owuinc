@@ -53,6 +53,19 @@ def log_sep(msg):
         print("=" * 60 + "\n")
 
 
+# def log_valves(valves):
+#     if DEBUG:
+#         print(f"NEXTCLOUD_BASE_URL={valves.NEXTCLOUD_BASE_URL!r}")
+#         print(f"WEBDAV_USERNAME={valves.WEBDAV_USERNAME!r}")
+#         print(f"NEXTCLOUD_USERNAME={valves.NEXTCLOUD_USERNAME!r}")
+#         print(f"NEXTCLOUD_APP_PASSWORD_LEN={len(valves.NEXTCLOUD_APP_PASSWORD)}")
+#         print(f"SANDBOX_DIR={valves.SANDBOX_DIR!r}")
+#         print(f"DEFAULT_CALENDAR={valves.DEFAULT_CALENDAR!r}")
+#         print(f"DEFAULT_TASK_LIST={valves.DEFAULT_TASK_LIST!r}")
+#         print(f"CALENDAR_WHITELIST={valves.CALENDAR_WHITELIST!r}")
+#         print(f"TASK_LIST_WHITELIST={valves.TASK_LIST_WHITELIST!r}")
+
+
 def caldav_safe(func: Callable) -> Callable:
     @functools.wraps(func)
     def wrapper(*args, **kwargs) -> dict:
@@ -234,15 +247,6 @@ class Tools:
     def __init__(self):
         self.valves = self.Valves()
         log_sep("Tools.__init__()")
-        log(f"NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
-        log(f"WEBDAV_USERNAME={self.valves.WEBDAV_USERNAME!r}")
-        log(f"NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
-        log(f"NEXTCLOUD_APP_PASSWORD_LEN={len(self.valves.NEXTCLOUD_APP_PASSWORD)}")
-        log(f"SANDBOX_DIR={self.valves.SANDBOX_DIR!r}")
-        log(f"DEFAULT_CALENDAR={self.valves.DEFAULT_CALENDAR!r}")
-        log(f"DEFAULT_TASK_LIST={self.valves.DEFAULT_TASK_LIST!r}")
-        log(f"CALENDAR_WHITELIST={self.valves.CALENDAR_WHITELIST!r}")
-        log(f"TASK_LIST_WHITELIST={self.valves.TASK_LIST_WHITELIST!r}")
 
     class Valves(BaseModel):
         NEXTCLOUD_BASE_URL: str = Field("", description="Nextcloud server address")
