@@ -32,6 +32,7 @@ from webdav3.exceptions import (
     WebDavException,
 )
 
+# DEBUG = True
 DEBUG = False
 
 
@@ -122,10 +123,117 @@ def webdav_safe(func: Callable) -> Callable:
     return wrapper
 
 
+def validate_path(path, valves):
+    prefix = valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+    if not path:
+        return prefix
+    path = path.strip()
+    prev = None
+    while prev != path:
+        prev = path
+        path = urllib.parse.unquote(path)
+    if ".." in path:
+        raise Exception("Invalid Path: traversal not allowed")
+    if path in ("", ".", "/"):
+        return prefix
+    full_path = prefix + os.path.normpath(path)
+    if full_path.startswith(prefix):
+        return full_path
+    raise Exception("Invalid Path: outside sandbox.")
+
+
+def parse_reminders(reminders: list | None = None) -> list:
+    if not reminders:
+        return []
+    parsed = []
+    for r in reminders:
+        minutes = 0
+        if r in ["0", "0min", "0 min"]:
+            minutes = 0
+        elif r.endswith("min") or r.endswith("mins") or r.endswith("minutes"):
+            match = re.search(r"\d+", r)
+            if match is not None:
+                minutes = int(match.group())
+        elif (
+            r.endswith("h")
+            or r.endswith("hr")
+            or r.endswith("hour")
+            or r.endswith("hours")
+        ):
+            match = re.search(r"\d+", r)
+            if match is not None:
+                hours = int(match.group())
+                minutes = hours * 60
+        elif r.endswith("d") or r.endswith("day") or r.endswith("days"):
+            match = re.search(r"\d+", r)
+            if match is not None:
+                days = int(match.group())
+                minutes = days * 1440
+        parsed.append({"minutes": minutes, "action": "DISPLAY"})
+    return parsed
+
+
+def get_cal_type(calendar: Calendar | None = None):
+    if not calendar:
+        return "none"
+    sccs = calendar.get_properties().get(
+        "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set"
+    )
+    if not sccs:
+        return "unknown"
+    kinds = [comp.get("name") for comp in sccs if comp.tag.endswith("comp")]
+    has_event = "VEVENT" in kinds
+    has_todo = "VTODO" in kinds
+    if has_event and not has_todo:
+        return "event"
+    elif has_todo and not has_event:
+        return "todo"
+    elif has_event and has_todo:
+        return "mixed"
+    else:
+        return "unknown"
+
+
+def is_whitelisted(whitelist_str: str, item: str) -> bool:
+    """Check if item is in whitelist"""
+    if not whitelist_str:
+        return False
+    whitelist = {s.strip() for s in whitelist_str.split(",") if s.strip()}
+    return item in whitelist
+
+
+def validate_calendar(valves, calendar_name: str | None) -> str:
+    """Validate calendar against whitelist."""
+    whitelist_str = valves.CALENDAR_WHITELIST
+    default = valves.DEFAULT_CALENDAR
+    if not whitelist_str:
+        raise Exception("Calendar whitelist not configured")
+    calendar_name = (calendar_name or default).strip()
+    if not calendar_name:
+        raise Exception("Calendar whitelist not configured")
+    if not is_whitelisted(whitelist_str, calendar_name):
+        raise Exception(f"{calendar_name!r} not in whitelist")
+    return calendar_name
+
+
+def validate_task_list(valves, list_name: str | None) -> str:
+    """Validate task list against whitelist."""
+    whitelist_str = valves.TASK_LIST_WHITELIST
+    default = valves.DEFAULT_TASK_LIST
+    if not whitelist_str:
+        raise Exception("Task list whitelist not configured")
+    list_name = (list_name or default).strip()
+    if not list_name:
+        raise Exception("Task list whitelist not configured")
+    if not is_whitelisted(whitelist_str, list_name):
+        raise Exception(f"{list_name!r} not in whitelist")
+    return list_name
+
+
 class Tools:
     def __init__(self):
-        log_sep("Tools.__init__()")
         self.valves = self.Valves()
+        log_sep("Tools.__init__()")
         log(f"NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
         log(f"WEBDAV_USERNAME={self.valves.WEBDAV_USERNAME!r}")
         log(f"NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
@@ -135,7 +243,6 @@ class Tools:
         log(f"DEFAULT_TASK_LIST={self.valves.DEFAULT_TASK_LIST!r}")
         log(f"CALENDAR_WHITELIST={self.valves.CALENDAR_WHITELIST!r}")
         log(f"TASK_LIST_WHITELIST={self.valves.TASK_LIST_WHITELIST!r}")
-        self.H = self.Helpers(self.valves)
 
     class Valves(BaseModel):
         NEXTCLOUD_BASE_URL: str = Field("", description="Nextcloud server address")
@@ -162,145 +269,12 @@ class Tools:
         )
         pass  # required for parsing
 
-    class Helpers:
-        def __init__(self, valves):
-            log_sep("Helpers.__init__()")
-            self.valves = valves
-            log("  Helpers initialized with valves reference")
-
-        def get_valve_hash(self):
-            log("get_valve_hash() called")
-            log(f"NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
-            log(f"WEBDAV_USERNAME={self.valves.WEBDAV_USERNAME!r}")
-            log(f"NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
-            pw_len = len(self.valves.NEXTCLOUD_APP_PASSWORD)
-            log(f"  NEXTCLOUD_APP_PASSWORD_LEN={pw_len}")
-            hash_value = hash(
-                (
-                    self.valves.NEXTCLOUD_BASE_URL,
-                    self.valves.WEBDAV_USERNAME,
-                    self.valves.NEXTCLOUD_USERNAME,
-                    self.valves.NEXTCLOUD_APP_PASSWORD,
-                )
-            )
-            log(f"  hash={hash_value}")
-            return hash_value
-
-        @staticmethod
-        def validate_path(path, sandbox):
-            prefix = sandbox.strip().rstrip("/") + "/"
-            if not path:
-                return prefix
-            path = path.strip()
-            prev = None
-            while prev != path:
-                prev = path
-                path = urllib.parse.unquote(path)
-            if ".." in path:
-                raise Exception("Invalid Path: traversal not allowed")
-            if path in ("", ".", "/"):
-                return prefix
-            full_path = prefix + os.path.normpath(path)
-            if full_path.startswith(prefix):
-                return full_path
-            raise Exception("Invalid Path: outside sandbox.")
-
-        @staticmethod
-        def parse_reminders(reminders: list | None = None) -> list:
-            if not reminders:
-                return []
-            parsed = []
-            for r in reminders:
-                minutes = 0
-                if r in ["0", "0min", "0 min"]:
-                    minutes = 0
-                elif r.endswith("min") or r.endswith("mins") or r.endswith("minutes"):
-                    match = re.search(r"\d+", r)
-                    if match is not None:
-                        minutes = int(match.group())
-                elif (
-                    r.endswith("h")
-                    or r.endswith("hr")
-                    or r.endswith("hour")
-                    or r.endswith("hours")
-                ):
-                    match = re.search(r"\d+", r)
-                    if match is not None:
-                        hours = int(match.group())
-                        minutes = hours * 60
-                elif r.endswith("d") or r.endswith("day") or r.endswith("days"):
-                    match = re.search(r"\d+", r)
-                    if match is not None:
-                        days = int(match.group())
-                        minutes = days * 1440
-                parsed.append({"minutes": minutes, "action": "DISPLAY"})
-            return parsed
-
-        @staticmethod
-        def get_cal_type(calendar: Calendar | None = None):
-            if not calendar:
-                return "none"
-            sccs = calendar.get_properties().get(
-                "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set"
-            )
-            if not sccs:
-                return "unknown"
-            kinds = [comp.get("name") for comp in sccs if comp.tag.endswith("comp")]
-            has_event = "VEVENT" in kinds
-            has_todo = "VTODO" in kinds
-            if has_event and not has_todo:
-                return "event"
-            elif has_todo and not has_event:
-                return "todo"
-            elif has_event and has_todo:
-                return "mixed"
-            else:
-                return "unknown"
-
-        @staticmethod
-        def is_whitelisted(whitelist_str: str, item: str) -> bool:
-            """Check if item is in whitelist"""
-            if not whitelist_str:
-                return False
-            whitelist = {s.strip() for s in whitelist_str.split(",") if s.strip()}
-            return item in whitelist
-
-        def validate_calendar(
-            self, whitelist_str: str, calendar_name: str | None, default: str
-        ) -> str:
-            """Validate calendar against whitelist."""
-            if not whitelist_str:
-                raise Exception("Calendar whitelist not configured")
-            calendar_name = (calendar_name or default).strip()
-            if not calendar_name:
-                raise Exception("Calendar whitelist not configured")
-            if not self.is_whitelisted(whitelist_str, calendar_name):
-                raise Exception(f"{calendar_name!r} not in whitelist")
-            return calendar_name
-
-        def validate_task_list(
-            self, whitelist_str: str, list_name: str | None, default: str
-        ) -> str:
-            """Validate task list against whitelist."""
-            if not whitelist_str:
-                raise Exception("Task list whitelist not configured")
-            list_name = (list_name or default).strip()
-            if not list_name:
-                raise Exception("Task list whitelist not configured")
-            if not self.is_whitelisted(whitelist_str, list_name):
-                raise Exception(f"{list_name!r} not in whitelist")
-            return list_name
-
     @property
     def webdav_client(self):
-        log("webdav_client: creating new Client")
-        log(f"NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
-        log(f"WEBDAV_USERNAME={self.valves.WEBDAV_USERNAME!r}")
-        log(f"NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
         base = self.valves.NEXTCLOUD_BASE_URL
         wd_user = self.valves.WEBDAV_USERNAME
         url = f"{base}/remote.php/dav/files/{wd_user}/"
-        log(f"webdav_client: creating Client with url={url!r}")
+        log(f"create webdav_client with url={url!r}")
         try:
             webdav_client = Client(
                 {
@@ -317,11 +291,8 @@ class Tools:
 
     @property
     def caldav_client(self):
-        log("caldav_client: creating new get_davclient")
-        log(f"NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
-        log(f"NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
         url = f"{self.valves.NEXTCLOUD_BASE_URL}/remote.php/dav/"
-        log(f"caldav_client: creating get_davclient with url={url!r}")
+        log(f"creating new caldav_client with url={url!r}")
         try:
             caldav_client = get_davclient(
                 username=self.valves.NEXTCLOUD_USERNAME,
@@ -330,11 +301,10 @@ class Tools:
                 features="nextcloud",
                 enable_rfc6764=False,
             )
-            log("caldav_client: get_davclient created successfully")
             return caldav_client
         except Exception as e:
             log_err(
-                f"caldav_client: failed to create get_davclient: \
+                f"Failed to create caldav_client: \
                     {type(e).__name__}: {e}"
             )
             raise
@@ -345,14 +315,13 @@ class Tools:
         path: str,
     ) -> None:
         """Create new directory"""
-        self.webdav_client.mkdir(self.H.validate_path(path, self.valves.SANDBOX_DIR))
+        self.webdav_client.mkdir(validate_path(path, self.valves))
 
     @webdav_safe
     def ls(self, path: str | None = None) -> list[str]:
         """List files and directories"""
-        sandbox = self.valves.SANDBOX_DIR
-        p = self.H.validate_path(path, sandbox)
-        prefix = f"{sandbox.strip().rstrip('/')}/"
+        p = validate_path(path, self.valves)
+        prefix = f"{self.valves.SANDBOX_DIR.strip().rstrip('/')}/"
         paths = self.webdav_client.list(p)
         parent = p.strip(prefix).strip("/")
         result_list = [p for p in paths if p != prefix and p.strip("/") != parent]
@@ -367,9 +336,9 @@ class Tools:
         """Write to a file, overwriting existing content"""
         if content is None:
             content = ""
-        self.webdav_client.resource(
-            self.H.validate_path(path, self.valves.SANDBOX_DIR)
-        ).read_from(BytesIO(content.encode("utf-8")))
+        self.webdav_client.resource(validate_path(path, self.valves)).read_from(
+            BytesIO(content.encode("utf-8"))
+        )
 
     @webdav_safe
     def cat(
@@ -378,9 +347,7 @@ class Tools:
     ) -> str:
         """Read a file"""
         buf = BytesIO()
-        self.webdav_client.resource(
-            self.H.validate_path(path, self.valves.SANDBOX_DIR)
-        ).write_to(buf)
+        self.webdav_client.resource(validate_path(path, self.valves)).write_to(buf)
         return buf.getvalue().decode("utf-8")
 
     @webdav_safe
@@ -393,9 +360,7 @@ class Tools:
         if content is None:
             content = ""
         buf = BytesIO()
-        res = self.webdav_client.resource(
-            self.H.validate_path(path, self.valves.SANDBOX_DIR)
-        )
+        res = self.webdav_client.resource(validate_path(path, self.valves))
         res.write_to(buf)
         res.read_from(
             BytesIO((buf.getvalue().decode("utf-8") + content).encode("utf-8"))
@@ -406,7 +371,7 @@ class Tools:
         """Deletes files/directories"""
         C = self.webdav_client
         for p in paths:
-            C.clean(self.H.validate_path(p, self.valves.SANDBOX_DIR))
+            C.clean(validate_path(p, self.valves))
 
     @webdav_safe
     def mv(
@@ -416,8 +381,8 @@ class Tools:
     ) -> None:
         """Move/rename a file or directory"""
         self.webdav_client.move(
-            remote_path_from=self.H.validate_path(src, self.valves.SANDBOX_DIR),
-            remote_path_to=self.H.validate_path(dst, self.valves.SANDBOX_DIR),
+            remote_path_from=validate_path(src, self.valves),
+            remote_path_to=validate_path(dst, self.valves),
         )
 
     @webdav_safe
@@ -428,8 +393,8 @@ class Tools:
     ) -> None:
         """Copy a file or directory."""
         self.webdav_client.copy(
-            remote_path_from=self.H.validate_path(src, self.valves.SANDBOX_DIR),
-            remote_path_to=self.H.validate_path(dst, self.valves.SANDBOX_DIR),
+            remote_path_from=validate_path(src, self.valves),
+            remote_path_to=validate_path(dst, self.valves),
         )
 
     @caldav_safe
@@ -440,12 +405,10 @@ class Tools:
         all_lists = [
             c.name
             for c in self.caldav_client.principal().calendars()
-            if self.H.get_cal_type(c) == "todo"
+            if get_cal_type(c) == "todo"
         ]
         log(f"get_task_lists() - found {len(all_lists)} todo lists")
-        whitelisted = [
-            name for name in all_lists if self.H.is_whitelisted(whitelist, name)
-        ]
+        whitelisted = [name for name in all_lists if is_whitelisted(whitelist, name)]
         log(f"get_task_lists() - whitelisted: {whitelisted}")
         return whitelisted
 
@@ -453,10 +416,9 @@ class Tools:
     def get_tasks(self, list_name: str | None = None) -> list[dict] | Any:
         """Retrieve task from specified list"""
         try:
-            list_name = self.H.validate_task_list(
-                self.valves.TASK_LIST_WHITELIST,
+            list_name = validate_task_list(
+                self.valves,
                 list_name,
-                self.valves.DEFAULT_TASK_LIST,
             )
         except Exception as e:
             return {"result": "False", "details": f"get_tasks: {e}"}
@@ -517,10 +479,9 @@ class Tools:
     ):
         """Update task properties by summary or uid"""
         try:
-            list_name = self.H.validate_task_list(
-                self.valves.TASK_LIST_WHITELIST,
+            list_name = validate_task_list(
+                self.valves,
                 list_name,
-                self.valves.DEFAULT_TASK_LIST,
             )
         except Exception as e:
             return {"result": "False", "details": f"edit_task: {e}"}
@@ -564,10 +525,9 @@ class Tools:
     ):
         """Delete task from specified list by summary or uid"""
         try:
-            list_name = self.H.validate_task_list(
-                self.valves.TASK_LIST_WHITELIST,
+            list_name = validate_task_list(
+                self.valves,
                 list_name,
-                self.valves.DEFAULT_TASK_LIST,
             )
         except Exception as e:
             return {"result": "False", "details": f"delete_task: {e}"}
@@ -593,19 +553,19 @@ class Tools:
     @caldav_safe
     def get_calendars(self) -> list[str]:
         """Retrieve only whitelisted calendars"""
-        log(f"get_calendars() - CALENDAR_WHITELIST={self.valves.CALENDAR_WHITELIST!r}")
+        log(f"CALENDAR_WHITELIST={self.valves.CALENDAR_WHITELIST!r}")
         all_calendars = [
             c.name
             for c in self.caldav_client.principal().calendars()
-            if self.H.get_cal_type(c) == "event"
+            if get_cal_type(c) == "event"
         ]
-        log(f"get_calendars() - found {len(all_calendars)} event calendars")
+        log(f"found {len(all_calendars)} event calendars")
         whitelisted = [
             name
             for name in all_calendars
-            if self.H.is_whitelisted(self.valves.CALENDAR_WHITELIST, name)
+            if is_whitelisted(self.valves.CALENDAR_WHITELIST, name)
         ]
-        log(f"get_calendars() - whitelisted: {whitelisted}")
+        log(f"whitelisted: {whitelisted}")
         return whitelisted
 
     @caldav_safe
@@ -623,11 +583,7 @@ class Tools:
     ):
         """Add event to specified calendar."""
         try:
-            calendar_name = self.H.validate_calendar(
-                self.valves.CALENDAR_WHITELIST,
-                calendar_name,
-                self.valves.DEFAULT_CALENDAR,
-            )
+            calendar_name = validate_calendar(self.valves, calendar_name)
         except Exception as x:
             return {"result": "False", "details": f"create_calendar_event: {x}"}
 
@@ -666,7 +622,7 @@ class Tools:
             e.add("rrule", rrule)
 
         if alarms:
-            for r in self.H.parse_reminders(alarms):
+            for r in parse_reminders(alarms):
                 a = Alarm()
                 a.add("action", "DISPLAY")
                 a.add("trigger", timedelta(minutes=-r.get("minutes")))
@@ -688,19 +644,16 @@ class Tools:
     ):
         """Add task to specified list. Returns uid of created task."""
         try:
-            list_name = self.H.validate_task_list(
-                self.valves.TASK_LIST_WHITELIST,
+            list_name = validate_task_list(
+                self.valves,
                 list_name,
-                self.valves.DEFAULT_TASK_LIST,
             )
         except Exception as e:
             return {"result": "False", "details": f"add_task: {e}"}
 
         uid = str(uuid.uuid4())
         p = self.caldav_client.principal()
-        valid_lists = [
-            c.name for c in p.calendars() if self.H.get_cal_type(c) == "todo"
-        ]
+        valid_lists = [c.name for c in p.calendars() if get_cal_type(c) == "todo"]
         if list_name not in valid_lists:
             log_err("invalid task list")
             raise Exception("invalid task list")
@@ -724,10 +677,9 @@ class Tools:
     ):
         """Mark a task as completed"""
         try:
-            list_name = self.H.validate_task_list(
-                self.valves.TASK_LIST_WHITELIST,
+            list_name = validate_task_list(
+                self.valves,
                 list_name,
-                self.valves.DEFAULT_TASK_LIST,
             )
         except Exception as e:
             return {"result": "False", "details": f"complete_task: {e}"}
@@ -768,11 +720,7 @@ class Tools:
     ):
         """Update event properties by summary or uid."""
         try:
-            calendar_name = self.H.validate_calendar(
-                self.valves.CALENDAR_WHITELIST,
-                calendar_name,
-                self.valves.DEFAULT_CALENDAR,
-            )
+            calendar_name = validate_calendar(self.valves, calendar_name)
         except Exception as x:
             return {"result": "False", "details": f"edit_calendar_event: {x}"}
 
@@ -820,7 +768,7 @@ class Tools:
             for sub in valarm_subs[:]:  # prevent index shifting
                 e.component.subcomponents.remove(sub)
             # add new
-            for reminder in self.H.parse_reminders(new_alarms):
+            for reminder in parse_reminders(new_alarms):
                 a = Alarm()
                 a.add("action", "DISPLAY")
                 a.add("trigger", timedelta(minutes=-reminder.get("minutes")))
@@ -836,11 +784,7 @@ class Tools:
     ):
         """Retrieve upcoming events on specified calendar"""
         try:
-            calendar_name = self.H.validate_calendar(
-                self.valves.CALENDAR_WHITELIST,
-                calendar_name,
-                self.valves.DEFAULT_CALENDAR,
-            )
+            calendar_name = validate_calendar(self.valves, calendar_name)
         except Exception as x:
             return {"result": "False", "details": f"get_calendar_events: {x}"}
 
@@ -886,11 +830,7 @@ class Tools:
     ):
         """Delete event from specified calendar"""
         try:
-            calendar_name = self.H.validate_calendar(
-                self.valves.CALENDAR_WHITELIST,
-                calendar_name,
-                self.valves.DEFAULT_CALENDAR,
-            )
+            calendar_name = validate_calendar(self.valves, calendar_name)
         except Exception as x:
             return {"result": "False", "details": f"delete_calendar_event: {x}"}
 
