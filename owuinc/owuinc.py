@@ -239,13 +239,14 @@ class Tools:
             default="owuinc", description="Default calendar for event operations"
         )
         DEFAULT_TASK_LIST: str = Field(
-            default="owuinc", description="Default task list for task operations"
+            default="owuinc-tasks", description="Default task list for task operations"
         )
         CALENDAR_WHITELIST: str = Field(
             default="owuinc", description="Comma-separated list of allowed calendars"
         )
         TASK_LIST_WHITELIST: str = Field(
-            default="owuinc", description="Comma-separated list of allowed task lists"
+            default="owuinc-tasks",
+            description="Comma-separated list of allowed task lists",
         )
         pass  # required for parsing
 
@@ -269,8 +270,7 @@ class Tools:
     @property
     def caldav_client(self):
         base = self.valves.NEXTCLOUD_BASE_URL
-        wd_user = self.valves.WEBDAV_USERNAME
-        url = f"{base}/remote.php/dav/calendars/{wd_user}/"
+        url = f"{base}/remote.php/dav"
         log(f"creating new caldav_client with url={url!r}")
         try:
             caldav_client = get_davclient(

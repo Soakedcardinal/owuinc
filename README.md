@@ -42,7 +42,7 @@ Connect OpenWebUI Models to Nextcloud.
     * Set `Default Calendar` to a calendar name in your whitelist
     * Set `Default Task List` to a task list name in your whitelist
     * Set `Calendar Whitelist` to comma-separated list of allowed calendars (e.g., `work, personal`)
-    * Set `Task List Whitelist` to comma-separated list of allowed task lists (e.g., `main-tasks, shopping`)
+    * Set `Task List Whitelist` to comma-separated list of allowed task lists (e.g., `main, shopping`)
 * IMPORTANT: Calendars and task lists are ONLY accessible if explicitly listed in the respective whitelist. Both the whitelist AND default values must be configured for operations to work.
 
 ### 3. Configure Model
@@ -55,7 +55,7 @@ Task Priorities: 1 = high, 9 = low, 0 = none
 Task/Event operations: Only use Uids internally, but never include them in responses.
 Calendar Functions: Provide `start` and `end` arguments as an ISO 8601-style string without a timezone offset, e.g. `2026-02-01T15:30`. 
 Default `calendar_name`: `owuinc`
-Default `list_name`: `owuinc`
+Default `list_name`: `owuinc-tasks`
 ```
 * Set Advanced Params > Show > Function Calling to `Native`
 * Under Tools, tick the checkbox to enable the `owuinc` tool

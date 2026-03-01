@@ -1,7 +1,8 @@
 # Roadmap
 
 ## Immediate Priorities
-- [ ] Fix intermittent bug: no url valve when using multiple instances (validate base URL?)
+
+- [ ] handle mixed vevent/todo
 - [ ] Create cal/task lists / sandbox dir automatically if they don't exist
 - [ ] Move from single sandbox to file/directory whitelist
 - [ ] Add fallback timezone if `__user__["timezone"]` not set (e.g. utc)
@@ -14,8 +15,7 @@
 - [ ] Cross-list lookup: identify event/task regardless of calendar or task list
 - [ ] Bulk deletion: modify `delete_calendar_event` to accept list `event_summaries[]`
 - [ ] Handle multiple matches in `delete_calendar_event` without expanding `rrule`
-- [ ] Implement whitelist functionality for task lists
-- [ ] Add `is_valid_cal(self)` to validate calendar/list name args
+
 
 ## Date & String Handling
 - [ ] Fix all-day date edge case: subtract one day from `dtend` when it's a date (not datetime)
