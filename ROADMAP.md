@@ -1,7 +1,7 @@
 # Roadmap
 
 ## Immediate Priorities
-
+- [ ] factory for default calendar / task list for accurate tool schema - remove from system prompt
 - [ ] handle mixed vevent/todo
 - [ ] Create cal/task lists / sandbox dir automatically if they don't exist
 - [ ] Move from single sandbox to file/directory whitelist

@@ -60,6 +60,9 @@ def create_chat(
     assistant_msg_id = str(uuid.uuid4())
     session_id = str(uuid.uuid4())
 
+    # prepend preamble to prompt
+    full_prompt = preamble + prompt
+
     # create chat
     payload = {
         "chat": {
@@ -70,7 +73,7 @@ def create_chat(
                 {
                     "id": user_msg_id,
                     "role": "user",
-                    "content": prompt,
+                    "content": full_prompt,
                     "timestamp": ts,
                     "models": [model],
                 },
@@ -90,7 +93,7 @@ def create_chat(
                     user_msg_id: {
                         "id": user_msg_id,
                         "role": "user",
-                        "content": prompt,
+                        "content": full_prompt,
                         "timestamp": ts,
                         "models": [model],
                     },
@@ -108,8 +111,6 @@ def create_chat(
         },
         "folder_id": FOLDER_ID,
     }
-
-    print("creating chat...")
     resp = requests.post(
         f"{URL}/v1/chats/new",
         headers=header,
@@ -117,16 +118,14 @@ def create_chat(
     )
     assert resp.ok, f"creating chat failed. Status Code: {resp.status_code}"
     chat_id = resp.json()["id"]
-
     assert chat_id, "creating chat failed. no chat id"
-    print(f"chat id: {chat_id!r}")
     chat_endpoint = f"{URL}/v1/chats/{chat_id}"
 
     # trigger completion
     completion_payload = {
         "chat_id": chat_id,
         "id": assistant_msg_id,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "user", "content": full_prompt}],
         "model": model,
         "stream": True,
         "background_tasks": {
@@ -143,7 +142,6 @@ def create_chat(
         "session_id": session_id,
         "tool_ids": tool_ids,
     }
-    print("trigger completion...")
     resp = requests.post(
         f"{URL}/chat/completions",
         headers=header,
@@ -155,7 +153,7 @@ def create_chat(
     # wait for assistant completion
     start = time.time()
     while time.time() - start < 240:
-        print("waiting for assistant completion...")
+        print("wait for completion...")
         resp = requests.get(chat_endpoint, headers=header_2)
         # Find the assistant message
         msg = (
@@ -167,9 +165,8 @@ def create_chat(
             .get("content", "")
         )
         if msg:
-            print("got msg")
             break
-        time.sleep(2)
+        time.sleep(3)
     else:
         raise TimeoutError("Assistant response timeout")
     assert msg, "assistant completion failed. no msg"
@@ -181,7 +178,6 @@ def create_chat(
         "session_id": session_id,
         "model": model,
     }
-    print("Complete Assistant Message...")
     resp = requests.post(
         f"{URL}/chat/completed",
         headers=header,
@@ -190,7 +186,6 @@ def create_chat(
     assert resp.ok, f"mark completed failed. Status Code: {resp.status_code}"
 
     # get final chat
-    print("get final chat...")
     resp = requests.get(chat_endpoint, headers=header_2)
     assert resp.ok, f"get final chat failed. Status Code: {resp.status_code}"
     # extract msg
@@ -207,407 +202,314 @@ def create_chat(
     return msg
 
 
-def print_sep():
-    print("----------------------------")
-
-
-def print_resp(text):
-    print_sep()
-    print(text)
+def pass_assert(text):
+    """Assert that response contains 'pass' and not 'fail'."""
+    assert "fail" not in text
+    assert "pass" in text
 
 
 def test_mv_file():
-    test_name = inspect.currentframe().f_code.co_name
-    setup_prompt = (
-        preamble
-        + """
-    1. rm(paths=['foo.txt']): \
-        {"result": "False","details":"rm: not found"} \
-            OR {"result": "True"}
-    2. rm(paths=['bar.txt']): \
-        {"result": "False","details":"rm: not found"} \
-            OR {"result": "True"}"""
-    )
-    print("sending setup prompt...")
-    text = create_chat(setup_prompt, f"{test_name} setup").strip()
-    print_resp(text)
-    assert "fail" not in text, "files_setup: 'fail' found in response"
-    assert "pass" in text, "files_setup: 'pass' not found in response"
+    setup_prompt = """
+1. rm(paths=['foo.txt']): \\
+    {"result": "False","details":"rm: not found"} \\
+    OR {"result": "True"}
+2. rm(paths=['bar.txt']): \\
+    {"result": "False","details":"rm: not found"} \\
+    OR {"result": "True"}"""
+    text = create_chat(
+        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
+    ).strip()
+    pass_assert(text)
 
-    prompt = (
-        preamble
-        + """
-    1. `write_file(path='foo.txt', content='lorem')`: True
-    2. `mv(src='foo.txt', dst='bar.txt')`: True
-    3. `cat(path='foo.txt')`: False
-    4. `cat(path='bar.txt')`: contains 'lorem'"""
-    )
-    text = create_chat(prompt, f"{test_name}").strip()
-    print_resp(text)
-    assert "fail" not in text
-    assert "pass" in text
+    prompt = """
+1. `write_file(path='foo.txt', content='lorem')`: True
+2. `mv(src='foo.txt', dst='bar.txt')`: True
+3. `cat(path='foo.txt')`: False
+4. `cat(path='bar.txt')`: contains 'lorem'"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    pass_assert(text)
 
 
 def test_cp_file():
-    test_name = inspect.currentframe().f_code.co_name
-    setup_prompt = (
-        preamble
-        + """
-    1. rm(paths=['foo.txt']): \
-        {"result": "False","details":"rm: not found"} \
-            OR {"result": "True"}
-    2. rm(paths=['bar.txt']): \
-        {"result": "False","details":"rm: not found"} \
-            OR {"result": "True"}"""
-    )
-    print("sending setup prompt...")
-    text = create_chat(setup_prompt, f"{test_name} setup").strip()
-    print_resp(text)
-    assert "fail" not in text, "files_setup: 'fail' found in response"
-    assert "pass" in text, "files_setup: 'pass' not found in response"
+    setup_prompt = """
+1. rm(paths=['foo.txt']): \\
+    {"result": "False","details":"rm: not found"} \\
+    OR {"result": "True"}
+2. rm(paths=['bar.txt']): \\
+    {"result": "False","details":"rm: not found"} \\
+    OR {"result": "True"}"""
+    text = create_chat(
+        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
+    ).strip()
+    pass_assert(text)
 
-    prompt = (
-        preamble
-        + """
-    1. `write_file(path='foo.txt', content='lorem')`: True
-    2. `cp(src='foo.txt', dst='bar.txt)`: True
-    3. `cat(path='foo.txt')`: contains 'lorem'
-    4. `cat(path='bar.txt')`: contains 'lorem'"""
-    )
-    text = create_chat(prompt, f"{test_name}").strip()
-    print_resp(text)
-    assert "fail" not in text
-    assert "pass" in text
+    prompt = """
+1. `write_file(path='foo.txt', content='lorem')`: True
+2. `cp(src='foo.txt', dst='bar.txt)`: True
+3. `cat(path='foo.txt')`: contains 'lorem'
+4. `cat(path='bar.txt')`: contains 'lorem'"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    pass_assert(text)
 
 
 def test_mv_dir():
-    test_name = inspect.currentframe().f_code.co_name
-    setup_prompt = (
-        preamble
-        + """
-    1. rm(paths=['foo']): \
-        {"result": "False","details":"rm: not found"} \
-            OR {"result": "True"}
-    2. rm(paths=['bar']): \
-        {"result": "False","details":"rm: not found"} \
-            OR {"result": "True"}"""
-    )
-    text = create_chat(setup_prompt, f"{test_name} setup").strip()
-    print_resp(text)
-    assert "fail" not in text, "dir_setup: 'fail' found in response"
-    assert "pass" in text, "dir_setup: 'pass' not found in response"
+    setup_prompt = """
+1. rm(paths=['foo']): \\
+    {"result": "False","details":"rm: not found"} \\
+    OR {"result": "True"}
+2. rm(paths=['bar']): \\
+    {"result": "False","details":"rm: not found"} \\
+    OR {"result": "True"}"""
+    text = create_chat(
+        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
+    ).strip()
+    pass_assert(text)
 
-    prompt = (
-        preamble
-        + """
-    1. `mkdir(path='foo')`: True
-    2. `mv(src='foo', dst='bar')`: True
-    3. `ls()`: does not contain 'foo' and contains 'bar'"""
-    )
+    prompt = """
+1. `mkdir(path='foo')`: True
+2. `mv(src='foo', dst='bar')`: True
+3. `ls()`: does not contain 'foo' and contains 'bar'"""
     text = create_chat(prompt).strip()
-    print_resp(text)
-    assert "fail" not in text
-    assert "pass" in text
+    pass_assert(text)
 
 
 def test_cp_dir():
-    test_name = inspect.currentframe().f_code.co_name
-    setup_prompt = (
-        preamble
-        + """
-    1. rm(paths=['foo']): \
-        {"result": "False","details":"rm: not found"} \
-            OR {"result": "True"}
-    2. rm(paths=['bar']): \
-        {"result": "False","details":"rm: not found"} \
-            OR {"result": "True"}"""
-    )
-    text = create_chat(setup_prompt, f"{test_name} setup").strip()
-    print_resp(text)
-    assert "fail" not in text, "dir_setup: 'fail' found in response"
-    assert "pass" in text, "dir_setup: 'pass' not found in response"
+    setup_prompt = """
+1. rm(paths=['foo']): \\
+    {"result": "False","details":"rm: not found"} \\
+    OR {"result": "True"}
+2. rm(paths=['bar']): \\
+    {"result": "False","details":"rm: not found"} \\
+    OR {"result": "True"}"""
+    text = create_chat(
+        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
+    ).strip()
+    pass_assert(text)
 
-    prompt = (
-        preamble
-        + """
-    1. `mkdir(path='foo')`: True
-    2. `cp(src='foo', dst='bar')`: True
-    3. `ls()`: contains 'foo' and 'bar'"""
-    )
-    text = create_chat(prompt, f"{test_name}").strip()
-    print_resp(text)
-    assert "fail" not in text
-    assert "pass" in text
+    prompt = """
+1. `mkdir(path='foo')`: True
+2. `cp(src='foo', dst='bar')`: True
+3. `ls()`: contains 'foo' and 'bar'"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    pass_assert(text)
 
 
 def test_append_file():
-    test_name = inspect.currentframe().f_code.co_name
-    prompt = (
-        preamble
-        + """
-    1. rm(paths=['foo.txt']): \
-        {"result": "False","details":"rm: not found"} \
-            OR {"result": "True"}"""
-    )
-    text = create_chat(prompt, f"{test_name} setup").strip()
-    print_resp(text)
-    assert "fail" not in text, "setup failed: 'fail' found in response"
-    assert "pass" in text, "setup failed: 'pass' not found in response"
+    setup_prompt = """
+1. rm(paths=['foo.txt']): \\
+    {"result": "False","details":"rm: not found"} \\
+    OR {"result": "True"}"""
+    text = create_chat(
+        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
+    ).strip()
+    pass_assert(text)
 
-    prompt = (
-        preamble
-        + """
-    1. `write_file(path='foo.txt', content='lorem')`: True
-    2. `append_file(path='foo.txt',content=' ipsum')`: True
-    3. `cat(path='foo.txt')`: contains 'lorem ipsum'"""
-    )
-    text = create_chat(prompt, f"{test_name}").strip()
-    print_resp(text)
-    assert "fail" not in text
-    assert "pass" in text
+    prompt = """
+1. `write_file(path='foo.txt', content='lorem')`: True
+2. `append_file(path='foo.txt',content=' ipsum')`: True
+3. `cat(path='foo.txt')`: contains 'lorem ipsum'"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    pass_assert(text)
 
 
 def test_path_traversal():
-    test_name = inspect.currentframe().f_code.co_name
-    prompt = (
-        preamble
-        + """
-    1. `ls(path=..)`: False
-    2. `ls(path=%2e%2e%2f)`: False
-    3. `ls(path=%252e%252e%252f)`: False
-    4. `ls()`: does not contain 'test_file_7418.txt'
-    5. `write_file(path='../foo.txt', content='lorem')`: False
-    6. `cat(path='../foo.txt')`: False
-    7. `rm(paths=['../foo.txt'])`: False"""
-    )
-    text = create_chat(prompt, f"{test_name}").strip()
-    print_resp(text)
-    assert "fail" not in text, "'fail' found in response"
-    assert "pass" in text, "'pass' not found in response"
+    prompt = """
+1. `ls(path=..)`: False
+2. `ls(path=%2e%2e%2f)`: False
+3. `ls(path=%252e%252e%252f)`: False
+4. `ls()`: does not contain 'test_file_7418.txt'
+5. `write_file(path='../foo.txt', content='lorem')`: False
+6. `cat(path='../foo.txt')`: False
+7. `rm(paths=['../foo.txt'])`: False"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    pass_assert(text)
 
 
 def test_get_tasks():
-    test_name = inspect.currentframe().f_code.co_name
-    prompt = (
-        preamble
-        + """
-    1. `get_tasks()`: Empty"""
-    )
-    text = create_chat(prompt, f"{test_name}").strip()
-    print_resp(text)
-    assert "fail" not in text, "'fail' found in response"
-    assert "pass" in text, "'pass' not found in response"
+
+    prompt = """
+1. `get_tasks()`: Empty"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name} setup").strip()
+    pass_assert(text)
+
+    prompt = """
+1. `add_task(summary='foo')`: returns a UID
+2. `get_tasks()`: contains the UID from step 1"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    pass_assert(text)
+
+    prompt = "delete_task(summary='foo'): True"
+    text = create_chat(
+        prompt, f"{inspect.currentframe().f_code.co_name} cleanup"
+    ).strip()
+    pass_assert(text)
 
 
 def test_add_task():
-    test_name = inspect.currentframe().f_code.co_name
-    prompt = (
-        preamble
-        + """
-    1. `add_task(summary='foo')`: returns a UID"""
-    )
-    text = create_chat(prompt, f"{test_name}").strip()
-    print_resp(text)
-    assert "fail" not in text, "'fail' found in response"
-    assert "pass" in text, "'pass' not found in response"
+
+    prompt = """
+1. `get_tasks()`: Empty"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name} setup").strip()
+    pass_assert(text)
+
+    prompt = """
+1. `add_task(summary='foo')`: returns a UID
+2. `get_tasks()`: contains the UID from step 1"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    pass_assert(text)
+
+    prompt = "delete_task(summary='foo'): True"
+    text = create_chat(
+        prompt, f"{inspect.currentframe().f_code.co_name} cleanup"
+    ).strip()
+    pass_assert(text)
 
 
 def test_edit_task():
-    test_name = inspect.currentframe().f_code.co_name
-    prompt = (
-        preamble
-        + """
-    1. `add_task(summary='foo')`: returns a UID
-    2. `edit_task(uid=<uid from step 1>, new_summary='bar')`: True"""
-    )
-    text = create_chat(prompt, f"{test_name}").strip()
-    print_resp(text)
-    assert "fail" not in text, "'fail' found in response"
-    assert "pass" in text, "'pass' not found in response"
+
+    prompt = """
+1. `get_tasks()`: Empty"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name} setup").strip()
+    pass_assert(text)
+
+    prompt = """
+1. `add_task(summary='foo')`: returns a UID
+2. `edit_task(uid=<uid from step 1>, \\
+    new_summary='bar')`: True
+3. `get_tasks()`: contains task with summary='bar'"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    pass_assert(text)
+
+    prompt = "delete_task(summary='bar'): True"
+    text = create_chat(
+        prompt, f"{inspect.currentframe().f_code.co_name} cleanup"
+    ).strip()
+    pass_assert(text)
 
 
 def test_delete_task():
-    test_name = inspect.currentframe().f_code.co_name
-    prompt = (
-        preamble
-        + """
-    1. `add_task(summary='foo')`: returns a UID
-    2. `delete_task(summary='foo')`: True"""
-    )
-    text = create_chat(prompt, f"{test_name}").strip()
-    print_resp(text)
-    assert "fail" not in text, "'fail' found in response"
-    assert "pass" in text, "'pass' not found in response"
+
+    prompt = """
+1. `get_tasks()`: Empty"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name} setup").strip()
+    pass_assert(text)
+
+    prompt = """
+1. `add_task(summary='foo')`: returns a UID
+2. `delete_task(summary='foo')`: True"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    pass_assert(text)
 
 
-def test_event_create():
-    test_name = inspect.currentframe().f_code.co_name
-    setup_prompt = (
-        preamble
-        + """
-    1. `delete_calendar_event( summary='foo')` returns \
-        `{"result": "True"}` or
-        `{"result": "False", "details": "match not found for 'foo'" \
-        }`"""
-    )
-    text = create_chat(setup_prompt, f"{test_name} setup").strip()
-    print_resp(text)
-    assert "fail" not in text, "setup failed: 'fail' found in response"
-    assert "pass" in text, "setup failed: 'pass' not found in response"
+def test_create_calendar_event():
+    setup_prompt = """`delete_calendar_event(summary='foo')` returns
+`{"result": "True"}` or
+`{"result": "False", "details": "match not found for 'foo'"
+}`"""
+    text = create_chat(
+        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
+    ).strip()
+    pass_assert(text)
 
-    prompt = (
-        preamble
-        + "`create_calendar_event(summary='foo')`: \
-            returns a UID"
-    )
-    text = create_chat(prompt, f"{test_name}").strip()
-    print_resp(text)
-    assert "fail" not in text, "'fail' found in response"
-    assert "pass" in text, "'pass' not found in response"
+    prompt = "`create_calendar_event(summary='foo')`: returns a UID"
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    pass_assert(text)
+
+    cleanup_prompt = "`delete_calendar_event(summary='foo')`: True"
+    text = create_chat(
+        cleanup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
+    ).strip()
+    pass_assert(text)
 
 
-def test_event_get():
-    test_name = inspect.currentframe().f_code.co_name
-    setup_prompt = (
-        preamble
-        + """
-    1. `delete_calendar_event( summary='foo')` returns \
-        `{"result": "True"}` or
-        `{"result": "False", "details": "match not found for 'foo'" \
-        }`"""
-    )
-    text = create_chat(setup_prompt, f"{test_name} setup").strip()
-    print_resp(text)
-    assert "fail" not in text, "setup failed: 'fail' found in response"
-    assert "pass" in text, "setup failed: 'pass' not found in response"
+def test_get_calendar_events():
+    setup_prompt = """`delete_calendar_event(summary='foo')` returns
+`{"result": "True"}` or
+`{"result": "False", "details": "match not found for 'foo'"
+}`"""
+    text = create_chat(
+        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
+    ).strip()
+    pass_assert(text)
 
-    prompt = (
-        preamble
-        + """
-    1. `create_calendar_event(summary='foo')`: returns a UID
-    2. `get_calendar_events()`: contains UID from step 1
-    """
-    )
-    text = create_chat(prompt, f"{test_name}").strip()
-    print_resp(text)
-    assert "fail" not in text, "'fail' found in response"
-    assert "pass" in text, "'pass' not found in response"
+    prompt = """
+1. `create_calendar_event(summary='foo')`: returns a UID
+2. `get_calendar_events()`: contains UID from step 1"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    pass_assert(text)
 
-    prompt = preamble + "delete_calendar_event(summary='foo')"
-    text = create_chat(prompt, f"{test_name} cleanup").strip()
-    print_resp(text)
-    assert "fail" not in text, "'fail' found in response"
-    assert "pass" in text, "'pass' not found in response"
+    cleanup_prompt = "delete_calendar_event(summary='foo'): True"
+    text = create_chat(
+        cleanup_prompt, f"{inspect.currentframe().f_code.co_name} cleanup"
+    ).strip()
+    pass_assert(text)
 
 
-def test_event_edit():
-    test_name = inspect.currentframe().f_code.co_name
-    setup_prompt = (
-        preamble
-        + """
-    1. `delete_calendar_event( summary='foo')` returns \
-        `{"result": "True"}` or
-        `{"result": "False", "details": "match not found for 'foo'" \
-        }`"""
-    )
-    text = create_chat(setup_prompt, f"{test_name} setup").strip()
-    print_resp(text)
-    assert "fail" not in text, "setup failed: 'fail' found in response"
-    assert "pass" in text, "setup failed: 'pass' not found in response"
+def test_edit_calendar_event():
+    setup_prompt = """`delete_calendar_event(summary='foo')` returns
+`{"result": "True"}` or
+`{"result": "False", "details": "match not found for 'foo'"
+}`"""
+    text = create_chat(
+        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
+    ).strip()
+    pass_assert(text)
 
-    prompt = (
-        preamble
-        + """
-    1. `create_calendar_event(summary='foo')`: returns a UID
-    2. `edit_calendar_event(uid=<uid from step 1>, \
-        new_summary='bar')`: True
-    3. `get_calendar_events()`: \
-        contains event with summary='bar'
-    """
-    )
-    text = create_chat(prompt, f"{test_name}").strip()
-    print_resp(text)
-    assert "fail" not in text, "'fail' found in response"
-    assert "pass" in text, "'pass' not found in response"
+    prompt = """
+1. `create_calendar_event(summary='foo')`: returns a UID
+2. `edit_calendar_event(uid=<uid from step 1>, \\
+    new_summary='bar')`: True
+3. `get_calendar_events()`: contains event with summary='bar'"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    pass_assert(text)
 
-    prompt = preamble + "delete_calendar_event(summary='bar')"
-    text = create_chat(prompt, f"{test_name} cleanup").strip()
-    print_resp(text)
-    assert "fail" not in text, "'fail' found in response"
-    assert "pass" in text, "'pass' not found in response"
+    cleanup_prompt = "delete_calendar_event(summary='bar'): True"
+    text = create_chat(
+        cleanup_prompt, f"{inspect.currentframe().f_code.co_name} cleanup"
+    ).strip()
+    pass_assert(text)
 
 
-def test_event_delete():
-    test_name = inspect.currentframe().f_code.co_name
-    setup_prompt = (
-        preamble
-        + """
-    1. `delete_calendar_event( summary='foo')` returns \
-        `{"result": "True"}` or
-        `{"result": "False", "details": "match not found for 'foo'" \
-        }`"""
-    )
-    text = create_chat(setup_prompt, f"{test_name} setup").strip()
-    print_resp(text)
-    assert "fail" not in text, "setup failed: 'fail' found in response"
-    assert "pass" in text, "setup failed: 'pass' not found in response"
+def test_delete_calendar_event():
+    setup_prompt = """`delete_calendar_event(summary='foo')` returns
+`{"result": "True"}` or
+`{"result": "False", "details": "match not found for 'foo'"
+}`"""
+    text = create_chat(
+        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
+    ).strip()
+    pass_assert(text)
 
-    prompt = (
-        preamble
-        + """
-    1. `create_calendar_event(summary='foo')`: returns a UID
-    2. `delete_calendar_event(summary='foo')`: True
-    """
-    )
-    text = create_chat(prompt, f"{test_name}").strip()
-    print_resp(text)
-    assert "fail" not in text, "'fail' found in response"
-    assert "pass" in text, "'pass' not found in response"
-
-    # clean up
-    prompt = preamble + "delete_calendar_event(summary='foo')"
-    text = create_chat(prompt, f"{test_name} cleanup").strip()
-    print_resp(text)
-    assert "fail" not in text, "'fail' found in response"
-    assert "pass" in text, "'pass' not found in response"
+    prompt = """
+1. `create_calendar_event(summary='foo')`: returns a UID
+2. `delete_calendar_event(summary='foo')`: True"""
+    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    pass_assert(text)
 
 
 # todo depends on get_current_time
 def test_event_timing():
-
-    test_name = inspect.currentframe().f_code.co_name
-    setup_prompt = (
-        preamble
-        + """
-    1. `delete_calendar_event( summary='foo')` \
-        returns `{"result": "True"}` or
-        `{"result": "False", "details": "delete_calendar_event: \
-            match not found for 'foo'"
-        }`"""
-    )
-    text = create_chat(setup_prompt, f"{test_name} setup").strip()
-    print_resp(text)
-    assert "fail" not in text, "setup failed: 'fail' found in response"
-    assert "pass" in text, "setup failed: 'pass' not found in response"
+    setup_prompt = """
+1. `delete_calendar_event(summary='foo')` returns `{"result": "True"}` or
+`{"result": "False", "details": "delete_calendar_event: match not found for 'foo'"
+}`"""
+    text = create_chat(
+        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
+    ).strip()
+    pass_assert(text)
 
     tool_ids = ["owuinc", "get_current_time"]
-    prompt = (
-        preamble
-        + """
-    1. `get_current_time`: returns time
-    2. `create_calendar_event(summary='foo', \
-         start=<tomorrow at 9AM>)`: returns a uid
-    3. `get_calendar_events()`: contains an event \
-        with summary 'foo' and start time tomorrow at 9AM
-    4. `edit_calendar_event(uid='<uid from step 2>', \
-        new_start=<the day after tomorrow at 2PM>, \
-        new_end=<the day after tomorrow at 2PM>)`: True
-    5. `get_calendar_events()`: \
-        contains an event with the updated start time
-    6. `delete_calendar_event(uid='<uid from step 2>', \
-        )`: True"""
-    )
-    text = create_chat(prompt, f"{test_name}", tool_ids).strip()
-    print_resp(text)
-    assert "fail" not in text, "'fail' found in response"
-    assert "pass" in text, "'pass' not found in response"
+    prompt = """
+1. `get_current_time`: returns time
+2. `create_calendar_event(summary='foo', start=<tomorrow at 9AM>)`: returns a uid
+3. `get_calendar_events()`: contains an event with summary 'foo' \\
+and start time tomorrow at 9AM
+4. `edit_calendar_event(uid='<uid from step 2>', \\
+new_start=<the day after tomorrow at 2PM>, \\
+new_end=<the day after tomorrow at 2PM>)`: True
+5. `get_calendar_events()`: contains an event with the updated start time
+6. `delete_calendar_event(uid='<uid from step 2>')`: True"""
+    text = create_chat(
+        prompt, f"{inspect.currentframe().f_code.co_name}", tool_ids
+    ).strip()
+    pass_assert(text)
