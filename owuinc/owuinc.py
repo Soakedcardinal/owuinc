@@ -126,15 +126,15 @@ class Tools:
     def __init__(self):
         log_sep("Tools.__init__()")
         self.valves = self.Valves()
-        log(f"  NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
-        log(f"  WEBDAV_USERNAME={self.valves.WEBDAV_USERNAME!r}")
-        log(f"  NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
-        log(f"  NEXTCLOUD_APP_PASSWORD_LEN={len(self.valves.NEXTCLOUD_APP_PASSWORD)}")
-        log(f"  SANDBOX_DIR={self.valves.SANDBOX_DIR!r}")
-        log(f"  DEFAULT_CALENDAR={self.valves.DEFAULT_CALENDAR!r}")
-        log(f"  DEFAULT_TASK_LIST={self.valves.DEFAULT_TASK_LIST!r}")
-        log(f"  CALENDAR_WHITELIST={self.valves.CALENDAR_WHITELIST!r}")
-        log(f"  TASK_LIST_WHITELIST={self.valves.TASK_LIST_WHITELIST!r}")
+        log(f"NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
+        log(f"WEBDAV_USERNAME={self.valves.WEBDAV_USERNAME!r}")
+        log(f"NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
+        log(f"NEXTCLOUD_APP_PASSWORD_LEN={len(self.valves.NEXTCLOUD_APP_PASSWORD)}")
+        log(f"SANDBOX_DIR={self.valves.SANDBOX_DIR!r}")
+        log(f"DEFAULT_CALENDAR={self.valves.DEFAULT_CALENDAR!r}")
+        log(f"DEFAULT_TASK_LIST={self.valves.DEFAULT_TASK_LIST!r}")
+        log(f"CALENDAR_WHITELIST={self.valves.CALENDAR_WHITELIST!r}")
+        log(f"TASK_LIST_WHITELIST={self.valves.TASK_LIST_WHITELIST!r}")
         self.H = self.Helpers(self.valves)
 
     class Valves(BaseModel):
@@ -170,9 +170,9 @@ class Tools:
 
         def get_valve_hash(self):
             log("get_valve_hash() called")
-            log(f"  NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
-            log(f"  WEBDAV_USERNAME={self.valves.WEBDAV_USERNAME!r}")
-            log(f"  NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
+            log(f"NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
+            log(f"WEBDAV_USERNAME={self.valves.WEBDAV_USERNAME!r}")
+            log(f"NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
             pw_len = len(self.valves.NEXTCLOUD_APP_PASSWORD)
             log(f"  NEXTCLOUD_APP_PASSWORD_LEN={pw_len}")
             hash_value = hash(
@@ -294,9 +294,9 @@ class Tools:
     @property
     def webdav_client(self):
         log("webdav_client: creating new Client")
-        log(f"  NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
-        log(f"  WEBDAV_USERNAME={self.valves.WEBDAV_USERNAME!r}")
-        log(f"  NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
+        log(f"NEXTCLOUD_BASE_URL={self.valves.NEXTCLOUD_BASE_URL!r}")
+        log(f"WEBDAV_USERNAME={self.valves.WEBDAV_USERNAME!r}")
+        log(f"NEXTCLOUD_USERNAME={self.valves.NEXTCLOUD_USERNAME!r}")
         base = self.valves.NEXTCLOUD_BASE_URL
         wd_user = self.valves.WEBDAV_USERNAME
         url = f"{base}/remote.php/dav/files/{wd_user}/"

@@ -40,20 +40,18 @@ def load_required_env() -> tuple[str, str, str, str]:
 URL, KEY, USER_ID, FOLDER_ID = load_required_env()
 header = {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"}
 header_2 = {"Authorization": f"Bearer {KEY}"}
-preamble = """Run the test immediately by invoking the \
-specified tool and verify the results.
-
+preamble = """### TASK
+Run the test and verify the results are as expected.
 Stop immediately if anything unexpected happens.
+Output **ONLY** "pass" or "fail".
 
-**STRICT OUTPUT CONSTRAINTS:**
-*   Output **ONLY** the strings "pass" or "fail".
-*   The response must be mutually exclusive to any other text.
-*   No preamble, no postscript, no partial sentences."""
+### TEST
+"""
 
 
 # https://docs.openwebui.com/tutorials/integrations/backend-controlled-ui-compatible-flow
 def create_chat(
-    prompt, title="owuinc test chat", tool_ids=["owuinc_test"], model="owuinc-test"
+    prompt, title="owuinc test chat", tool_ids=["owuinc"], model="owuinc"
 ) -> str:
     ts = int(time.time())
     ts2 = ts + 1000
@@ -156,7 +154,7 @@ def create_chat(
 
     # wait for assistant completion
     start = time.time()
-    while time.time() - start < 60:
+    while time.time() - start < 240:
         print("waiting for assistant completion...")
         resp = requests.get(chat_endpoint, headers=header_2)
         # Find the assistant message
@@ -393,7 +391,7 @@ def test_task_lifecyle():
     prompt = (
         preamble
         + """
-    1. `get_tasks(list_name='test')`: Empty"""
+    1. `get_tasks(list_name='owuinc')`: Empty"""
     )
     text = create_chat(prompt, f"{test_name} setup").strip()
     print_resp(text)
@@ -403,11 +401,11 @@ def test_task_lifecyle():
     prompt = (
         preamble
         + """
-    1. `add_task(summary='foo', list_name='test')`: returns a UID
-    2. `get_tasks(list_name='test')`: contains the UID from step 1
-    3. `edit_task(uid=<uid from step 1>, new_summary='bar', list_name='test')`: True
-    4. `get_tasks(list_name='test')`: contains task w/ summary='bar'
-    5. `delete_task(uid=<uid from step 1>, list_name='test')`: True"""
+    1. `add_task(summary='foo', list_name='owuinc')`: returns a UID
+    2. `get_tasks(list_name='owuinc')`: contains the UID from step 1
+    3. `edit_task(uid=<uid from step 1>, new_summary='bar', list_name='owuinc')`: True
+    4. `get_tasks(list_name='owuinc')`: contains task w/ summary='bar'
+    5. `delete_task(uid=<uid from step 1>, list_name='owuinc')`: True"""
     )
     text = create_chat(prompt, f"{test_name}").strip()
     print_resp(text)
@@ -415,19 +413,43 @@ def test_task_lifecyle():
     assert "pass" in text, "'pass' not found in response"
 
 
-def test_event_lifecyle():
+def test_event_create():
     test_name = inspect.currentframe().f_code.co_name
-    prompt = (
+    setup_prompt = (
         preamble
         + """
     1. `delete_calendar_event( summary='foo', calendar_name='owuinc')` returns \
         `{"result": "True"}` or
-        `{ \
-            "result": "False",
-            "details": "delete_calendar_event: match not found for 'foo'" \
+        `{"result": "False", "details": "match not found for 'foo'" \
         }`"""
     )
-    text = create_chat(prompt, f"{test_name} setup").strip()
+    text = create_chat(setup_prompt, f"{test_name} setup").strip()
+    print_resp(text)
+    assert "fail" not in text, "setup failed: 'fail' found in response"
+    assert "pass" in text, "setup failed: 'pass' not found in response"
+
+    prompt = (
+        preamble
+        + "`create_calendar_event(summary='foo', calendar_name='owuinc')`: \
+            returns a UID"
+    )
+    text = create_chat(prompt, f"{test_name}").strip()
+    print_resp(text)
+    assert "fail" not in text, "'fail' found in response"
+    assert "pass" in text, "'pass' not found in response"
+
+
+def test_event_get():
+    test_name = inspect.currentframe().f_code.co_name
+    setup_prompt = (
+        preamble
+        + """
+    1. `delete_calendar_event( summary='foo', calendar_name='owuinc')` returns \
+        `{"result": "True"}` or
+        `{"result": "False", "details": "match not found for 'foo'" \
+        }`"""
+    )
+    text = create_chat(setup_prompt, f"{test_name} setup").strip()
     print_resp(text)
     assert "fail" not in text, "setup failed: 'fail' found in response"
     assert "pass" in text, "setup failed: 'pass' not found in response"
@@ -435,16 +457,89 @@ def test_event_lifecyle():
     prompt = (
         preamble
         + """
-    1. `create_calendar_event(summary='foo',calendar_name='owuinc')`: returns a UID
+    1. `create_calendar_event(summary='foo', calendar_name='owuinc')`: returns a UID
     2. `get_calendar_events(calendar_name='owuinc')`: contains UID from step 1
-    3. `edit_calendar_event(uid=<uid from step 1>, calendar_name='owuinc', \
-        new_summary='bar')`: True
-    4. `get_calendar_events(calendar_name='owuinc')`: \
-        contains event with summary='bar'
-    5. `delete_calendar_event(uid=<uid from step 1>,calendar_name='owuinc')`: True
     """
     )
     text = create_chat(prompt, f"{test_name}").strip()
+    print_resp(text)
+    assert "fail" not in text, "'fail' found in response"
+    assert "pass" in text, "'pass' not found in response"
+
+    prompt = preamble + "delete_calendar_event(summary='foo', calendar_name='owuinc')"
+    text = create_chat(prompt, f"{test_name} cleanup").strip()
+    print_resp(text)
+    assert "fail" not in text, "'fail' found in response"
+    assert "pass" in text, "'pass' not found in response"
+
+
+def test_event_edit():
+    test_name = inspect.currentframe().f_code.co_name
+    setup_prompt = (
+        preamble
+        + """
+    1. `delete_calendar_event( summary='foo', calendar_name='owuinc')` returns \
+        `{"result": "True"}` or
+        `{"result": "False", "details": "match not found for 'foo'" \
+        }`"""
+    )
+    text = create_chat(setup_prompt, f"{test_name} setup").strip()
+    print_resp(text)
+    assert "fail" not in text, "setup failed: 'fail' found in response"
+    assert "pass" in text, "setup failed: 'pass' not found in response"
+
+    prompt = (
+        preamble
+        + """
+    1. `create_calendar_event(summary='foo', calendar_name='owuinc')`: returns a UID
+    2. `edit_calendar_event(uid=<uid from step 1>, calendar_name='owuinc', \
+        new_summary='bar')`: True
+    3. `get_calendar_events(calendar_name='owuinc')`: \
+        contains event with summary='bar'
+    """
+    )
+    text = create_chat(prompt, f"{test_name}").strip()
+    print_resp(text)
+    assert "fail" not in text, "'fail' found in response"
+    assert "pass" in text, "'pass' not found in response"
+
+    prompt = preamble + "delete_calendar_event(summary='bar', calendar_name='owuinc')"
+    text = create_chat(prompt, f"{test_name} cleanup").strip()
+    print_resp(text)
+    assert "fail" not in text, "'fail' found in response"
+    assert "pass" in text, "'pass' not found in response"
+
+
+def test_event_delete():
+    test_name = inspect.currentframe().f_code.co_name
+    setup_prompt = (
+        preamble
+        + """
+    1. `delete_calendar_event( summary='foo', calendar_name='owuinc')` returns \
+        `{"result": "True"}` or
+        `{"result": "False", "details": "match not found for 'foo'" \
+        }`"""
+    )
+    text = create_chat(setup_prompt, f"{test_name} setup").strip()
+    print_resp(text)
+    assert "fail" not in text, "setup failed: 'fail' found in response"
+    assert "pass" in text, "setup failed: 'pass' not found in response"
+
+    prompt = (
+        preamble
+        + """
+    1. `create_calendar_event(summary='foo', calendar_name='owuinc')`: returns a UID
+    2. `delete_calendar_event(summary='foo', calendar_name='owuinc')`: True
+    """
+    )
+    text = create_chat(prompt, f"{test_name}").strip()
+    print_resp(text)
+    assert "fail" not in text, "'fail' found in response"
+    assert "pass" in text, "'pass' not found in response"
+
+    # clean up
+    prompt = preamble + "delete_calendar_event(summary='foo', calendar_name='owuinc')"
+    text = create_chat(prompt, f"{test_name} cleanup").strip()
     print_resp(text)
     assert "fail" not in text, "'fail' found in response"
     assert "pass" in text, "'pass' not found in response"
@@ -459,9 +554,8 @@ def test_event_timing():
         + """
     1. `delete_calendar_event( summary='foo', calendar_name='owuinc')` \
         returns `{"result": "True"}` or
-        `{\
-            "result": "False", \
-            "details": "delete_calendar_event: match not found for 'foo'"\
+        `{"result": "False", "details": "delete_calendar_event: \
+            match not found for 'foo'"
         }`"""
     )
     text = create_chat(setup_prompt, f"{test_name} setup").strip()
