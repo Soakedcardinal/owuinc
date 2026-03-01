@@ -32,31 +32,38 @@ from webdav3.exceptions import (
     WebDavException,
 )
 
+# DEBUG=True
+DEBUG = False
+
 
 def log(msg):
-    print(msg)
+    if DEBUG:
+        print(msg)
 
 
 def log_err(msg):
-    print("ERROR: " + msg)
+    if DEBUG:
+        print("ERROR: " + msg)
 
 
 def log_sep(msg):
-    print("\n" + "=" * 60)
-    print(f"  {msg}")
-    print("=" * 60 + "\n")
+    if DEBUG:
+        print("\n" + "=" * 60)
+        print(f"  {msg}")
+        print("=" * 60 + "\n")
 
 
 def log_valves(valves):
-    print(f"NEXTCLOUD_BASE_URL={valves.NEXTCLOUD_BASE_URL!r}")
-    print(f"WEBDAV_USERNAME={valves.WEBDAV_USERNAME!r}")
-    print(f"NEXTCLOUD_USERNAME={valves.NEXTCLOUD_USERNAME!r}")
-    print(f"NEXTCLOUD_APP_PASSWORD_LEN={len(valves.NEXTCLOUD_APP_PASSWORD)}")
-    print(f"SANDBOX_DIR={valves.SANDBOX_DIR!r}")
-    print(f"DEFAULT_CALENDAR={valves.DEFAULT_CALENDAR!r}")
-    print(f"DEFAULT_TASK_LIST={valves.DEFAULT_TASK_LIST!r}")
-    print(f"CALENDAR_WHITELIST={valves.CALENDAR_WHITELIST!r}")
-    print(f"TASK_LIST_WHITELIST={valves.TASK_LIST_WHITELIST!r}")
+    if DEBUG:
+        print(f"NEXTCLOUD_BASE_URL={valves.NEXTCLOUD_BASE_URL!r}")
+        print(f"WEBDAV_USERNAME={valves.WEBDAV_USERNAME!r}")
+        print(f"NEXTCLOUD_USERNAME={valves.NEXTCLOUD_USERNAME!r}")
+        print(f"NEXTCLOUD_APP_PASSWORD_LEN={len(valves.NEXTCLOUD_APP_PASSWORD)}")
+        print(f"SANDBOX_DIR={valves.SANDBOX_DIR!r}")
+        print(f"DEFAULT_CALENDAR={valves.DEFAULT_CALENDAR!r}")
+        print(f"DEFAULT_TASK_LIST={valves.DEFAULT_TASK_LIST!r}")
+        print(f"CALENDAR_WHITELIST={valves.CALENDAR_WHITELIST!r}")
+        print(f"TASK_LIST_WHITELIST={valves.TASK_LIST_WHITELIST!r}")
 
 
 def tool_logger(func: Callable) -> Callable:
@@ -79,15 +86,11 @@ def caldav_safe(func: Callable) -> Callable:
             if result is not None:
                 response["data"] = result
             return response
-
         except NotFoundError as e:
             log(f"{op}: {e}")
-
             # Extract just the message, or fall back to string representation
             msg = e.args[0] if hasattr(e, "args") and e.args else str(e)
-
             return {"result": "False", "details": msg}
-
         except Exception as e:
             log_err(
                 f"{op}: unexpected error - {type(e).__name__}: {e}\
