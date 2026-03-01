@@ -270,7 +270,7 @@ class Tools:
     def caldav_client(self):
         base = self.valves.NEXTCLOUD_BASE_URL
         wd_user = self.valves.WEBDAV_USERNAME
-        url = f"{base}/remote.php/dav/files/{wd_user}/"
+        url = f"{base}/remote.php/dav/calendars/{wd_user}/"
         log(f"creating new caldav_client with url={url!r}")
         try:
             caldav_client = get_davclient(
