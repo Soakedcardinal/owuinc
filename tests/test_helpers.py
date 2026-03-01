@@ -1,5 +1,5 @@
 """
-Helper function tests for validate_path
+Helper function tests
 Tests sandbox security, path traversal prevention, and normalization
 """
 
