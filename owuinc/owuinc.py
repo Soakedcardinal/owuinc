@@ -4,12 +4,11 @@ author: Duncan Nicholson
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage calendars, tasks, and files via WebDAV and CalDAV.
 requirements: caldav,icalendar,webdavclient3
-version: 1.0.4
+version: 2.0.0
 license: MIT
 """
 
 import functools
-import logging
 import os
 import re
 import traceback
@@ -33,11 +32,48 @@ from webdav3.exceptions import (
     WebDavException,
 )
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-# logger.setLevel(logging.DEBUG)
+# DEBUG=True
+DEBUG = False
+
+
+def log(msg):
+    if DEBUG:
+        print(msg)
+
+
+def log_err(msg):
+    if DEBUG:
+        print("ERROR: " + msg)
+
+
+def log_sep(msg):
+    if DEBUG:
+        print("\n" + "=" * 60)
+        print(f"  {msg}")
+        print("=" * 60 + "\n")
+
+
+def log_valves(valves):
+    if DEBUG:
+        print(f"NEXTCLOUD_BASE_URL={valves.NEXTCLOUD_BASE_URL!r}")
+        print(f"WEBDAV_USERNAME={valves.WEBDAV_USERNAME!r}")
+        print(f"NEXTCLOUD_USERNAME={valves.NEXTCLOUD_USERNAME!r}")
+        print(f"NEXTCLOUD_APP_PASSWORD_LEN={len(valves.NEXTCLOUD_APP_PASSWORD)}")
+        print(f"SANDBOX_DIR={valves.SANDBOX_DIR!r}")
+        print(f"DEFAULT_CALENDAR={valves.DEFAULT_CALENDAR!r}")
+        print(f"DEFAULT_TASK_LIST={valves.DEFAULT_TASK_LIST!r}")
+        print(f"CALENDAR_WHITELIST={valves.CALENDAR_WHITELIST!r}")
+        print(f"TASK_LIST_WHITELIST={valves.TASK_LIST_WHITELIST!r}")
+
+
+def tool_logger(func: Callable) -> Callable:
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        log_sep(func.__name__)
+        log_valves(self.valves)
+        return func(self, *args, **kwargs)
+
+    return wrapper
 
 
 def caldav_safe(func: Callable) -> Callable:
@@ -50,17 +86,13 @@ def caldav_safe(func: Callable) -> Callable:
             if result is not None:
                 response["data"] = result
             return response
-
         except NotFoundError as e:
-            logger.info(f"{op}: {e}")
-
+            log(f"{op}: {e}")
             # Extract just the message, or fall back to string representation
             msg = e.args[0] if hasattr(e, "args") and e.args else str(e)
-
             return {"result": "False", "details": msg}
-
         except Exception as e:
-            logger.error(
+            log_err(
                 f"{op}: unexpected error - {type(e).__name__}: {e}\
                 \nTraceback: {traceback.format_exc()}"
             )
@@ -80,32 +112,28 @@ def webdav_safe(func: Callable) -> Callable:
                 response["data"] = result
             return response
         except RemoteResourceNotFound as e:
-            logger.error(
+            log_err(
                 f"{op}: resource not found - {e}\nTraceback: {traceback.format_exc()}"
             )
             return {"result": "False", "details": f"{op}: not found"}
         except LocalResourceNotFound as e:
-            logger.error(
+            log_err(
                 f"{op}: local file not found - {e}\nTraceback: {traceback.format_exc()}"
             )
             return {"result": "False", "details": f"{op}: local file not found"}
         except ResourceLocked as e:
-            logger.error(
-                f"{op}: resource locked - {e}\nTraceback: {traceback.format_exc()}"
-            )
+            log_err(f"{op}: resource locked - {e}\nTraceback: {traceback.format_exc()}")
             return {"result": "False", "details": f"{op}: resource locked"}
         except ConnectionException as e:
-            logger.error(
+            log_err(
                 f"{op}: connection failed - {e}\nTraceback: {traceback.format_exc()}"
             )
             return {"result": "False", "details": f"{op}: connection failed"}
         except WebDavException as e:
-            logger.error(
-                f"{op}: WebDAV error - {e}\nTraceback: {traceback.format_exc()}"
-            )
+            log_err(f"{op}: WebDAV error - {e}\nTraceback: {traceback.format_exc()}")
             return {"result": "False", "details": f"{op}: {str(e)}"}
         except Exception as e:
-            logger.error(
+            log_err(
                 f"{op}: unexpected error - {type(e).__name__}: {e}\
                 \nTraceback: {traceback.format_exc()}"
             )
@@ -114,14 +142,90 @@ def webdav_safe(func: Callable) -> Callable:
     return wrapper
 
 
+def validate_path(path, valves):
+    prefix = valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+    if not path:
+        return prefix
+    path = path.strip()
+    prev = None
+    while prev != path:
+        prev = path
+        path = urllib.parse.unquote(path)
+    if ".." in path:
+        raise Exception("Invalid Path: traversal not allowed")
+    if path in ("", ".", "/"):
+        return prefix
+    full_path = prefix + os.path.normpath(path)
+    if full_path.startswith(prefix):
+        return full_path
+    raise Exception("Invalid Path: outside sandbox.")
+
+
+def parse_reminders(reminders: list | None = None) -> list:
+    if not reminders:
+        return []
+    parsed = []
+    for r in reminders:
+        minutes = 0
+        if r in ["0", "0min", "0 min"]:
+            minutes = 0
+        elif r.endswith("min") or r.endswith("mins") or r.endswith("minutes"):
+            match = re.search(r"\d+", r)
+            if match is not None:
+                minutes = int(match.group())
+        elif (
+            r.endswith("h")
+            or r.endswith("hr")
+            or r.endswith("hour")
+            or r.endswith("hours")
+        ):
+            match = re.search(r"\d+", r)
+            if match is not None:
+                hours = int(match.group())
+                minutes = hours * 60
+        elif r.endswith("d") or r.endswith("day") or r.endswith("days"):
+            match = re.search(r"\d+", r)
+            if match is not None:
+                days = int(match.group())
+                minutes = days * 1440
+        parsed.append({"minutes": minutes, "action": "DISPLAY"})
+    return parsed
+
+
+def get_cal_type(calendar: Calendar | None = None):
+    if not calendar:
+        return "none"
+    sccs = calendar.get_properties().get(
+        "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set"
+    )
+    if not sccs:
+        return "unknown"
+    kinds = [comp.get("name") for comp in sccs if comp.tag.endswith("comp")]
+    has_event = "VEVENT" in kinds
+    has_todo = "VTODO" in kinds
+    if has_event and not has_todo:
+        return "event"
+    elif has_todo and not has_event:
+        return "todo"
+    elif has_event and has_todo:
+        return "mixed"
+    else:
+        return "unknown"
+
+
+def is_whitelisted(whitelist: str, item: str) -> bool:
+    """Check if item is in whitelist"""
+    if not whitelist:
+        log_err("whitelist is empty")
+        return False
+    cleaned_whitelist = {s.strip() for s in whitelist.split(",") if s.strip()}
+    return item in cleaned_whitelist
+
+
 class Tools:
     def __init__(self):
+        log_sep("Tools")
         self.valves = self.Valves()
-        self.H = self.Helpers(self.valves)
-
-        self._valve_hash = None
-        self._webdav_client = None
-        self._caldav_client = None
 
     class Valves(BaseModel):
         NEXTCLOUD_BASE_URL: str = Field("", description="Nextcloud server address")
@@ -135,152 +239,115 @@ class Tools:
             by the Tools class.",
         )
         DEFAULT_CALENDAR: str = Field(
-            default="main", description="Default calendar for event operations"
+            default="owuinc", description="Default calendar for event operations"
         )
         DEFAULT_TASK_LIST: str = Field(
-            default="todo", description="Default task list for task operations"
+            default="owuinc-tasks", description="Default task list for task operations"
+        )
+        CALENDAR_WHITELIST: str = Field(
+            default="owuinc", description="Comma-separated list of allowed calendars"
+        )
+        TASK_LIST_WHITELIST: str = Field(
+            default="owuinc-tasks",
+            description="Comma-separated list of allowed task lists",
         )
         pass  # required for parsing
 
-    class Helpers:
-        def __init__(self, valves):
-            self.valves = valves
-
-        def get_valve_hash(self):
-            return hash(
-                (
-                    self.valves.NEXTCLOUD_BASE_URL,
-                    self.valves.WEBDAV_USERNAME,
-                    self.valves.NEXTCLOUD_USERNAME,
-                    self.valves.NEXTCLOUD_APP_PASSWORD,
-                )
-            )
-
-        @staticmethod
-        def validate_path(path, sandbox):
-            prefix = sandbox.strip().rstrip("/") + "/"
-            if not path:
-                return prefix
-            path = path.strip()
-            prev = None
-            while prev != path:
-                prev = path
-                path = urllib.parse.unquote(path)
-            if ".." in path:
-                raise Exception("Invalid Path: traversal not allowed")
-            if path in ("", ".", "/"):
-                return prefix
-            full_path = prefix + os.path.normpath(path)
-            if full_path.startswith(prefix):
-                return full_path
-            raise Exception("Invalid Path: outside sandbox.")
-
-        @staticmethod
-        def parse_reminders(reminders: list | None = None) -> list:
-            if not reminders:
-                return []
-            parsed = []
-            for r in reminders:
-                minutes = 0
-                if r in ["0", "0min", "0 min"]:
-                    minutes = 0
-                elif r.endswith("min") or r.endswith("mins") or r.endswith("minutes"):
-                    match = re.search(r"\d+", r)
-                    if match is not None:
-                        minutes = int(match.group())
-                elif (
-                    r.endswith("h")
-                    or r.endswith("hr")
-                    or r.endswith("hour")
-                    or r.endswith("hours")
-                ):
-                    match = re.search(r"\d+", r)
-                    if match is not None:
-                        hours = int(match.group())
-                        minutes = hours * 60
-                elif r.endswith("d") or r.endswith("day") or r.endswith("days"):
-                    match = re.search(r"\d+", r)
-                    if match is not None:
-                        days = int(match.group())
-                        minutes = days * 1440
-                parsed.append({"minutes": minutes, "action": "DISPLAY"})
-            return parsed
-
-        @staticmethod
-        def get_cal_type(calendar: Calendar | None = None):
-            if not calendar:
-                return "none"
-            sccs = calendar.get_properties().get(
-                "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set"
-            )
-            if not sccs:
-                return "unknown"
-            kinds = [comp.get("name") for comp in sccs if comp.tag.endswith("comp")]
-            has_event = "VEVENT" in kinds
-            has_todo = "VTODO" in kinds
-            if has_event and not has_todo:
-                return "event"
-            elif has_todo and not has_event:
-                return "todo"
-            elif has_event and has_todo:
-                return "mixed"
-            else:
-                return "unknown"
-
     @property
     def webdav_client(self):
-        vh = self.H.get_valve_hash()
-        if self._webdav_client is None or self._valve_hash != vh:
-            self._valve_hash = vh
-            base = self.valves.NEXTCLOUD_BASE_URL
-            wd_user = self.valves.WEBDAV_USERNAME
-            url = f"{base}/remote.php/dav/files/{wd_user}/"
-            logger.debug(f"webdav_client url: {url!r}")
-            self._webdav_client = Client(
-                {
-                    "webdav_hostname": url,
-                    "webdav_login": self.valves.NEXTCLOUD_USERNAME,
-                    "webdav_password": self.valves.NEXTCLOUD_APP_PASSWORD,
-                }
-            )
-        return self._webdav_client
+        base = self.valves.NEXTCLOUD_BASE_URL
+        wd_user = self.valves.WEBDAV_USERNAME
+        url = f"{base}/remote.php/dav/files/{wd_user}/"
+        log(f"create webdav_client with url={url!r}")
+        data = {
+            "webdav_hostname": url,
+            "webdav_login": self.valves.NEXTCLOUD_USERNAME,
+            "webdav_password": self.valves.NEXTCLOUD_APP_PASSWORD,
+        }
+        try:
+            return Client(data)
+        except Exception as e:
+            log_err(f"failed to create webdav_client: {type(e).__name__}: {e}")
+            raise
 
     @property
     def caldav_client(self):
-        vh = self.H.get_valve_hash()
-        if self._caldav_client is None or self._valve_hash != vh:
-            self._valve_hash = vh
-            url = f"{self.valves.NEXTCLOUD_BASE_URL}/remote.php/dav/"
-            logger.debug(f"caldav_client url: {url!r}")
-
-            self._caldav_client = get_davclient(
+        base = self.valves.NEXTCLOUD_BASE_URL
+        url = f"{base}/remote.php/dav"
+        log(f"creating new caldav_client with url={url!r}")
+        try:
+            caldav_client = get_davclient(
                 username=self.valves.NEXTCLOUD_USERNAME,
                 password=self.valves.NEXTCLOUD_APP_PASSWORD,
                 url=url,
                 features="nextcloud",
                 enable_rfc6764=False,
             )
-        return self._caldav_client
+            return caldav_client
+        except Exception as e:
+            log_err(
+                f"Failed to create caldav_client: \
+                    {type(e).__name__}: {e}"
+            )
+            raise
 
+    @tool_logger
+    @caldav_safe
+    def get_calendars(self) -> list[str]:
+        """Retrieve available calendars"""
+        calendars = [
+            c.name
+            for c in self.caldav_client.principal().calendars()
+            if get_cal_type(c) == "event"
+        ]
+        log(f"found {len(calendars)} calendars: {calendars!r}")
+        whitelisted = [
+            name
+            for name in calendars
+            if is_whitelisted(self.valves.CALENDAR_WHITELIST, name)
+        ]
+        log(f"whitelisted: {whitelisted}")
+        return whitelisted
+
+    @tool_logger
+    @caldav_safe
+    def get_task_lists(self) -> list[str]:
+        """Retrieve available task lists"""
+        task_lists = [
+            c.name
+            for c in self.caldav_client.principal().calendars()
+            if get_cal_type(c) == "todo"
+        ]
+        log(f"found {len(task_lists)} task lists: {task_lists!r}")
+        whitelisted = [
+            name
+            for name in task_lists
+            if is_whitelisted(self.valves.TASK_LIST_WHITELIST, name)
+        ]
+        log(f"whitelisted: {whitelisted}")
+        return whitelisted
+
+    @tool_logger
     @webdav_safe
     def mkdir(
         self,
         path: str,
     ) -> None:
         """Create new directory"""
-        self.webdav_client.mkdir(self.H.validate_path(path, self.valves.SANDBOX_DIR))
+        self.webdav_client.mkdir(validate_path(path, self.valves))
 
+    @tool_logger
     @webdav_safe
     def ls(self, path: str | None = None) -> list[str]:
         """List files and directories"""
-        sandbox = self.valves.SANDBOX_DIR
-        p = self.H.validate_path(path, sandbox)
-        prefix = f"{sandbox.strip().rstrip('/')}/"
+        p = validate_path(path, self.valves)
+        prefix = f"{self.valves.SANDBOX_DIR.strip().rstrip('/')}/"
         paths = self.webdav_client.list(p)
         parent = p.strip(prefix).strip("/")
         result_list = [p for p in paths if p != prefix and p.strip("/") != parent]
         return result_list
 
+    @tool_logger
     @webdav_safe
     def write_file(
         self,
@@ -290,10 +357,11 @@ class Tools:
         """Write to a file, overwriting existing content"""
         if content is None:
             content = ""
-        self.webdav_client.resource(
-            self.H.validate_path(path, self.valves.SANDBOX_DIR)
-        ).read_from(BytesIO(content.encode("utf-8")))
+        self.webdav_client.resource(validate_path(path, self.valves)).read_from(
+            BytesIO(content.encode("utf-8"))
+        )
 
+    @tool_logger
     @webdav_safe
     def cat(
         self,
@@ -301,11 +369,10 @@ class Tools:
     ) -> str:
         """Read a file"""
         buf = BytesIO()
-        self.webdav_client.resource(
-            self.H.validate_path(path, self.valves.SANDBOX_DIR)
-        ).write_to(buf)
+        self.webdav_client.resource(validate_path(path, self.valves)).write_to(buf)
         return buf.getvalue().decode("utf-8")
 
+    @tool_logger
     @webdav_safe
     def append_file(
         self,
@@ -316,21 +383,21 @@ class Tools:
         if content is None:
             content = ""
         buf = BytesIO()
-        res = self.webdav_client.resource(
-            self.H.validate_path(path, self.valves.SANDBOX_DIR)
-        )
+        res = self.webdav_client.resource(validate_path(path, self.valves))
         res.write_to(buf)
         res.read_from(
             BytesIO((buf.getvalue().decode("utf-8") + content).encode("utf-8"))
         )
 
+    @tool_logger
     @webdav_safe
     def rm(self, paths: list[str]) -> None:
         """Deletes files/directories"""
         C = self.webdav_client
         for p in paths:
-            C.clean(self.H.validate_path(p, self.valves.SANDBOX_DIR))
+            C.clean(validate_path(p, self.valves))
 
+    @tool_logger
     @webdav_safe
     def mv(
         self,
@@ -339,10 +406,11 @@ class Tools:
     ) -> None:
         """Move/rename a file or directory"""
         self.webdav_client.move(
-            remote_path_from=self.H.validate_path(src, self.valves.SANDBOX_DIR),
-            remote_path_to=self.H.validate_path(dst, self.valves.SANDBOX_DIR),
+            remote_path_from=validate_path(src, self.valves),
+            remote_path_to=validate_path(dst, self.valves),
         )
 
+    @tool_logger
     @webdav_safe
     def cp(
         self,
@@ -351,27 +419,20 @@ class Tools:
     ) -> None:
         """Copy a file or directory."""
         self.webdav_client.copy(
-            remote_path_from=self.H.validate_path(src, self.valves.SANDBOX_DIR),
-            remote_path_to=self.H.validate_path(dst, self.valves.SANDBOX_DIR),
+            remote_path_from=validate_path(src, self.valves),
+            remote_path_to=validate_path(dst, self.valves),
         )
 
+    @tool_logger
     @caldav_safe
-    def get_task_lists(self) -> list[str]:
-        """Retrieve available task lists"""
-        return [
-            c.name
-            for c in self.caldav_client.principal().calendars()
-            if self.H.get_cal_type(c) == "todo"
-        ]
-
-    @caldav_safe
-    def get_tasks(self, list_name: str | None = None) -> list[dict]:
+    def get_tasks(self, list_name: str | None = None) -> list[dict] | Any:
         """Retrieve task from specified list"""
-        task_map: dict[str, dict] = {}
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
-        for todo in (
-            self.caldav_client.principal().calendar(name=list_name.strip()).todos()
-        ):
+        if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
+            return {"result": "False", "details": f"{list_name!r} not whitelisted"}
+
+        task_map: dict[str, dict] = {}
+        for todo in self.caldav_client.principal().calendar(name=list_name).todos():
             task_map[todo.component["uid"]] = {
                 key: todo.component.get(key)
                 for key in [
@@ -411,6 +472,7 @@ class Tools:
                 tree.append(build_subtree(task_id))
         return tree
 
+    @tool_logger
     @caldav_safe
     def edit_task(
         self,
@@ -423,12 +485,15 @@ class Tools:
         new_description: str | None = None,
         new_url: str | None = None,
         new_categories: list[str] | None = None,
-    ) -> None:
+    ):
         """Update task properties by summary or uid"""
+        list_name = list_name or self.valves.DEFAULT_TASK_LIST
+        if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
+            return {"result": "False", "details": f"{list_name!r} not whitelisted"}
+
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
-        list_name = list_name or self.valves.DEFAULT_TASK_LIST
-        cal = self.caldav_client.principal().calendar(name=list_name.strip())
+        cal = self.caldav_client.principal().calendar(name=list_name)
         if uid:
             todo = cal.todo_by_uid(uid)
         elif summary:  # find the uid
@@ -456,18 +521,22 @@ class Tools:
             todo.component["url"] = new_url
         todo.save()
 
+    @tool_logger
     @caldav_safe
     def delete_task(
         self,
         summary: Optional[str] = None,
         uid: Optional[str] = None,
         list_name: str | None = None,
-    ) -> None:
+    ):
         """Delete task from specified list by summary or uid"""
+        list_name = list_name or self.valves.DEFAULT_TASK_LIST
+        if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
+            return {"result": "False", "details": f"{list_name!r} not whitelisted"}
+
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
-        list_name = list_name or self.valves.DEFAULT_TASK_LIST
-        cal = self.caldav_client.principal().calendar(name=list_name.strip())
+        cal = self.caldav_client.principal().calendar(name=list_name)
         if uid:
             todo = cal.todo_by_uid(uid)
         elif summary:  # find the uid
@@ -483,15 +552,7 @@ class Tools:
             raise Exception("Error: task not found")
         todo.delete()
 
-    @caldav_safe
-    def get_calendars(self) -> list[str]:
-        """Retreive all available calendars"""
-        return [
-            c.name
-            for c in self.caldav_client.principal().calendars()
-            if self.H.get_cal_type(c) == "event"
-        ]
-
+    @tool_logger
     @caldav_safe
     def create_calendar_event(
         self,
@@ -504,12 +565,15 @@ class Tools:
         alarms: List[str] = ["0min"],
         rrule: Optional[str] = None,
         __user__: dict = {},
-    ) -> str:
+    ):
         """Add event to specified calendar."""
+        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
+        if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
+            return {"result": "False", "details": f"{calendar_name!r} not in whitelist"}
+
         zi = ZoneInfo(__user__["timezone"])
         now = datetime.now(zi).replace(second=0, microsecond=0)
-        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
-        cal = self.caldav_client.principal().calendar(name=calendar_name.strip())
+        cal = self.caldav_client.principal().calendar(name=calendar_name)
 
         uid = str(uuid.uuid4())
         e = Event()
@@ -542,7 +606,7 @@ class Tools:
             e.add("rrule", rrule)
 
         if alarms:
-            for r in self.H.parse_reminders(alarms):
+            for r in parse_reminders(alarms):
                 a = Alarm()
                 a.add("action", "DISPLAY")
                 a.add("trigger", timedelta(minutes=-r.get("minutes")))
@@ -551,6 +615,7 @@ class Tools:
         cal.save_event(ical=e)
         return uid
 
+    @tool_logger
     @caldav_safe
     def add_task(
         self,
@@ -561,18 +626,19 @@ class Tools:
         categories: Optional[List[str]] = None,
         url: Optional[str] = None,
         location: Optional[str] = None,
-    ) -> str:
+    ):
         """Add task to specified list. Returns uid of created task."""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
+        if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
+            return {"result": "False", "details": f"{list_name!r} not whitelisted"}
+
         uid = str(uuid.uuid4())
         p = self.caldav_client.principal()
-        valid_lists = [
-            c.name for c in p.calendars() if self.H.get_cal_type(c) == "todo"
-        ]
+        valid_lists = [c.name for c in p.calendars() if get_cal_type(c) == "todo"]
         if list_name not in valid_lists:
-            logger.error("invalid task list")
+            log_err("invalid task list")
             raise Exception("invalid task list")
-        p.calendar(name=list_name.strip()).save_todo(
+        p.calendar(name=list_name).save_todo(
             uid=uid,
             summary=summary,
             priority=priority,
@@ -583,15 +649,19 @@ class Tools:
         )
         return uid
 
+    @tool_logger
     @caldav_safe
     def complete_task(
         self,
         summary: str,
         uid: Optional[str] = None,
         list_name: str | None = None,
-    ) -> None:
+    ):
         """Mark a task as completed"""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
+        if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
+            return {"result": "False", "details": f"{list_name!r} not whitelisted"}
+
         cal = self.caldav_client.principal().calendar(name=list_name)
         if uid:
             todo = cal.todo_by_uid(uid)
@@ -611,6 +681,7 @@ class Tools:
         todo.component["status"] = "COMPLETED"
         todo.save()
 
+    @tool_logger
     @caldav_safe
     def edit_calendar_event(
         self,
@@ -625,14 +696,17 @@ class Tools:
         new_location: Optional[str] = None,
         new_alarms: Optional[List[str]] = None,
         new_rrule: Optional[str] = None,
-    ) -> None:
+    ):
         """Update event properties by summary or uid."""
+        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
+        if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
+            return {"result": "False", "details": f"{calendar_name!r} not in whitelist"}
+
         if not (summary or uid):
             raise Exception("Error: must provide a summary or uid")
         tz = __user__["timezone"]
         zi = ZoneInfo(tz)
-        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
-        cal = self.caldav_client.principal().calendar(name=calendar_name.strip())
+        cal = self.caldav_client.principal().calendar(name=calendar_name)
         if uid:
             e = cal.event_by_uid(uid)
         elif summary:
@@ -672,7 +746,7 @@ class Tools:
             for sub in valarm_subs[:]:  # prevent index shifting
                 e.component.subcomponents.remove(sub)
             # add new
-            for reminder in self.H.parse_reminders(new_alarms):
+            for reminder in parse_reminders(new_alarms):
                 a = Alarm()
                 a.add("action", "DISPLAY")
                 a.add("trigger", timedelta(minutes=-reminder.get("minutes")))
@@ -680,19 +754,23 @@ class Tools:
                 e.component.add_component(a)
         e.save()
 
+    @tool_logger
     @caldav_safe
     def get_calendar_events(
         self,
         calendar_name: str | None = None,
         __user__: dict = {},
-    ) -> list[dict[str, Any]]:
-        """Retreive upcoming events on specified calendar"""
+    ):
+        """Retrieve upcoming events on specified calendar"""
+        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
+        if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
+            return {"result": "False", "details": f"{calendar_name!r} not in whitelist"}
+
         # future events. Prevent RRULE expansion
         event_data = []
-        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         for e in (
             self.caldav_client.principal()
-            .calendar(name=calendar_name.strip())
+            .calendar(name=calendar_name)
             .search(start=datetime.now(ZoneInfo(__user__["timezone"])), expand=False)
         ):
             event_dict = {}
@@ -721,18 +799,22 @@ class Tools:
             event_data.append(event_dict)
         return event_data
 
+    @tool_logger
     @caldav_safe
     def delete_calendar_event(
         self,
         uid: Optional[str] = None,
         summary: Optional[str] = None,
         calendar_name: str | None = None,
-    ) -> None:
+    ):
         """Delete event from specified calendar"""
+        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
+        if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
+            return {"result": "False", "details": f"{calendar_name!r} not in whitelist"}
+
         if not (summary or uid):
             raise Exception("must provide a summary or uid")
-        calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
-        cal = self.caldav_client.principal().calendar(name=calendar_name.strip())
+        cal = self.caldav_client.principal().calendar(name=calendar_name)
         if uid:
             e = cal.event_by_uid(uid)
         elif summary:

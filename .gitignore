@@ -8,4 +8,6 @@ docs/modules
 .aider*
 archive
 owuinc.egg-info
+logs
 AGENTS.md
+valves.md

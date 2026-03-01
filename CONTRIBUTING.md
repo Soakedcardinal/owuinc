@@ -1,25 +1,58 @@
 # Contributing to owuinc
 
-Run the following commands to initialize the environment:
-
+## 1. first run only: create new venv 
+clean up if needed
 ```bash
-rm -r .venv .pytest_cache .mypy_cache __pycache__ 
+rm -r .venv .pytest_cache .mypy_cache __pycache__ || true
 python3 -m venv .venv
+```
+
+create venv
+```bash
+python3 -m venv .venv
+```
+
+activate venv
+```bash
 source .venv/bin/activate
+```
 
-# deps
+Update pip
+```bash
 pip install -U pip
-pip install -r requirements.txt -r requirements-dev.txt
-pip install -e .
+```
 
-# hooks
+Install deps
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+```
+
+Install main module
+```bash
+pip install -e .
+```
+
+
+# Workflow
+```bash
 pre-commit install
 pre-commit run --all-files
+```
 
-# tests
+## 5. tests
+
+run all
+```bash
 pytest
+```
 
-# docs
+run helpers test (validators)
+```bash
+pytest tests/test_helpers.py -v
+```
+
+## 6. docs
+```bash
 rm -r docs/build
 sphinx-build -M html docs/source/ docs/build/
 ```
