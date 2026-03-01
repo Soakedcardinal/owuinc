@@ -264,7 +264,7 @@ def test_mv_dir():
 1. `mkdir(path='foo')`: True
 2. `mv(src='foo', dst='bar')`: True
 3. `ls()`: does not contain 'foo' and contains 'bar'"""
-    text = create_chat(prompt).strip()
+    text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
 
