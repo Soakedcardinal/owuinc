@@ -50,9 +50,7 @@ Output **ONLY** "pass" or "fail".
 
 
 # https://docs.openwebui.com/tutorials/integrations/backend-controlled-ui-compatible-flow
-def create_chat(
-    prompt, title="owuinc test chat", tool_ids=["owuinc"], model="owuinc"
-) -> str:
+def create_chat(prompt, title, tool_ids=["owuinc"], model="owuinc") -> str:
     ts = int(time.time())
     ts2 = ts + 1000
 
@@ -209,6 +207,7 @@ def pass_assert(text):
 
 
 def test_mv_file():
+    test_name = inspect.currentframe().f_code.co_name
     setup_prompt = """
 1. rm(paths=['foo.txt']): \\
     {"result": "False","details":"rm: not found"} \\
@@ -216,9 +215,7 @@ def test_mv_file():
 2. rm(paths=['bar.txt']): \\
     {"result": "False","details":"rm: not found"} \\
     OR {"result": "True"}"""
-    text = create_chat(
-        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
-    ).strip()
+    text = create_chat(setup_prompt, f"{test_name} setup").strip()
     pass_assert(text)
 
     prompt = """
@@ -226,11 +223,12 @@ def test_mv_file():
 2. `mv(src='foo.txt', dst='bar.txt')`: True
 3. `cat(path='foo.txt')`: False
 4. `cat(path='bar.txt')`: contains 'lorem'"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
 
 def test_cp_file():
+    test_name = inspect.currentframe().f_code.co_name
     setup_prompt = """
 1. rm(paths=['foo.txt']): \\
     {"result": "False","details":"rm: not found"} \\
@@ -238,9 +236,7 @@ def test_cp_file():
 2. rm(paths=['bar.txt']): \\
     {"result": "False","details":"rm: not found"} \\
     OR {"result": "True"}"""
-    text = create_chat(
-        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
-    ).strip()
+    text = create_chat(setup_prompt, f"{test_name} setup").strip()
     pass_assert(text)
 
     prompt = """
@@ -248,11 +244,12 @@ def test_cp_file():
 2. `cp(src='foo.txt', dst='bar.txt)`: True
 3. `cat(path='foo.txt')`: contains 'lorem'
 4. `cat(path='bar.txt')`: contains 'lorem'"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
 
 def test_mv_dir():
+    test_name = inspect.currentframe().f_code.co_name
     setup_prompt = """
 1. rm(paths=['foo']): \\
     {"result": "False","details":"rm: not found"} \\
@@ -260,9 +257,7 @@ def test_mv_dir():
 2. rm(paths=['bar']): \\
     {"result": "False","details":"rm: not found"} \\
     OR {"result": "True"}"""
-    text = create_chat(
-        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
-    ).strip()
+    text = create_chat(setup_prompt, f"{test_name} setup").strip()
     pass_assert(text)
 
     prompt = """
@@ -274,6 +269,7 @@ def test_mv_dir():
 
 
 def test_cp_dir():
+    test_name = inspect.currentframe().f_code.co_name
     setup_prompt = """
 1. rm(paths=['foo']): \\
     {"result": "False","details":"rm: not found"} \\
@@ -281,38 +277,36 @@ def test_cp_dir():
 2. rm(paths=['bar']): \\
     {"result": "False","details":"rm: not found"} \\
     OR {"result": "True"}"""
-    text = create_chat(
-        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
-    ).strip()
+    text = create_chat(setup_prompt, f"{test_name} setup").strip()
     pass_assert(text)
 
     prompt = """
 1. `mkdir(path='foo')`: True
 2. `cp(src='foo', dst='bar')`: True
 3. `ls()`: contains 'foo' and 'bar'"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
 
 def test_append_file():
+    test_name = inspect.currentframe().f_code.co_name
     setup_prompt = """
 1. rm(paths=['foo.txt']): \\
     {"result": "False","details":"rm: not found"} \\
     OR {"result": "True"}"""
-    text = create_chat(
-        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
-    ).strip()
+    text = create_chat(setup_prompt, f"{test_name} setup").strip()
     pass_assert(text)
 
     prompt = """
 1. `write_file(path='foo.txt', content='lorem')`: True
 2. `append_file(path='foo.txt',content=' ipsum')`: True
 3. `cat(path='foo.txt')`: contains 'lorem ipsum'"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
 
 def test_path_traversal():
+    test_name = inspect.currentframe().f_code.co_name
     prompt = """
 1. `ls(path=..)`: False
 2. `ls(path=%2e%2e%2f)`: False
@@ -321,55 +315,51 @@ def test_path_traversal():
 5. `write_file(path='../foo.txt', content='lorem')`: False
 6. `cat(path='../foo.txt')`: False
 7. `rm(paths=['../foo.txt'])`: False"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
 
 def test_get_tasks():
-
+    test_name = inspect.currentframe().f_code.co_name
     prompt = """
 1. `get_tasks()`: Empty"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name} setup").strip()
+    text = create_chat(prompt, f"{test_name} setup").strip()
     pass_assert(text)
 
     prompt = """
 1. `add_task(summary='foo')`: returns a UID
 2. `get_tasks()`: contains the UID from step 1"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
     prompt = "delete_task(summary='foo'): True"
-    text = create_chat(
-        prompt, f"{inspect.currentframe().f_code.co_name} cleanup"
-    ).strip()
+    text = create_chat(prompt, f"{test_name} cleanup").strip()
     pass_assert(text)
 
 
 def test_add_task():
-
+    test_name = inspect.currentframe().f_code.co_name
     prompt = """
 1. `get_tasks()`: Empty"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name} setup").strip()
+    text = create_chat(prompt, f"{test_name} setup").strip()
     pass_assert(text)
 
     prompt = """
 1. `add_task(summary='foo')`: returns a UID
 2. `get_tasks()`: contains the UID from step 1"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
     prompt = "delete_task(summary='foo'): True"
-    text = create_chat(
-        prompt, f"{inspect.currentframe().f_code.co_name} cleanup"
-    ).strip()
+    text = create_chat(prompt, f"{test_name} cleanup").strip()
     pass_assert(text)
 
 
 def test_edit_task():
-
+    test_name = inspect.currentframe().f_code.co_name
     prompt = """
 1. `get_tasks()`: Empty"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name} setup").strip()
+    text = create_chat(prompt, f"{test_name} setup").strip()
     pass_assert(text)
 
     prompt = """
@@ -377,82 +367,73 @@ def test_edit_task():
 2. `edit_task(uid=<uid from step 1>, \\
     new_summary='bar')`: True
 3. `get_tasks()`: contains task with summary='bar'"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
     prompt = "delete_task(summary='bar'): True"
-    text = create_chat(
-        prompt, f"{inspect.currentframe().f_code.co_name} cleanup"
-    ).strip()
+    text = create_chat(prompt, f"{test_name} cleanup").strip()
     pass_assert(text)
 
 
 def test_delete_task():
-
+    test_name = inspect.currentframe().f_code.co_name
     prompt = """
 1. `get_tasks()`: Empty"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name} setup").strip()
+    text = create_chat(prompt, f"{test_name} setup").strip()
     pass_assert(text)
 
     prompt = """
 1. `add_task(summary='foo')`: returns a UID
 2. `delete_task(summary='foo')`: True"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
 
 def test_create_calendar_event():
+    test_name = inspect.currentframe().f_code.co_name
     setup_prompt = """`delete_calendar_event(summary='foo')` returns
 `{"result": "True"}` or
 `{"result": "False", "details": "match not found for 'foo'"
 }`"""
-    text = create_chat(
-        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
-    ).strip()
+    text = create_chat(setup_prompt, f"{test_name} setup").strip()
     pass_assert(text)
 
     prompt = "`create_calendar_event(summary='foo')`: returns a UID"
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
     cleanup_prompt = "`delete_calendar_event(summary='foo')`: True"
-    text = create_chat(
-        cleanup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
-    ).strip()
+    text = create_chat(cleanup_prompt, f"{test_name} setup").strip()
     pass_assert(text)
 
 
 def test_get_calendar_events():
+    test_name = inspect.currentframe().f_code.co_name
     setup_prompt = """`delete_calendar_event(summary='foo')` returns
 `{"result": "True"}` or
 `{"result": "False", "details": "match not found for 'foo'"
 }`"""
-    text = create_chat(
-        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
-    ).strip()
+    text = create_chat(setup_prompt, f"{test_name} setup").strip()
     pass_assert(text)
 
     prompt = """
 1. `create_calendar_event(summary='foo')`: returns a UID
 2. `get_calendar_events()`: contains UID from step 1"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
     cleanup_prompt = "delete_calendar_event(summary='foo'): True"
-    text = create_chat(
-        cleanup_prompt, f"{inspect.currentframe().f_code.co_name} cleanup"
-    ).strip()
+    text = create_chat(cleanup_prompt, f"{test_name} cleanup").strip()
     pass_assert(text)
 
 
 def test_edit_calendar_event():
+    test_name = inspect.currentframe().f_code.co_name
     setup_prompt = """`delete_calendar_event(summary='foo')` returns
 `{"result": "True"}` or
 `{"result": "False", "details": "match not found for 'foo'"
 }`"""
-    text = create_chat(
-        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
-    ).strip()
+    text = create_chat(setup_prompt, f"{test_name} setup").strip()
     pass_assert(text)
 
     prompt = """
@@ -460,42 +441,38 @@ def test_edit_calendar_event():
 2. `edit_calendar_event(uid=<uid from step 1>, \\
     new_summary='bar')`: True
 3. `get_calendar_events()`: contains event with summary='bar'"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
     cleanup_prompt = "delete_calendar_event(summary='bar'): True"
-    text = create_chat(
-        cleanup_prompt, f"{inspect.currentframe().f_code.co_name} cleanup"
-    ).strip()
+    text = create_chat(cleanup_prompt, f"{test_name} cleanup").strip()
     pass_assert(text)
 
 
 def test_delete_calendar_event():
+    test_name = inspect.currentframe().f_code.co_name
     setup_prompt = """`delete_calendar_event(summary='foo')` returns
 `{"result": "True"}` or
 `{"result": "False", "details": "match not found for 'foo'"
 }`"""
-    text = create_chat(
-        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
-    ).strip()
+    text = create_chat(setup_prompt, f"{test_name} setup").strip()
     pass_assert(text)
 
     prompt = """
 1. `create_calendar_event(summary='foo')`: returns a UID
 2. `delete_calendar_event(summary='foo')`: True"""
-    text = create_chat(prompt, f"{inspect.currentframe().f_code.co_name}").strip()
+    text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
 
 # todo depends on get_current_time
 def test_event_timing():
+    test_name = inspect.currentframe().f_code.co_name
     setup_prompt = """
 1. `delete_calendar_event(summary='foo')` returns `{"result": "True"}` or
 `{"result": "False", "details": "delete_calendar_event: match not found for 'foo'"
 }`"""
-    text = create_chat(
-        setup_prompt, f"{inspect.currentframe().f_code.co_name} setup"
-    ).strip()
+    text = create_chat(setup_prompt, f"{test_name} setup").strip()
     pass_assert(text)
 
     tool_ids = ["owuinc", "get_current_time"]
@@ -509,7 +486,5 @@ new_start=<the day after tomorrow at 2PM>, \\
 new_end=<the day after tomorrow at 2PM>)`: True
 5. `get_calendar_events()`: contains an event with the updated start time
 6. `delete_calendar_event(uid='<uid from step 2>')`: True"""
-    text = create_chat(
-        prompt, f"{inspect.currentframe().f_code.co_name}", tool_ids
-    ).strip()
+    text = create_chat(prompt, f"{test_name}", tool_ids).strip()
     pass_assert(text)
