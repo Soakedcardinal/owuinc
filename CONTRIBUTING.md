@@ -40,8 +40,15 @@ pre-commit run --all-files
 ```
 
 ## 5. tests
+
+run all
 ```bash
 pytest
+```
+
+run helpers test (validators)
+```bash
+.venv/bin/pytest tests/test_helpers.py -v
 ```
 
 ## 6. docs
