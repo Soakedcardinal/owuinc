@@ -470,7 +470,7 @@ def test_event_timing():
     test_name = inspect.currentframe().f_code.co_name
     setup_prompt = """
 1. `delete_calendar_event(summary='foo')` returns `{"result": "True"}` or
-`{"result": "False", "details": "delete_calendar_event: match not found for 'foo'"
+`{"result": "False", "details": "match not found for 'foo'"
 }`"""
     text = create_chat(setup_prompt, f"{test_name} setup").strip()
     pass_assert(text)
