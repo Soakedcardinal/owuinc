@@ -48,7 +48,7 @@ pytest
 
 run helpers test (validators)
 ```bash
-.venv/bin/pytest tests/test_helpers.py -v
+pytest tests/test_helpers.py -v
 ```
 
 ## 6. docs
