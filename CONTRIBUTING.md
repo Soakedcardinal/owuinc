@@ -1,18 +1,18 @@
 # Contributing to owuinc
 
-## 1. first run only: create new venv 
-clean up if needed
+## Create new venv 
+Clean up if needed
 ```bash
 rm -r .venv .pytest_cache .mypy_cache __pycache__ || true
 python3 -m venv .venv
 ```
 
-create venv
+Create venv
 ```bash
 python3 -m venv .venv
 ```
 
-activate venv
+Activate venv
 ```bash
 source .venv/bin/activate
 ```
@@ -27,31 +27,33 @@ Install deps
 pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-Install main module
+Install `owuinc` module
 ```bash
 pip install -e .
 ```
 
+## Workflow
 
-# Workflow
+Run hooks
 ```bash
 pre-commit install
 pre-commit run --all-files
 ```
 
-## 5. tests
-
-run all
+Run tests
 ```bash
 pytest
-```
-
-run helpers test (validators)
-```bash
+# or individually:
 pytest tests/test_helpers.py -v
+pytest tests/test_owuinc.py -v
 ```
 
-## 6. docs
+Coverage
+```bash
+pytest --cov=owuinc
+```
+
+Build API doc
 ```bash
 rm -r docs/build
 sphinx-build -M html docs/source/ docs/build/

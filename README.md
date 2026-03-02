@@ -22,41 +22,50 @@ Connect OpenWebUI Models to Nextcloud.
 
 ## Setup
 
+Pick an existing model, or create one to use. For this example, we will set up an agent named `bot`.
+
 ### 1. Add to OpenWebUI
 * Navigate to Tools > + New Tool
-* Enter Name and description e.g. `owuinc`
+* Enter Name and description e.g. `owuinc_bot`
 * Paste the contents of [`owuinc.py`](./owuinc/owuinc.py)
 * Click Save > Confirm
 
-### 2. Configure Valves
+### 2. Create Calendar/Task Lists
+* NextCloud Calendar app > `+` > New calendar with task list > call it `bot`
+
+### 3. Configure Valves
 * In NextCloud Files app > Files settings
-* locate your WebDAV username in the WebDAV URL `https://your-nextcloud-domain.com/remote.php/dav/files/<WEBDAV_USERNAME>`
-* Under Profile Icon > Personal Settings > Security, create an app password e.g. `owuinc`
-* In OpenWebUI, click the gear icon next to the `owuinc` tool and fill in the Valves
-    * `Webdav Username` = <WEBDAV_USERNAME> (from WebDAV URL)
+* Identify your `<WEBDAV_USERNAME>` from the WebDAV URL `https://your-nextcloud-domain.com/remote.php/dav/files/<WEBDAV_USERNAME>`
+
+* Under Profile Icon > Personal Settings > Security, create an app password e.g. `owuinc_bot`
+* In OpenWebUI > gear icon next to `owuinc_bot` tool > fill in the Valves
+    * `Webdav Username` ( from WebDAV URL)
     * `Nextcloud Base URL` (nextcloud server address)
     * `Nextcloud Username` (shown next to app password)
     * `Nextcloud App Password`
-    * Set `Sandbox Dir` valve to somewhere under your nextcloud root. Must be a relative folder name (e.g. `sandbox`). No leading `/`. Leave empty to use the root (NOT RECOMMENDED).
-* Configure calendars and task lists:
-    * Set `Default Calendar` to a calendar name in your whitelist
-    * Set `Default Task List` to a task list name in your whitelist
-    * Set `Calendar Whitelist` to comma-separated list of allowed calendars (e.g., `work, personal`)
-    * Set `Task List Whitelist` to comma-separated list of allowed task lists (e.g., `main, shopping`)
-* IMPORTANT: Calendars and task lists are ONLY accessible if explicitly listed in the respective whitelist. Both the whitelist AND default values must be configured for operations to work.
+    * Set `Sandbox Dir` to `bot` 
+    * Set `Default Calendar` to `bot`
+    * Set `Default Task List` to `bot`
+    * Set `Calendar Whitelist` to `bot`
+    * Set `Task List Whitelist` to `bot`
+* Press save
 
-### 3. Configure Model
-* Pick or create a model to use e.g. `owuinc`.
-* Open the model page in OpenWebUI > Workspace > Models > `owuinc`
-* Add to the system prompt (update the defaults to match your valves):
+IMPORTANT: Calendars and task lists are ONLY accessible if explicitly listed in the respective whitelist. Both the whitelist AND default values must be configured for operations to work.
+
+### 4. Configure Model
+* OpenWebUI > Workspace > Models > `bot`
+* Add to the system prompt
+
 ```text
-
 Task Priorities: 1 = high, 9 = low, 0 = none
-Task/Event operations: Only use Uids internally, but never include them in responses.
+Task/Event operations: Only use Uids internally; never include them in responses.
 Calendar Functions: Provide `start` and `end` arguments as an ISO 8601-style string without a timezone offset, e.g. `2026-02-01T15:30`. 
-Default `calendar_name`: `owuinc`
-Default `list_name`: `owuinc-tasks`
+Default `calendar_name`: `bot`
+Default `list_name`: `bot`
 ```
-* Set Advanced Params > Show > Function Calling to `Native`
-* Under Tools, tick the checkbox to enable the `owuinc` tool
+
+IMPORTANT: update the defaults to match your chosen task list / calendar.
+
+* Ensure Advanced Params > Show > Function Calling is set to `Native`
+* Under Tools, tick the checkbox to enable the `owuinc_bot` tool
 * Press Save & Update
