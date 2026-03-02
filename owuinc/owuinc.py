@@ -385,9 +385,9 @@ class Tools:
         buf = BytesIO()
         res = self.webdav_client.resource(validate_path(path, self.valves))
         res.write_to(buf)
-        existing = buf.getvalue().decode("utf-8")
-        existing = existing.rstrip("\n") + "\n"
-        res.read_from(BytesIO((existing + content).encode("utf-8")))
+        res.read_from(
+            BytesIO((buf.getvalue().decode("utf-8") + content).encode("utf-8"))
+        )
 
     @tool_logger
     @webdav_safe
