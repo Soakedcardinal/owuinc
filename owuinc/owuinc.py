@@ -2,7 +2,7 @@
 title: owuinc
 author: Duncan Nicholson
 git_url: https://github.com/soakedcardinal/owuinc
-description: Manage calendars, tasks, and files via WebDAV and CalDAV.
+description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav,icalendar,webdavclient3
 version: 2.0.0
 license: MIT
@@ -385,9 +385,9 @@ class Tools:
         buf = BytesIO()
         res = self.webdav_client.resource(validate_path(path, self.valves))
         res.write_to(buf)
-        res.read_from(
-            BytesIO((buf.getvalue().decode("utf-8") + content).encode("utf-8"))
-        )
+        existing = buf.getvalue().decode("utf-8")
+        existing = existing.rstrip("\n") + "\n"
+        res.read_from(BytesIO((existing + content).encode("utf-8")))
 
     @tool_logger
     @webdav_safe
@@ -627,7 +627,7 @@ class Tools:
         url: Optional[str] = None,
         location: Optional[str] = None,
     ):
-        """Add task to specified list. Returns uid of created task."""
+        """Add a task to the specified list."""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             return {"result": "False", "details": f"{list_name!r} not whitelisted"}
@@ -649,6 +649,7 @@ class Tools:
         )
         return uid
 
+    # TODO this duplicates edit task should be a wrapper
     @tool_logger
     @caldav_safe
     def complete_task(
@@ -657,7 +658,7 @@ class Tools:
         uid: Optional[str] = None,
         list_name: str | None = None,
     ):
-        """Mark a task as completed"""
+        """Marks a task completed."""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             return {"result": "False", "details": f"{list_name!r} not whitelisted"}
@@ -697,7 +698,7 @@ class Tools:
         new_alarms: Optional[List[str]] = None,
         new_rrule: Optional[str] = None,
     ):
-        """Update event properties by summary or uid."""
+        """Edits events by summary/uid."""
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             return {"result": "False", "details": f"{calendar_name!r} not in whitelist"}
@@ -761,7 +762,7 @@ class Tools:
         calendar_name: str | None = None,
         __user__: dict = {},
     ):
-        """Retrieve upcoming events on specified calendar"""
+        """Retrieves upcoming events on the specified calendar."""
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             return {"result": "False", "details": f"{calendar_name!r} not in whitelist"}
@@ -807,7 +808,7 @@ class Tools:
         summary: Optional[str] = None,
         calendar_name: str | None = None,
     ):
-        """Delete event from specified calendar"""
+        """Deletes an event from the specified calendar."""
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             return {"result": "False", "details": f"{calendar_name!r} not in whitelist"}
