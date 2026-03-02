@@ -4,3 +4,4 @@ types-requests
 sphinx
 sphinx-rtd-theme
 setuptools
+pytest-cov

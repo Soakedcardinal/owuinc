@@ -11,3 +11,4 @@ owuinc.egg-info
 logs
 AGENTS.md
 valves.md
+.coverage
