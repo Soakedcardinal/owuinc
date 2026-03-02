@@ -27,7 +27,7 @@
 - [ ] Add negative case tests for whitelist filtering (get_calendars/get_task_lists should exclude non-whitelisted items)
 - [ ] Add negative case tests for task/calendar operations when whitelist is empty or excludes specific items
 - [ ] Improve existing tests for tasks and calendar events
-- [ ] Add code coverage reporting (`pytest-cov`)
+- [ ] run `pytest-cov` in CI
 - [ ] Improve type hints for better tool schema parsing
 
 ## Configuration
