@@ -377,20 +377,20 @@ def test_edit_task():
 
 def test_delete_task():
     test_name = inspect.currentframe().f_code.co_name
-    prompt = """`get_tasks()`: Empty"""
+    prompt = "`get_tasks()`: Empty"
     text = create_chat(prompt, f"{test_name} setup 1/2").strip()
     pass_assert(text)
 
-    prompt = """`add_task(summary='foo')`: returns a UID"""
+    prompt = "`add_task(summary='foo')`: returns a UID"
     text = create_chat(prompt, f"{test_name} setup 2/2").strip()
     pass_assert(text)
 
-    prompt = """`delete_task(summary='foo')`: True"""
+    prompt = "`delete_task(summary='foo')`: True"
     text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
     test_name = inspect.currentframe().f_code.co_name
-    prompt = """`get_tasks()`: Empty"""
+    prompt = "`get_tasks()`: Empty"
     text = create_chat(prompt, f"{test_name} verification").strip()
     pass_assert(text)
 
