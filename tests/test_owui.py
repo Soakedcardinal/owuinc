@@ -370,7 +370,7 @@ def test_edit_task():
     text = create_chat(prompt, f"{test_name}").strip()
     pass_assert(text)
 
-    prompt = "delete_task(summary='bar'): True"
+    prompt = "`delete_task(summary='bar')`: True"
     text = create_chat(prompt, f"{test_name} cleanup").strip()
     pass_assert(text)
 
