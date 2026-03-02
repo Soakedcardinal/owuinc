@@ -194,22 +194,29 @@ def parse_reminders(reminders: list | None = None) -> list:
 
 def get_cal_type(calendar: Calendar | None = None):
     if not calendar:
+        # todo exception?
         return "none"
     sccs = calendar.get_properties().get(
         "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set"
     )
     if not sccs:
+        # todo exception?
         return "unknown"
+
     kinds = [comp.get("name") for comp in sccs if comp.tag.endswith("comp")]
     has_event = "VEVENT" in kinds
     has_todo = "VTODO" in kinds
+
     if has_event and not has_todo:
+        # events only
         return "event"
     elif has_todo and not has_event:
+        # tasks only
         return "todo"
     elif has_event and has_todo:
         return "mixed"
     else:
+        # todo exception?
         return "unknown"
 
 
@@ -234,21 +241,21 @@ class Tools:
         NEXTCLOUD_APP_PASSWORD: str = Field("", json_schema_extra={"secret": True})
         SANDBOX_DIR: str = Field(
             default="owuinc",
-            description="A relative directory path (or an empty string) \
-            that will be prefixed to every file/directory operation performed \
-            by the Tools class.",
+            description="relative directory path \
+            that will be prefixed to every file operation. \
+            No leading `/`. Leave empty to use the root.",
         )
         DEFAULT_CALENDAR: str = Field(
             default="owuinc", description="Default calendar for event operations"
         )
         DEFAULT_TASK_LIST: str = Field(
-            default="owuinc-tasks", description="Default task list for task operations"
+            default="owuinc", description="Default task list for task operations"
         )
         CALENDAR_WHITELIST: str = Field(
             default="owuinc", description="Comma-separated list of allowed calendars"
         )
         TASK_LIST_WHITELIST: str = Field(
-            default="owuinc-tasks",
+            default="owuinc",
             description="Comma-separated list of allowed task lists",
         )
         pass  # required for parsing
@@ -298,7 +305,7 @@ class Tools:
         calendars = [
             c.name
             for c in self.caldav_client.principal().calendars()
-            if get_cal_type(c) == "event"
+            if get_cal_type(c) in ("event", "mixed")
         ]
         log(f"found {len(calendars)} calendars: {calendars!r}")
         whitelisted = [
@@ -316,7 +323,7 @@ class Tools:
         task_lists = [
             c.name
             for c in self.caldav_client.principal().calendars()
-            if get_cal_type(c) == "todo"
+            if get_cal_type(c) in ("todo", "mixed")
         ]
         log(f"found {len(task_lists)} task lists: {task_lists!r}")
         whitelisted = [
@@ -634,7 +641,9 @@ class Tools:
 
         uid = str(uuid.uuid4())
         p = self.caldav_client.principal()
-        valid_lists = [c.name for c in p.calendars() if get_cal_type(c) == "todo"]
+        valid_lists = [
+            c.name for c in p.calendars() if get_cal_type(c) in ("todo", "mixed")
+        ]
         if list_name not in valid_lists:
             log_err("invalid task list")
             raise Exception("invalid task list")
@@ -772,7 +781,11 @@ class Tools:
         for e in (
             self.caldav_client.principal()
             .calendar(name=calendar_name)
-            .search(start=datetime.now(ZoneInfo(__user__["timezone"])), expand=False)
+            .search(
+                start=datetime.now(ZoneInfo(__user__["timezone"])),
+                expand=False,
+                event=True,
+            )
         ):
             event_dict = {}
             for field in [
