@@ -4,7 +4,7 @@ author: Duncan Nicholson
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav,icalendar,webdavclient3
-version: 2.1.0
+version: 2.2.0
 license: MIT
 """
 
@@ -454,6 +454,7 @@ class Tools:
         new_description: str | None = None,
         new_url: str | None = None,
         new_categories: list[str] | None = None,
+        new_related_to: str | None = None,
     ):
         """Update task properties by summary or uid"""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
@@ -488,6 +489,8 @@ class Tools:
             todo.component["priority"] = max(0, min(9, new_priority))
         if new_url:
             todo.component["url"] = new_url
+        if new_related_to:
+            todo.component["related-to"] = new_related_to
         todo.save()
 
     @tool_logger
