@@ -4,7 +4,7 @@ author: Duncan Nicholson
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav,icalendar,webdavclient3
-version: 2.1.0
+version: 2.2.0
 license: MIT
 """
 
@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from caldav.davclient import get_davclient
 from caldav.lib.error import NotFoundError
-from icalendar import Alarm, Calendar, Event
+from icalendar import Alarm, Event
 from pydantic import BaseModel, Field
 from webdav3.client import Client
 from webdav3.exceptions import (
@@ -192,34 +192,6 @@ def parse_reminders(reminders: list | None = None) -> list:
     return parsed
 
 
-def get_cal_type(calendar: Calendar | None = None):
-    if not calendar:
-        # todo exception?
-        return "none"
-    sccs = calendar.get_properties().get(
-        "{urn:ietf:params:xml:ns:caldav}supported-calendar-component-set"
-    )
-    if not sccs:
-        # todo exception?
-        return "unknown"
-
-    kinds = [comp.get("name") for comp in sccs if comp.tag.endswith("comp")]
-    has_event = "VEVENT" in kinds
-    has_todo = "VTODO" in kinds
-
-    if has_event and not has_todo:
-        # events only
-        return "event"
-    elif has_todo and not has_event:
-        # tasks only
-        return "todo"
-    elif has_event and has_todo:
-        return "mixed"
-    else:
-        # todo exception?
-        return "unknown"
-
-
 def is_whitelisted(whitelist: str, item: str) -> bool:
     """Check if item is in whitelist"""
     if not whitelist:
@@ -302,37 +274,27 @@ class Tools:
     @caldav_safe
     def get_calendars(self) -> list[str]:
         """Retrieve available calendars"""
-        calendars = [
-            c.name
-            for c in self.caldav_client.principal().calendars()
-            if get_cal_type(c) in ("event", "mixed")
+        available = [c.name for c in self.caldav_client.principal().calendars()]
+        log(f"found {len(available)} calendars: {available!r}")
+
+        return [
+            cal_name
+            for cal_name in available
+            if is_whitelisted(self.valves.CALENDAR_WHITELIST, cal_name)
         ]
-        log(f"found {len(calendars)} calendars: {calendars!r}")
-        whitelisted = [
-            name
-            for name in calendars
-            if is_whitelisted(self.valves.CALENDAR_WHITELIST, name)
-        ]
-        log(f"whitelisted: {whitelisted}")
-        return whitelisted
 
     @tool_logger
     @caldav_safe
     def get_task_lists(self) -> list[str]:
         """Retrieve available task lists"""
-        task_lists = [
-            c.name
-            for c in self.caldav_client.principal().calendars()
-            if get_cal_type(c) in ("todo", "mixed")
+        available = [c.name for c in self.caldav_client.principal().calendars()]
+        log(f"found {len(available)} task lists: {available!r}")
+
+        return [
+            tl
+            for tl in available
+            if is_whitelisted(self.valves.TASK_LIST_WHITELIST, tl)
         ]
-        log(f"found {len(task_lists)} task lists: {task_lists!r}")
-        whitelisted = [
-            name
-            for name in task_lists
-            if is_whitelisted(self.valves.TASK_LIST_WHITELIST, name)
-        ]
-        log(f"whitelisted: {whitelisted}")
-        return whitelisted
 
     @tool_logger
     @webdav_safe
@@ -492,6 +454,7 @@ class Tools:
         new_description: str | None = None,
         new_url: str | None = None,
         new_categories: list[str] | None = None,
+        new_related_to: str | None = None,
     ):
         """Update task properties by summary or uid"""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
@@ -503,7 +466,7 @@ class Tools:
         cal = self.caldav_client.principal().calendar(name=list_name)
         if uid:
             todo = cal.todo_by_uid(uid)
-        elif summary:  # find the uid
+        elif summary is not None:
             matches = []
             for todo in cal.todos():
                 if summary.strip() in todo.component["summary"]:
@@ -512,7 +475,7 @@ class Tools:
                 raise Exception(f"Multiple matches for {summary!r}: {matches}")
             elif len(matches) == 1:
                 todo = cal.todo_by_uid(matches[0])
-        if not todo:
+        if not matches or not todo:
             raise Exception("task not found")
         if new_summary:
             todo.component["summary"] = new_summary.strip()
@@ -526,6 +489,8 @@ class Tools:
             todo.component["priority"] = max(0, min(9, new_priority))
         if new_url:
             todo.component["url"] = new_url
+        if new_related_to:
+            todo.component["related-to"] = new_related_to
         todo.save()
 
     @tool_logger
@@ -546,7 +511,7 @@ class Tools:
         cal = self.caldav_client.principal().calendar(name=list_name)
         if uid:
             todo = cal.todo_by_uid(uid)
-        elif summary:  # find the uid
+        elif summary is not None:
             matches = []
             for todo in cal.todos():
                 if summary.strip() in todo.component["summary"]:
@@ -555,7 +520,7 @@ class Tools:
                 raise Exception(f"Error: Multiple matches for {summary!r}: {matches}")
             elif len(matches) == 1:
                 todo = cal.todo_by_uid(matches[0])
-        if not todo:
+        if not matches or not todo:
             raise Exception("Error: task not found")
         todo.delete()
 
@@ -641,10 +606,8 @@ class Tools:
 
         uid = str(uuid.uuid4())
         p = self.caldav_client.principal()
-        valid_lists = [
-            c.name for c in p.calendars() if get_cal_type(c) in ("todo", "mixed")
-        ]
-        if list_name not in valid_lists:
+        available_lists = [c.name for c in p.calendars()]
+        if list_name not in available_lists:
             log_err("invalid task list")
             raise Exception("invalid task list")
         p.calendar(name=list_name).save_todo(
@@ -675,19 +638,18 @@ class Tools:
         cal = self.caldav_client.principal().calendar(name=list_name)
         if uid:
             todo = cal.todo_by_uid(uid)
-        elif summary:
+        else:
             matches = []
-            for todo in cal.todos():
-                if summary.strip() in todo.component["summary"]:
-                    matches.append(todo)
+            for t in cal.todos():
+                if summary.strip() in t.component["summary"]:
+                    matches.append(t)
+            if len(matches) > 1:
+                raise Exception(f"multiple matches found for {summary!r}")
             if len(matches) == 0:
                 raise Exception(
                     f"Task with summary {summary!r} not found in list {list_name!r}"
                 )
-            if len(matches) > 1:
-                raise Exception(f"multiple matches found for {summary!r}")
-            if len(matches) == 1:
-                todo = matches[0]
+            todo = matches[0]
         todo.component["status"] = "COMPLETED"
         todo.save()
 
@@ -714,12 +676,14 @@ class Tools:
 
         if not (summary or uid):
             raise Exception("Error: must provide a summary or uid")
+
         tz = __user__["timezone"]
         zi = ZoneInfo(tz)
         cal = self.caldav_client.principal().calendar(name=calendar_name)
+
         if uid:
             e = cal.event_by_uid(uid)
-        elif summary:
+        elif summary is not None:
             matches = []
             for e in cal.events():
                 if summary.strip() in e.component["summary"]:
@@ -728,8 +692,9 @@ class Tools:
                 raise Exception("Error: multiple matches")
             elif len(matches) == 1:
                 e = cal.event_by_uid(matches[0])
-        if not e:
+        if not matches or not e:
             raise Exception("Error: event not found")
+
         if new_start:
             dtstart = datetime.fromisoformat(new_start)
             if dtstart.tzinfo is None:
@@ -828,10 +793,12 @@ class Tools:
 
         if not (summary or uid):
             raise Exception("must provide a summary or uid")
+
         cal = self.caldav_client.principal().calendar(name=calendar_name)
+        event = None
         if uid:
-            e = cal.event_by_uid(uid)
-        elif summary:
+            event = cal.event_by_uid(uid)
+        elif summary is not None:
             matches = []
             for e in cal.events():
                 c = e.component
@@ -840,7 +807,7 @@ class Tools:
             if len(matches) > 1:
                 raise Exception(f"multiple matches for summary {summary!r}")
             elif len(matches) == 1:
-                e = cal.event_by_uid(matches[0])
-            if len(matches) < 1:
-                raise NotFoundError(f"match not found for {summary!r}")
-        e.delete()
+                event = cal.event_by_uid(matches[0])
+        if not event:
+            raise NotFoundError(f"event not found for {summary!r}")
+        event.delete()
