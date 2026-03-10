@@ -464,6 +464,7 @@ class Tools:
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
         cal = self.caldav_client.principal().calendar(name=list_name)
+        todo = None
         if uid:
             todo = cal.todo_by_uid(uid)
         elif summary is not None:
@@ -475,7 +476,7 @@ class Tools:
                 raise Exception(f"Multiple matches for {summary!r}: {matches}")
             elif len(matches) == 1:
                 todo = cal.todo_by_uid(matches[0])
-        if not matches or not todo:
+        if not todo:
             raise Exception("task not found")
         if new_summary:
             todo.component["summary"] = new_summary.strip()
@@ -509,6 +510,7 @@ class Tools:
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
         cal = self.caldav_client.principal().calendar(name=list_name)
+        todo = None
         if uid:
             todo = cal.todo_by_uid(uid)
         elif summary is not None:
@@ -520,7 +522,7 @@ class Tools:
                 raise Exception(f"Error: Multiple matches for {summary!r}: {matches}")
             elif len(matches) == 1:
                 todo = cal.todo_by_uid(matches[0])
-        if not matches or not todo:
+        if not todo:
             raise Exception("Error: task not found")
         todo.delete()
 
@@ -681,6 +683,7 @@ class Tools:
         zi = ZoneInfo(tz)
         cal = self.caldav_client.principal().calendar(name=calendar_name)
 
+        e = None
         if uid:
             e = cal.event_by_uid(uid)
         elif summary is not None:
@@ -692,7 +695,7 @@ class Tools:
                 raise Exception("Error: multiple matches")
             elif len(matches) == 1:
                 e = cal.event_by_uid(matches[0])
-        if not matches or not e:
+        if not e:
             raise Exception("Error: event not found")
 
         if new_start:
