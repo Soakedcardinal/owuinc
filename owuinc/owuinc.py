@@ -398,7 +398,7 @@ class Tools:
         """Retrieve task from specified list"""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
-            return {"result": "False", "details": f"{list_name!r} not whitelisted"}
+            raise Exception(f"{list_name!r} not whitelisted")
 
         task_map: dict[str, dict] = {}
         for todo in self.caldav_client.principal().calendar(name=list_name).todos():
@@ -459,7 +459,7 @@ class Tools:
         """Update task properties by summary or uid"""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
-            return {"result": "False", "details": f"{list_name!r} not whitelisted"}
+            raise Exception(f"{list_name!r} not whitelisted")
 
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
@@ -505,7 +505,7 @@ class Tools:
         """Delete task from specified list by summary or uid"""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
-            return {"result": "False", "details": f"{list_name!r} not whitelisted"}
+            raise Exception(f"{list_name!r} not whitelisted")
 
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
@@ -543,7 +543,7 @@ class Tools:
         """Add event to specified calendar."""
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
-            return {"result": "False", "details": f"{calendar_name!r} not in whitelist"}
+            raise Exception(f"{calendar_name!r} not in whitelist")
 
         zi = ZoneInfo(__user__["timezone"])
         now = datetime.now(zi).replace(second=0, microsecond=0)
@@ -604,7 +604,7 @@ class Tools:
         """Add a task to the specified list."""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
-            return {"result": "False", "details": f"{list_name!r} not whitelisted"}
+            raise Exception(f"{list_name!r} not whitelisted")
 
         uid = str(uuid.uuid4())
         p = self.caldav_client.principal()
@@ -635,7 +635,7 @@ class Tools:
         """Marks a task completed."""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
-            return {"result": "False", "details": f"{list_name!r} not whitelisted"}
+            raise Exception(f"{list_name!r} not whitelisted")
 
         cal = self.caldav_client.principal().calendar(name=list_name)
         if uid:
@@ -674,7 +674,7 @@ class Tools:
         """Edits events by summary/uid."""
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
-            return {"result": "False", "details": f"{calendar_name!r} not in whitelist"}
+            raise Exception(f"{calendar_name!r} not in whitelist")
 
         if not (summary or uid):
             raise Exception("Error: must provide a summary or uid")
@@ -742,7 +742,7 @@ class Tools:
         """Retrieves upcoming events on the specified calendar."""
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
-            return {"result": "False", "details": f"{calendar_name!r} not in whitelist"}
+            raise Exception(f"{calendar_name!r} not in whitelist")
 
         # future events. Prevent RRULE expansion
         event_data = []
@@ -792,7 +792,7 @@ class Tools:
         """Deletes an event from the specified calendar."""
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
-            return {"result": "False", "details": f"{calendar_name!r} not in whitelist"}
+            raise Exception(f"{calendar_name!r} not in whitelist")
 
         if not (summary or uid):
             raise Exception("must provide a summary or uid")
