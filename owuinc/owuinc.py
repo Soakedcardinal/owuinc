@@ -4,7 +4,7 @@ author: Duncan Nicholson
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav,icalendar,webdavclient3
-version: 2.2.0
+version: 2.2.1
 license: MIT
 """
 
@@ -398,7 +398,7 @@ class Tools:
         """Retrieve task from specified list"""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
-            return {"result": "False", "details": f"{list_name!r} not whitelisted"}
+            raise Exception(f"{list_name!r} not whitelisted")
 
         task_map: dict[str, dict] = {}
         for todo in self.caldav_client.principal().calendar(name=list_name).todos():
@@ -459,14 +459,15 @@ class Tools:
         """Update task properties by summary or uid"""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
-            return {"result": "False", "details": f"{list_name!r} not whitelisted"}
+            raise Exception(f"{list_name!r} not whitelisted")
 
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
         cal = self.caldav_client.principal().calendar(name=list_name)
+        todo = None
         if uid:
             todo = cal.todo_by_uid(uid)
-        elif summary:  # find the uid
+        elif summary is not None:
             matches = []
             for todo in cal.todos():
                 if summary.strip() in todo.component["summary"]:
@@ -504,14 +505,15 @@ class Tools:
         """Delete task from specified list by summary or uid"""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
-            return {"result": "False", "details": f"{list_name!r} not whitelisted"}
+            raise Exception(f"{list_name!r} not whitelisted")
 
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
         cal = self.caldav_client.principal().calendar(name=list_name)
+        todo = None
         if uid:
             todo = cal.todo_by_uid(uid)
-        elif summary:  # find the uid
+        elif summary is not None:
             matches = []
             for todo in cal.todos():
                 if summary.strip() in todo.component["summary"]:
@@ -541,7 +543,7 @@ class Tools:
         """Add event to specified calendar."""
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
-            return {"result": "False", "details": f"{calendar_name!r} not in whitelist"}
+            raise Exception(f"{calendar_name!r} not in whitelist")
 
         zi = ZoneInfo(__user__["timezone"])
         now = datetime.now(zi).replace(second=0, microsecond=0)
@@ -602,7 +604,7 @@ class Tools:
         """Add a task to the specified list."""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
-            return {"result": "False", "details": f"{list_name!r} not whitelisted"}
+            raise Exception(f"{list_name!r} not whitelisted")
 
         uid = str(uuid.uuid4())
         p = self.caldav_client.principal()
@@ -633,24 +635,23 @@ class Tools:
         """Marks a task completed."""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
-            return {"result": "False", "details": f"{list_name!r} not whitelisted"}
+            raise Exception(f"{list_name!r} not whitelisted")
 
         cal = self.caldav_client.principal().calendar(name=list_name)
         if uid:
             todo = cal.todo_by_uid(uid)
-        elif summary:
+        else:
             matches = []
-            for todo in cal.todos():
-                if summary.strip() in todo.component["summary"]:
-                    matches.append(todo)
+            for t in cal.todos():
+                if summary.strip() in t.component["summary"]:
+                    matches.append(t)
+            if len(matches) > 1:
+                raise Exception(f"multiple matches found for {summary!r}")
             if len(matches) == 0:
                 raise Exception(
                     f"Task with summary {summary!r} not found in list {list_name!r}"
                 )
-            if len(matches) > 1:
-                raise Exception(f"multiple matches found for {summary!r}")
-            if len(matches) == 1:
-                todo = matches[0]
+            todo = matches[0]
         todo.component["status"] = "COMPLETED"
         todo.save()
 
@@ -673,16 +674,19 @@ class Tools:
         """Edits events by summary/uid."""
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
-            return {"result": "False", "details": f"{calendar_name!r} not in whitelist"}
+            raise Exception(f"{calendar_name!r} not in whitelist")
 
         if not (summary or uid):
             raise Exception("Error: must provide a summary or uid")
+
         tz = __user__["timezone"]
         zi = ZoneInfo(tz)
         cal = self.caldav_client.principal().calendar(name=calendar_name)
+
+        e = None
         if uid:
             e = cal.event_by_uid(uid)
-        elif summary:
+        elif summary is not None:
             matches = []
             for e in cal.events():
                 if summary.strip() in e.component["summary"]:
@@ -693,6 +697,7 @@ class Tools:
                 e = cal.event_by_uid(matches[0])
         if not e:
             raise Exception("Error: event not found")
+
         if new_start:
             dtstart = datetime.fromisoformat(new_start)
             if dtstart.tzinfo is None:
@@ -737,7 +742,7 @@ class Tools:
         """Retrieves upcoming events on the specified calendar."""
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
-            return {"result": "False", "details": f"{calendar_name!r} not in whitelist"}
+            raise Exception(f"{calendar_name!r} not in whitelist")
 
         # future events. Prevent RRULE expansion
         event_data = []
@@ -787,14 +792,16 @@ class Tools:
         """Deletes an event from the specified calendar."""
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
-            return {"result": "False", "details": f"{calendar_name!r} not in whitelist"}
+            raise Exception(f"{calendar_name!r} not in whitelist")
 
         if not (summary or uid):
             raise Exception("must provide a summary or uid")
+
         cal = self.caldav_client.principal().calendar(name=calendar_name)
+        event = None
         if uid:
-            e = cal.event_by_uid(uid)
-        elif summary:
+            event = cal.event_by_uid(uid)
+        elif summary is not None:
             matches = []
             for e in cal.events():
                 c = e.component
@@ -803,7 +810,7 @@ class Tools:
             if len(matches) > 1:
                 raise Exception(f"multiple matches for summary {summary!r}")
             elif len(matches) == 1:
-                e = cal.event_by_uid(matches[0])
-            if len(matches) < 1:
-                raise NotFoundError(f"match not found for {summary!r}")
-        e.delete()
+                event = cal.event_by_uid(matches[0])
+        if not event:
+            raise NotFoundError(f"event not found for {summary!r}")
+        event.delete()
