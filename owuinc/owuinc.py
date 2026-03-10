@@ -640,7 +640,7 @@ class Tools:
         cal = self.caldav_client.principal().calendar(name=list_name)
         if uid:
             todo = cal.todo_by_uid(uid)
-        else:
+        elif summary is not None:
             matches = []
             for t in cal.todos():
                 if summary.strip() in t.component["summary"]:
