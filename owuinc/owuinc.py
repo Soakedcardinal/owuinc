@@ -33,7 +33,7 @@ from webdav3.exceptions import (
     WebDavException,
 )
 
-# DEBUG=False
+# DEBUG=True
 DEBUG = False
 
 
