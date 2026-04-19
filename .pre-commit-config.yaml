@@ -27,3 +27,4 @@ repos:
         language_version: python3
         additional_dependencies:
           - types-requests
+          - types-python-dateutil
