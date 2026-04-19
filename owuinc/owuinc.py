@@ -4,7 +4,7 @@ author: Duncan Nicholson
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav,icalendar,webdavclient3
-version: 2.2.2
+version: 2.2.3
 license: MIT
 """
 
@@ -14,13 +14,14 @@ import re
 import traceback
 import urllib.parse
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from typing import Any, Callable, List, Optional
 from zoneinfo import ZoneInfo
 
 from caldav.davclient import get_davclient
 from caldav.lib.error import NotFoundError
+from dateutil.rrule import rrulestr
 from icalendar import Alarm, Event
 from pydantic import BaseModel, Field
 from webdav3.client import Client
@@ -744,7 +745,7 @@ class Tools:
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             raise Exception(f"{calendar_name!r} not in whitelist")
 
-        # future events. Prevent RRULE expansion
+        # Query future events (expand=False for token efficiency)
         event_data = []
         for e in (
             self.caldav_client.principal()
@@ -756,6 +757,8 @@ class Tools:
             )
         ):
             event_dict = {}
+
+            # Copy standard event fields
             for field in [
                 "uid",
                 "summary",
@@ -767,16 +770,80 @@ class Tools:
             ]:
                 if val := e.component.get(field):
                     event_dict[field] = val
-            for field in ("dtstart", "dtend"):
-                if val := e.component.get(field):
-                    event_dict[field] = val.dt.isoformat()
+
+            # Extract date/time values (keep as objects for duration calculation)
+            dtstart_val = e.component.get("dtstart")
+            dtend_val = e.component.get("dtend")
+            if dtstart_val:
+                event_dict["dtstart"] = dtstart_val.dt.isoformat()
+            if dtend_val:
+                event_dict["dtend"] = dtend_val.dt.isoformat()
+
+            # Handle recurring events: calculate next occurrence after "now"
             if e.component.get("rrule"):
                 event_dict["rrule"] = e.component["rrule"].to_ical().decode("utf-8")
+                log(f"Processing recurring event: {event_dict.get('summary')}")
+                log(f"Original dtstart: {event_dict.get('dtstart')}")
+                try:
+                    # Calculate original duration
+                    duration = (
+                        (dtend_val.dt - dtstart_val.dt)
+                        if dtstart_val and dtend_val
+                        else timedelta(hours=1)
+                    )
+                    log(f"Duration: {duration}")
+
+                    # Normalize dtstart to user's timezone for consistent comparison
+                    # Handle all-day events (date objects) vs datetime events
+                    dtstart_dt = dtstart_val.dt
+                    if isinstance(dtstart_dt, date) and not isinstance(
+                        dtstart_dt, datetime
+                    ):
+                        log("All-day event detected")
+                        dtstart_dt = datetime.combine(
+                            dtstart_dt,
+                            datetime.min.time(),
+                            tzinfo=ZoneInfo(__user__["timezone"]),
+                        )
+                    elif dtstart_dt.tzinfo is None:
+                        log("Naive datetime detected")
+                        dtstart_dt = dtstart_dt.replace(
+                            tzinfo=ZoneInfo(__user__["timezone"])
+                        )
+                    else:
+                        log("TZ-aware datetime detected")
+                        dtstart_dt = dtstart_dt.astimezone(
+                            ZoneInfo(__user__["timezone"])
+                        )
+
+                    # Parse RRULE and find next occurrence
+                    log(f"RRULE: {event_dict['rrule']}")
+                    rrule_obj = rrulestr(event_dict["rrule"], dtstart=dtstart_dt)
+                    now = datetime.now(ZoneInfo(__user__["timezone"]))
+                    log(f"Now: {now}")
+                    next_occurrence = rrule_obj.after(now, inc=False)
+
+                    # Overwrite dates with next occurrence (preserves duration)
+                    if next_occurrence:
+                        log(f"Next occurrence: {next_occurrence.isoformat()}")
+                        log(f"New dtstart: {event_dict['dtstart']} → {next_occurrence}")
+                        event_dict["dtstart"] = next_occurrence.isoformat()
+                        event_dict["dtend"] = (next_occurrence + duration).isoformat()
+                        log(f"New dtend: {event_dict['dtend']}")
+                    else:
+                        log("No future occurrence found")
+                except Exception as err:
+                    log(f"RRULE parsing failed: {err}")
+                    pass
+
+            # Include alarms if present
             if len(e.component.alarms.times) > 0:
                 event_dict["alarms"] = [
                     str(time.trigger) for time in e.component.alarms.times
                 ]
+
             event_data.append(event_dict)
+
         return event_data
 
     @tool_logger
