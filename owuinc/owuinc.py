@@ -358,14 +358,32 @@ class Tools:
     @tool_logger
     @ensure_sandbox
     @webdav_safe
-    def cat(
+    def read(
         self,
         path: str,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
     ) -> str:
-        """Read a file"""
+        """Read a file with optional line range
+
+        Args:
+            path: File path to read
+            offset: Line number to start from (1-indexed)
+            limit: Maximum number of lines to return
+        """
         buf = BytesIO()
         self.webdav_client.resource(validate_path(path, self.valves)).write_to(buf)
-        return buf.getvalue().decode("utf-8")
+        content = buf.getvalue().decode("utf-8")
+        lines = content.splitlines()
+
+        if offset is not None:
+            start = max(0, offset - 1)
+            lines = lines[start:]
+
+        if limit is not None:
+            lines = lines[:limit]
+
+        return "\n".join(lines)
 
     @tool_logger
     @ensure_sandbox
