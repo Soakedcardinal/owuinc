@@ -150,7 +150,12 @@ def webdav_safe(func: Callable) -> Callable:
 def ensure_sandbox(func: Callable) -> Callable:
     @functools.wraps(func)
     def wrapper(self, *args, **kwargs):
-        self._ensure_sandbox_dir()
+        sandbox = self.valves.SANDBOX_DIR.strip().rstrip("/")
+        if sandbox:
+            try:
+                self.webdav_client.list(sandbox + "/")
+            except RemoteResourceNotFound:
+                self.webdav_client.mkdir(sandbox)
         return func(self, *args, **kwargs)
 
     return wrapper
@@ -294,18 +299,6 @@ class Tools:
             description="Comma-separated list of allowed task lists",
         )
         pass  # required for parsing
-
-    def _ensure_sandbox_dir(self):
-        """Create sandbox directory if it doesn't exist."""
-        sandbox = self.valves.SANDBOX_DIR.strip().rstrip("/")
-        if not sandbox:
-            return  # root doesn't need creation
-        try:
-            log(f"checking sandbox dir exists: {sandbox!r}")
-            self.webdav_client.list(sandbox + "/")
-        except RemoteResourceNotFound:
-            log(f"sandbox dir not found, creating: {sandbox!r}")
-            self.webdav_client.mkdir(sandbox)
 
     @property
     def webdav_client(self):
