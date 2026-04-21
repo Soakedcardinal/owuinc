@@ -4,10 +4,11 @@ author: Duncan Nicholson
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav,icalendar,webdavclient3
-version: 2.2.3
+version: 2.3.0
 license: MIT
 """
 
+import fnmatch
 import functools
 import os
 import re
@@ -33,8 +34,8 @@ from webdav3.exceptions import (
     WebDavException,
 )
 
-# DEBUG=True
 DEBUG = False
+# DEBUG = True
 
 
 def log(msg):
@@ -133,6 +134,9 @@ def webdav_safe(func: Callable) -> Callable:
         except WebDavException as e:
             log_err(f"{op}: WebDAV error - {e}\nTraceback: {traceback.format_exc()}")
             return {"result": "False", "details": f"{op}: {str(e)}"}
+        except ValueError as e:
+            log_err(f"{op}: validation error - {e}")
+            return {"result": "False", "details": f"{op}: {str(e)}"}
         except Exception as e:
             log_err(
                 f"{op}: unexpected error - {type(e).__name__}: {e}\
@@ -143,22 +147,85 @@ def webdav_safe(func: Callable) -> Callable:
     return wrapper
 
 
+def ensure_sandbox(func: Callable) -> Callable:
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        sandbox = self.valves.SANDBOX_DIR.strip().rstrip("/")
+        if sandbox:
+            try:
+                log(f"checking sandbox dir exists: {sandbox!r}")
+                self.webdav_client.list(sandbox + "/")
+            except RemoteResourceNotFound:
+                log(f"sandbox dir not found, creating: {sandbox!r}")
+                self.webdav_client.mkdir(sandbox)
+        return func(self, *args, **kwargs)
+
+    return wrapper
+
+
 def validate_path(path, valves):
+    """
+    Validate and normalize file paths for WebDAV operations.
+
+    SECURITY MODEL:
+    - All operations are confined to SANDBOX_DIR (e.g., "owuinc/")
+    - Path traversal ("..") is explicitly blocked
+    - Absolute paths ("/etc/passwd") are stripped and treated as relative
+      to sandbox root ("/etc/passwd" -> "owuinc/etc/passwd")
+
+    NOTE: SANDBOX_DIR is auto-created on first use if it doesn't exist.
+
+    Args:
+        path: User-provided path (can be relative, absolute, or empty)
+        valves: Configuration object with SANDBOX_DIR setting
+
+    Returns:
+        Full WebDAV path prefixed with sandbox directory
+        (e.g., "owuinc/Documents/file.py")
+
+    Raises:
+        Exception: If path contains traversal attempts ("..")
+
+    Examples:
+        validate_path("", valves)         # -> "owuinc/"
+        validate_path(".", valves)        # -> "owuinc/"
+        validate_path("/", valves)        # -> "owuinc/"
+        validate_path("Documents/", valves)  # -> "owuinc/Documents/"
+        validate_path("/etc", valves)     # -> "owuinc/etc" (strips leading /)
+        validate_path("../etc", valves)   # -> Exception (traversal blocked)
+    """
     prefix = valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+
+    # Empty path returns sandbox root
     if not path:
         return prefix
+
     path = path.strip()
+
+    # Decode URL-encoded characters (e.g., %2e%2e -> ..) to catch encoded traversal
     prev = None
     while prev != path:
         prev = path
         path = urllib.parse.unquote(path)
+
+    # BLOCKED: Path traversal attempts (catches all forms: ../, foo/../, etc.)
     if ".." in path:
         raise Exception("Invalid Path: traversal not allowed")
+
+    # Root indicators map to sandbox root
     if path in ("", ".", "/"):
         return prefix
+
+    # Strip leading slash - treat as relative to sandbox (not system root)
+    # This allows natural "/" usage while keeping operations confined
+    if path.startswith("/"):
+        path = path.lstrip("/")
+
+    # Build full path and verify it stays within sandbox
     full_path = prefix + os.path.normpath(path)
     if full_path.startswith(prefix):
         return full_path
+
     raise Exception("Invalid Path: outside sandbox.")
 
 
@@ -214,21 +281,23 @@ class Tools:
         NEXTCLOUD_APP_PASSWORD: str = Field("", json_schema_extra={"secret": True})
         SANDBOX_DIR: str = Field(
             default="owuinc",
-            description="relative directory path \
-            that will be prefixed to every file operation. \
-            No leading `/`. Leave empty to use the root.",
+            description=(
+                "Directory for all file operations. Leading `/` is optional"
+                " and will be stripped. Directory is auto-created if missing."
+                " Leave empty to use Nextcloud root."
+            ),
         )
         DEFAULT_CALENDAR: str = Field(
-            default="owuinc", description="Default calendar for event operations"
+            default="Personal", description="Default calendar for event operations"
         )
         DEFAULT_TASK_LIST: str = Field(
-            default="owuinc", description="Default task list for task operations"
+            default="Tasks", description="Default task list for task operations"
         )
         CALENDAR_WHITELIST: str = Field(
-            default="owuinc", description="Comma-separated list of allowed calendars"
+            default="Personal", description="Comma-separated list of allowed calendars"
         )
         TASK_LIST_WHITELIST: str = Field(
-            default="owuinc",
+            default="Tasks",
             description="Comma-separated list of allowed task lists",
         )
         pass  # required for parsing
@@ -298,6 +367,7 @@ class Tools:
         ]
 
     @tool_logger
+    @ensure_sandbox
     @webdav_safe
     def mkdir(
         self,
@@ -307,6 +377,7 @@ class Tools:
         self.webdav_client.mkdir(validate_path(path, self.valves))
 
     @tool_logger
+    @ensure_sandbox
     @webdav_safe
     def ls(self, path: str | None = None) -> list[str]:
         """List files and directories"""
@@ -318,6 +389,201 @@ class Tools:
         return result_list
 
     @tool_logger
+    @ensure_sandbox
+    @webdav_safe
+    def glob(
+        self,
+        pattern: str,
+        path: Optional[str] = None,
+    ) -> list[str]:
+        """File pattern matching tool
+
+        Use this tool when you need to find files by name patterns
+
+        Args:
+            pattern: The glob pattern to match files against
+                (e.g., "**/*.py", "src/**/*.tsx")
+            path: The directory to search in.
+
+        Returns:
+            matching file paths sorted by modification time (newest last)
+        """
+        target_dir = validate_path(path if path else "", self.valves)
+
+        log(f"glob: pattern={pattern}, target_dir={target_dir}")
+
+        # Determine recursion depth from pattern
+        pattern_parts = pattern.split("/")
+        is_recursive = "**" in pattern_parts or (
+            len(pattern_parts) == 1 and "*" in pattern_parts[0]
+        )
+
+        log(f"glob: is_recursive={is_recursive}")
+
+        # Fetch files from WebDAV
+        all_files = self.webdav_client.list(
+            target_dir, get_info=True, recursive=is_recursive
+        )
+
+        log(f"glob: fetched {len(all_files)} items")
+
+        # Filter to files only (exclude directories)
+        files_only = [f for f in all_files if not f.get("isdir", False)]
+
+        log(f"glob: {len(files_only)} files after filtering dirs")
+
+        # Simple brace expansion (single-level only: {a,b} → a, b)
+        patterns_to_match = [pattern]
+        if "{" in pattern and "}" in pattern:
+            start = pattern.find("{")
+            end = pattern.find("}", start)
+            if end != -1:
+                prefix, suffix = pattern[:start], pattern[end + 1 :]
+                alternatives = pattern[start + 1 : end].split(",")
+                patterns_to_match = [prefix + alt + suffix for alt in alternatives]
+
+        # Filter files using fnmatch against expanded patterns
+        matched = []
+        for file_info in files_only:
+            # Get filename from path (webdav returns 'path' not 'name')
+            full_path = file_info.get("path", "")
+            filename = os.path.basename(full_path)
+
+            log(f"glob: checking {filename} against patterns")
+
+            for pat in patterns_to_match:
+                # Extract just the filename part of pattern (after last /)
+                pattern_name = pat.split("/")[-1] if "/" in pat else pat
+                if fnmatch.fnmatch(filename, pattern_name):
+                    log(f"glob: matched {filename}")
+                    matched.append(file_info)
+                    break
+
+        # Sort by modification time (newest last)
+        try:
+            matched.sort(key=lambda x: x.get("modified", ""))
+        except Exception as e:
+            log(f"glob: sort error - {e}")
+
+        # Strip full WebDAV path and return relative paths from sandbox
+        sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+        result = []
+        for f in matched:
+            full_path = f.get("path", "")
+            # Extract just the relative path after sandbox directory
+            if sandbox_prefix in full_path:
+                rel_path = full_path.split(sandbox_prefix, 1)[1]
+            else:
+                rel_path = os.path.basename(full_path)
+            result.append(rel_path)
+
+        log(f"glob: returning {len(result)} matches")
+        return result
+
+    @tool_logger
+    @ensure_sandbox
+    @webdav_safe
+    def grep(
+        self,
+        pattern: str,
+        path: Optional[str] = None,
+        include: Optional[str] = None,
+    ) -> list[dict]:
+        """Search file contents for pattern using regex
+
+        Args:
+            pattern: The regex pattern to search for
+            path: The directory to search in. Defaults to root.
+            include: File pattern to include (e.g., "*.py", "*.{ts,tsx}")
+        """
+        target_dir = validate_path(path if path else "", self.valves)
+
+        log(f"grep: pattern={pattern!r}, target_dir={target_dir}, include={include!r}")
+
+        # Fetch items recursively with get_info to distinguish dirs/files
+        all_items = self.webdav_client.list(target_dir, get_info=True, recursive=True)
+        if not all_items:
+            return []
+
+        log(f"grep: fetched {len(all_items)} items")
+
+        # Filter to files only and extract relative paths
+        file_list = [
+            item.get("path", item) for item in all_items if not item.get("isdir", False)
+        ]
+
+        log(f"grep: {len(file_list)} files after filtering directories")
+
+        # Simple brace expansion (single-level only: {a,b} → a, b)
+        patterns_to_match = [include] if include else []
+        if include and "{" in include and "}" in include:
+            start = include.find("{")
+            end = include.find("}", start)
+            if end != -1:
+                prefix, suffix = include[:start], include[end + 1 :]
+                alternatives = include[start + 1 : end].split(",")
+                patterns_to_match = [prefix + alt + suffix for alt in alternatives]
+
+        # Compile regex pattern
+        try:
+            compiled_regex = re.compile(pattern)
+        except re.error as e:
+            raise ValueError(f"Invalid regex pattern: {e}")
+
+        # Search each file
+        results = []
+        for full_path in file_list:
+            sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+            rel_path = (
+                full_path.split(sandbox_prefix, 1)[1]
+                if sandbox_prefix in full_path
+                else os.path.basename(full_path)
+            )
+            filename = os.path.basename(rel_path)
+
+            # Check include pattern if specified
+            if patterns_to_match:
+                matched = False
+                for pat in patterns_to_match:
+                    pattern_name = pat.split("/")[-1] if "/" in pat else pat
+                    if fnmatch.fnmatch(filename, pattern_name):
+                        matched = True
+                        break
+                if not matched:
+                    continue
+
+            webdav_path = validate_path(rel_path, self.valves)
+            log(f"grep: searching {rel_path}")
+
+            try:
+                buf = BytesIO()
+                self.webdav_client.resource(webdav_path).write_to(buf)
+                content = buf.getvalue().decode("utf-8")
+
+                log(
+                    f"grep: read {len(c := content)} bytes, {len(c.splitlines())} lines"
+                )
+
+                for line_num, line in enumerate(content.splitlines(), start=1):
+                    if compiled_regex.search(line):
+                        results.append(
+                            {
+                                "file": rel_path,
+                                "line": line_num,
+                                "content": line.strip(),
+                            }
+                        )
+
+            except Exception as e:
+                log(f"grep: error reading {rel_path}: {e}")
+                continue
+
+        results.sort(key=lambda x: (x["file"], x["line"]))
+        log(f"grep: found {len(results)} matches")
+        return results
+
+    @tool_logger
+    @ensure_sandbox
     @webdav_safe
     def write_file(
         self,
@@ -332,17 +598,46 @@ class Tools:
         )
 
     @tool_logger
+    @ensure_sandbox
     @webdav_safe
-    def cat(
+    def read(
         self,
         path: str,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
     ) -> str:
-        """Read a file"""
+        """Read a file with optional line range
+
+        Args:
+            path: File path to read
+            offset: Line number to start from (1-indexed)
+            limit: Maximum number of lines to return
+        """
+        if not path:
+            raise ValueError("path cannot be empty")
+
+        if offset is not None and offset < 1:
+            raise ValueError(f"offset must be >= 1, got {offset}")
+
+        if limit is not None and limit <= 0:
+            raise ValueError(f"limit must be > 0, got {limit}")
+
         buf = BytesIO()
         self.webdav_client.resource(validate_path(path, self.valves)).write_to(buf)
-        return buf.getvalue().decode("utf-8")
+        content = buf.getvalue().decode("utf-8")
+        lines = content.splitlines()
+
+        if offset is not None:
+            start = max(0, offset - 1)
+            lines = lines[start:]
+
+        if limit is not None:
+            lines = lines[:limit]
+
+        return "\n".join(lines)
 
     @tool_logger
+    @ensure_sandbox
     @webdav_safe
     def append_file(
         self,
@@ -360,6 +655,54 @@ class Tools:
         )
 
     @tool_logger
+    @ensure_sandbox
+    @webdav_safe
+    def edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> dict:
+        """Perform exact string replacement in a file.
+
+        Replaces first match only by default.
+
+        Args:
+            file_path: Path to file
+            old_string: Text to find (unique or use replace_all)
+            new_string: Replacement text
+            replace_all: Replace all occurrences (default: false)
+        """
+        if not old_string:
+            raise ValueError("old_string cannot be empty")
+
+        if old_string == new_string:
+            raise ValueError("old_string and new_string must be different")
+
+        buf = BytesIO()
+        self.webdav_client.resource(validate_path(file_path, self.valves)).write_to(buf)
+        content = buf.getvalue().decode("utf-8")
+
+        count = content.count(old_string)
+
+        if count == 0:
+            raise ValueError("String not found")
+
+        if count > 1 and not replace_all:
+            raise ValueError(f"Found {count} matches, but replace_all is false")
+
+        replacement_count = 1 if not replace_all else -1
+        modified_content = content.replace(old_string, new_string, replacement_count)
+
+        self.webdav_client.resource(validate_path(file_path, self.valves)).read_from(
+            BytesIO(modified_content.encode("utf-8"))
+        )
+
+        return {"result": "True"}
+
+    @tool_logger
+    @ensure_sandbox
     @webdav_safe
     def rm(self, paths: list[str]) -> None:
         """Deletes files/directories"""
@@ -368,6 +711,7 @@ class Tools:
             C.clean(validate_path(p, self.valves))
 
     @tool_logger
+    @ensure_sandbox
     @webdav_safe
     def mv(
         self,
@@ -381,6 +725,7 @@ class Tools:
         )
 
     @tool_logger
+    @ensure_sandbox
     @webdav_safe
     def cp(
         self,
