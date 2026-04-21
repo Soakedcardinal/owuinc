@@ -5,8 +5,8 @@ Connect OpenWebUI Models to Nextcloud.
 ## Features
 
 ### File Operations
-*   `mkdir`, `ls`, `glob`, `mv`, `cp`, `rm`
-*   `write_file`, `cat`, `append_file`
+*   `mkdir`, `ls`, `glob`, `grep`, `edit`, `mv`, `cp`, `rm`
+*   `write_file`, `read`, `append_file`
 
 ### Task Management
 *   Create, read, edit, & delete tasks
