@@ -34,7 +34,7 @@ from webdav3.exceptions import (
 )
 
 # DEBUG=True
-DEBUG = False
+DEBUG = True
 
 
 def log(msg):
@@ -143,6 +143,15 @@ def webdav_safe(func: Callable) -> Callable:
     return wrapper
 
 
+def ensure_sandbox(func: Callable) -> Callable:
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        self._ensure_sandbox_dir()
+        return func(self, *args, **kwargs)
+
+    return wrapper
+
+
 def validate_path(path, valves):
     prefix = valves.SANDBOX_DIR.strip().rstrip("/") + "/"
     if not path:
@@ -233,6 +242,18 @@ class Tools:
         )
         pass  # required for parsing
 
+    def _ensure_sandbox_dir(self):
+        """Create sandbox directory if it doesn't exist."""
+        sandbox = self.valves.SANDBOX_DIR.strip().rstrip("/")
+        if not sandbox:
+            return  # root doesn't need creation
+        try:
+            log(f"checking sandbox dir exists: {sandbox!r}")
+            self.webdav_client.list(sandbox + "/")
+        except RemoteResourceNotFound:
+            log(f"sandbox dir not found, creating: {sandbox!r}")
+            self.webdav_client.mkdir(sandbox)
+
     @property
     def webdav_client(self):
         base = self.valves.NEXTCLOUD_BASE_URL
@@ -298,6 +319,7 @@ class Tools:
         ]
 
     @tool_logger
+    @ensure_sandbox
     @webdav_safe
     def mkdir(
         self,
@@ -307,6 +329,7 @@ class Tools:
         self.webdav_client.mkdir(validate_path(path, self.valves))
 
     @tool_logger
+    @ensure_sandbox
     @webdav_safe
     def ls(self, path: str | None = None) -> list[str]:
         """List files and directories"""
@@ -318,6 +341,7 @@ class Tools:
         return result_list
 
     @tool_logger
+    @ensure_sandbox
     @webdav_safe
     def write_file(
         self,
@@ -332,6 +356,7 @@ class Tools:
         )
 
     @tool_logger
+    @ensure_sandbox
     @webdav_safe
     def cat(
         self,
@@ -343,6 +368,7 @@ class Tools:
         return buf.getvalue().decode("utf-8")
 
     @tool_logger
+    @ensure_sandbox
     @webdav_safe
     def append_file(
         self,
@@ -360,6 +386,7 @@ class Tools:
         )
 
     @tool_logger
+    @ensure_sandbox
     @webdav_safe
     def rm(self, paths: list[str]) -> None:
         """Deletes files/directories"""
@@ -368,6 +395,7 @@ class Tools:
             C.clean(validate_path(p, self.valves))
 
     @tool_logger
+    @ensure_sandbox
     @webdav_safe
     def mv(
         self,
@@ -381,6 +409,7 @@ class Tools:
         )
 
     @tool_logger
+    @ensure_sandbox
     @webdav_safe
     def cp(
         self,
