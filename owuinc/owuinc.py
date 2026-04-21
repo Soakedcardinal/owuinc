@@ -157,21 +157,68 @@ def ensure_sandbox(func: Callable) -> Callable:
 
 
 def validate_path(path, valves):
+    """
+    Validate and normalize file paths for WebDAV operations.
+
+    SECURITY MODEL:
+    - All operations are confined to SANDBOX_DIR (e.g., "owuinc/")
+    - Path traversal ("..") is explicitly blocked
+    - Absolute paths ("/etc/passwd") are stripped and treated as relative
+      to sandbox root ("/etc/passwd" -> "owuinc/etc/passwd")
+
+    NOTE: SANDBOX_DIR is auto-created on first use if it doesn't exist.
+
+    Args:
+        path: User-provided path (can be relative, absolute, or empty)
+        valves: Configuration object with SANDBOX_DIR setting
+
+    Returns:
+        Full WebDAV path prefixed with sandbox directory
+        (e.g., "owuinc/Documents/file.py")
+
+    Raises:
+        Exception: If path contains traversal attempts ("..")
+
+    Examples:
+        validate_path("", valves)         # -> "owuinc/"
+        validate_path(".", valves)        # -> "owuinc/"
+        validate_path("/", valves)        # -> "owuinc/"
+        validate_path("Documents/", valves)  # -> "owuinc/Documents/"
+        validate_path("/etc", valves)     # -> "owuinc/etc" (strips leading /)
+        validate_path("../etc", valves)   # -> Exception (traversal blocked)
+    """
     prefix = valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+
+    # Empty path returns sandbox root
     if not path:
         return prefix
+
     path = path.strip()
+
+    # Decode URL-encoded characters (e.g., %2e%2e -> ..) to catch encoded traversal
     prev = None
     while prev != path:
         prev = path
         path = urllib.parse.unquote(path)
+
+    # BLOCKED: Path traversal attempts (catches all forms: ../, foo/../, etc.)
     if ".." in path:
         raise Exception("Invalid Path: traversal not allowed")
+
+    # Root indicators map to sandbox root
     if path in ("", ".", "/"):
         return prefix
+
+    # Strip leading slash - treat as relative to sandbox (not system root)
+    # This allows natural "/" usage while keeping operations confined
+    if path.startswith("/"):
+        path = path.lstrip("/")
+
+    # Build full path and verify it stays within sandbox
     full_path = prefix + os.path.normpath(path)
     if full_path.startswith(prefix):
         return full_path
+
     raise Exception("Invalid Path: outside sandbox.")
 
 
@@ -227,9 +274,11 @@ class Tools:
         NEXTCLOUD_APP_PASSWORD: str = Field("", json_schema_extra={"secret": True})
         SANDBOX_DIR: str = Field(
             default="owuinc",
-            description="relative directory path \
-            that will be prefixed to every file operation. \
-            No leading `/`. Leave empty to use the root.",
+            description=(
+                "Directory for all file operations. Leading `/` is optional"
+                " and will be stripped. Directory is auto-created if missing."
+                " Leave empty to use Nextcloud root."
+            ),
         )
         DEFAULT_CALENDAR: str = Field(
             default="Personal", description="Default calendar for event operations"
@@ -435,6 +484,108 @@ class Tools:
 
         log(f"glob: returning {len(result)} matches")
         return result
+
+    @tool_logger
+    @ensure_sandbox
+    @webdav_safe
+    def grep(
+        self,
+        pattern: str,
+        path: Optional[str] = None,
+        include: Optional[str] = None,
+    ) -> list[dict]:
+        """Search file contents for pattern using regex
+
+        Args:
+            pattern: The regex pattern to search for
+            path: The directory to search in. Defaults to root.
+            include: File pattern to include (e.g., "*.py", "*.{ts,tsx}")
+        """
+        target_dir = validate_path(path if path else "", self.valves)
+
+        log(f"grep: pattern={pattern!r}, target_dir={target_dir}, include={include!r}")
+
+        # Fetch items recursively with get_info to distinguish dirs/files
+        all_items = self.webdav_client.list(target_dir, get_info=True, recursive=True)
+        if not all_items:
+            return []
+
+        log(f"grep: fetched {len(all_items)} items")
+
+        # Filter to files only and extract relative paths
+        file_list = [
+            item.get("path", item) for item in all_items if not item.get("isdir", False)
+        ]
+
+        log(f"grep: {len(file_list)} files after filtering directories")
+
+        # Simple brace expansion (single-level only: {a,b} → a, b)
+        patterns_to_match = [include] if include else []
+        if include and "{" in include and "}" in include:
+            start = include.find("{")
+            end = include.find("}", start)
+            if end != -1:
+                prefix, suffix = include[:start], include[end + 1 :]
+                alternatives = include[start + 1 : end].split(",")
+                patterns_to_match = [prefix + alt + suffix for alt in alternatives]
+
+        # Compile regex pattern
+        try:
+            compiled_regex = re.compile(pattern)
+        except re.error as e:
+            raise ValueError(f"Invalid regex pattern: {e}")
+
+        # Search each file
+        results = []
+        for full_path in file_list:
+            sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+            rel_path = (
+                full_path.split(sandbox_prefix, 1)[1]
+                if sandbox_prefix in full_path
+                else os.path.basename(full_path)
+            )
+            filename = os.path.basename(rel_path)
+
+            # Check include pattern if specified
+            if patterns_to_match:
+                matched = False
+                for pat in patterns_to_match:
+                    pattern_name = pat.split("/")[-1] if "/" in pat else pat
+                    if fnmatch.fnmatch(filename, pattern_name):
+                        matched = True
+                        break
+                if not matched:
+                    continue
+
+            webdav_path = validate_path(rel_path, self.valves)
+            log(f"grep: searching {rel_path}")
+
+            try:
+                buf = BytesIO()
+                self.webdav_client.resource(webdav_path).write_to(buf)
+                content = buf.getvalue().decode("utf-8")
+
+                log(
+                    f"grep: read {len(c := content)} bytes, {len(c.splitlines())} lines"
+                )
+
+                for line_num, line in enumerate(content.splitlines(), start=1):
+                    if compiled_regex.search(line):
+                        results.append(
+                            {
+                                "file": rel_path,
+                                "line": line_num,
+                                "content": line.strip(),
+                            }
+                        )
+
+            except Exception as e:
+                log(f"grep: error reading {rel_path}: {e}")
+                continue
+
+        results.sort(key=lambda x: (x["file"], x["line"]))
+        log(f"grep: found {len(results)} matches")
+        return results
 
     @tool_logger
     @ensure_sandbox

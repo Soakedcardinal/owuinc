@@ -32,8 +32,8 @@ class TestValidatePathSanitization:
         assert validate_path("foo/", valves) == "/test/sandbox/foo"
 
     def test_path_with_leading_slash(self, valves):
-        # Leading slash creates double slash after prefix
-        assert validate_path("/foo", valves) == "/test/sandbox//foo"
+        # Leading slash is stripped and treated as relative to sandbox
+        assert validate_path("/foo", valves) == "/test/sandbox/foo"
 
     def test_dot_returns_prefix(self, valves):
         assert validate_path(".", valves) == "/test/sandbox/"
@@ -181,3 +181,63 @@ class TestIsWhitelisted:
 
     def test_case_sensitive(self):
         assert is_whitelisted("cal1", "CAL1") is False
+
+
+class TestValidatePathLeadingSlash:
+    """Test that leading slashes are stripped for sandbox confinement"""
+
+    def test_absolute_path_strips_leading_slash(self, valves):
+        # /etc/passwd should map to /test/sandbox/etc/passwd, not system root
+        assert validate_path("/etc/passwd", valves) == "/test/sandbox/etc/passwd"
+
+    def test_root_slash_returns_sandbox_root(self, valves):
+        # "/" maps to sandbox root
+        assert validate_path("/", valves) == "/test/sandbox/"
+
+    def test_deep_absolute_path_strips_leading_slash(self, valves):
+        # /var/log/syslog should map to /test/sandbox/var/log/syslog
+        assert (
+            validate_path("/var/log/syslog", valves) == "/test/sandbox/var/log/syslog"
+        )
+
+    def test_nested_absolute_path_strips_leading_slash(self, valves):
+        # /Documents/src/main.py should map to /test/sandbox/Documents/src/main.py
+        assert (
+            validate_path("/Documents/src/main.py", valves)
+            == "/test/sandbox/Documents/src/main.py"
+        )
+
+
+class TestValidatePathSecurityEdgeCases:
+    """Test additional security edge cases"""
+
+    def test_sandbox_dir_without_leading_slash(self):
+        """SANDOWN_DIR should not have leading slash per Valve defaults"""
+        from pydantic import BaseModel
+
+        class MockValves(BaseModel):
+            SANDBOX_DIR: str = "owuinc"
+
+        valves = MockValves()
+        assert validate_path("Documents/file.py", valves) == "owuinc/Documents/file.py"
+
+    def test_sandbox_dir_strips_trailing_slash(self):
+        """SANDBOX_DIR with trailing slash should be normalized"""
+        from pydantic import BaseModel
+
+        class MockValves(BaseModel):
+            SANDBOX_DIR: str = "owuinc/"
+
+        valves = MockValves()
+        assert validate_path("Documents/file.py", valves) == "owuinc/Documents/file.py"
+
+    def test_only_dot_dots_blocked(self, valves):
+        """Multiple consecutive dots should be blocked if they contain .."""
+        # ".../file" contains ".." so it's blocked
+        with pytest.raises(Exception, match="traversal not allowed"):
+            validate_path(".../file", valves)
+
+    def test_four_dots_blocked(self, valves):
+        """Four dots contain .. and should be blocked"""
+        with pytest.raises(Exception, match="traversal not allowed"):
+            validate_path("....", valves)
