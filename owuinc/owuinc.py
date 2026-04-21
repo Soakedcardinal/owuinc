@@ -8,6 +8,7 @@ version: 2.3.0
 license: MIT
 """
 
+import fnmatch
 import functools
 import os
 import re
@@ -33,8 +34,8 @@ from webdav3.exceptions import (
     WebDavException,
 )
 
-# DEBUG=True
-DEBUG = True
+DEBUG = False
+# DEBUG = True
 
 
 def log(msg):
@@ -132,6 +133,9 @@ def webdav_safe(func: Callable) -> Callable:
             return {"result": "False", "details": f"{op}: connection failed"}
         except WebDavException as e:
             log_err(f"{op}: WebDAV error - {e}\nTraceback: {traceback.format_exc()}")
+            return {"result": "False", "details": f"{op}: {str(e)}"}
+        except ValueError as e:
+            log_err(f"{op}: validation error - {e}")
             return {"result": "False", "details": f"{op}: {str(e)}"}
         except Exception as e:
             log_err(
@@ -343,6 +347,98 @@ class Tools:
     @tool_logger
     @ensure_sandbox
     @webdav_safe
+    def glob(
+        self,
+        pattern: str,
+        path: Optional[str] = None,
+    ) -> list[str]:
+        """File pattern matching tool
+
+        Use this tool when you need to find files by name patterns
+
+        Args:
+            pattern: The glob pattern to match files against
+                (e.g., "**/*.py", "src/**/*.tsx")
+            path: The directory to search in.
+
+        Returns:
+            matching file paths sorted by modification time (newest last)
+        """
+        target_dir = validate_path(path if path else "", self.valves)
+
+        log(f"glob: pattern={pattern}, target_dir={target_dir}")
+
+        # Determine recursion depth from pattern
+        pattern_parts = pattern.split("/")
+        is_recursive = "**" in pattern_parts or (
+            len(pattern_parts) == 1 and "*" in pattern_parts[0]
+        )
+
+        log(f"glob: is_recursive={is_recursive}")
+
+        # Fetch files from WebDAV
+        all_files = self.webdav_client.list(
+            target_dir, get_info=True, recursive=is_recursive
+        )
+
+        log(f"glob: fetched {len(all_files)} items")
+
+        # Filter to files only (exclude directories)
+        files_only = [f for f in all_files if not f.get("isdir", False)]
+
+        log(f"glob: {len(files_only)} files after filtering dirs")
+
+        # Simple brace expansion (single-level only: {a,b} → a, b)
+        patterns_to_match = [pattern]
+        if "{" in pattern and "}" in pattern:
+            start = pattern.find("{")
+            end = pattern.find("}", start)
+            if end != -1:
+                prefix, suffix = pattern[:start], pattern[end + 1 :]
+                alternatives = pattern[start + 1 : end].split(",")
+                patterns_to_match = [prefix + alt + suffix for alt in alternatives]
+
+        # Filter files using fnmatch against expanded patterns
+        matched = []
+        for file_info in files_only:
+            # Get filename from path (webdav returns 'path' not 'name')
+            full_path = file_info.get("path", "")
+            filename = os.path.basename(full_path)
+
+            log(f"glob: checking {filename} against patterns")
+
+            for pat in patterns_to_match:
+                # Extract just the filename part of pattern (after last /)
+                pattern_name = pat.split("/")[-1] if "/" in pat else pat
+                if fnmatch.fnmatch(filename, pattern_name):
+                    log(f"glob: matched {filename}")
+                    matched.append(file_info)
+                    break
+
+        # Sort by modification time (newest last)
+        try:
+            matched.sort(key=lambda x: x.get("modified", ""))
+        except Exception as e:
+            log(f"glob: sort error - {e}")
+
+        # Strip full WebDAV path and return relative paths from sandbox
+        sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+        result = []
+        for f in matched:
+            full_path = f.get("path", "")
+            # Extract just the relative path after sandbox directory
+            if sandbox_prefix in full_path:
+                rel_path = full_path.split(sandbox_prefix, 1)[1]
+            else:
+                rel_path = os.path.basename(full_path)
+            result.append(rel_path)
+
+        log(f"glob: returning {len(result)} matches")
+        return result
+
+    @tool_logger
+    @ensure_sandbox
+    @webdav_safe
     def write_file(
         self,
         path: str,
@@ -371,6 +467,15 @@ class Tools:
             offset: Line number to start from (1-indexed)
             limit: Maximum number of lines to return
         """
+        if not path:
+            raise ValueError("path cannot be empty")
+
+        if offset is not None and offset < 1:
+            raise ValueError(f"offset must be >= 1, got {offset}")
+
+        if limit is not None and limit <= 0:
+            raise ValueError(f"limit must be > 0, got {limit}")
+
         buf = BytesIO()
         self.webdav_client.resource(validate_path(path, self.valves)).write_to(buf)
         content = buf.getvalue().decode("utf-8")
@@ -402,6 +507,53 @@ class Tools:
         res.read_from(
             BytesIO((buf.getvalue().decode("utf-8") + content).encode("utf-8"))
         )
+
+    @tool_logger
+    @ensure_sandbox
+    @webdav_safe
+    def edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> dict:
+        """Perform exact string replacement in a file.
+
+        Replaces first match only by default.
+
+        Args:
+            file_path: Path to file
+            old_string: Text to find (unique or use replace_all)
+            new_string: Replacement text
+            replace_all: Replace all occurrences (default: false)
+        """
+        if not old_string:
+            raise ValueError("old_string cannot be empty")
+
+        if old_string == new_string:
+            raise ValueError("old_string and new_string must be different")
+
+        buf = BytesIO()
+        self.webdav_client.resource(validate_path(file_path, self.valves)).write_to(buf)
+        content = buf.getvalue().decode("utf-8")
+
+        count = content.count(old_string)
+
+        if count == 0:
+            raise ValueError("String not found")
+
+        if count > 1 and not replace_all:
+            raise ValueError(f"Found {count} matches, but replace_all is false")
+
+        replacement_count = 1 if not replace_all else -1
+        modified_content = content.replace(old_string, new_string, replacement_count)
+
+        self.webdav_client.resource(validate_path(file_path, self.valves)).read_from(
+            BytesIO(modified_content.encode("utf-8"))
+        )
+
+        return {"result": "True"}
 
     @tool_logger
     @ensure_sandbox
