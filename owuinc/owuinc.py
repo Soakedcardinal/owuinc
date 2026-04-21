@@ -219,16 +219,16 @@ class Tools:
             No leading `/`. Leave empty to use the root.",
         )
         DEFAULT_CALENDAR: str = Field(
-            default="owuinc", description="Default calendar for event operations"
+            default="Personal", description="Default calendar for event operations"
         )
         DEFAULT_TASK_LIST: str = Field(
-            default="owuinc", description="Default task list for task operations"
+            default="Tasks", description="Default task list for task operations"
         )
         CALENDAR_WHITELIST: str = Field(
-            default="owuinc", description="Comma-separated list of allowed calendars"
+            default="Personal", description="Comma-separated list of allowed calendars"
         )
         TASK_LIST_WHITELIST: str = Field(
-            default="owuinc",
+            default="Tasks",
             description="Comma-separated list of allowed task lists",
         )
         pass  # required for parsing

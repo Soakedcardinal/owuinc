@@ -43,11 +43,11 @@ Pick an existing model, or create one to use. For this example, we will set up a
     * `Nextcloud Base URL` (nextcloud server address)
     * `Nextcloud Username` (shown next to app password)
     * `Nextcloud App Password`
-    * Set `Sandbox Dir` to `bot` 
-    * Set `Default Calendar` to `bot`
-    * Set `Default Task List` to `bot`
-    * Set `Calendar Whitelist` to `bot`
-    * Set `Task List Whitelist` to `bot`
+    * Set `Sandbox Dir` to `owuinc` 
+     * Set `Default Calendar` to `Personal`
+     * Set `Default Task List` to `Tasks`
+     * Set `Calendar Whitelist` to `Personal`
+     * Set `Task List Whitelist` to `Tasks`
 * Press save
 
 IMPORTANT: Calendars and task lists are ONLY accessible if explicitly listed in the respective whitelist. Both the whitelist AND default values must be configured for operations to work.
@@ -60,8 +60,8 @@ IMPORTANT: Calendars and task lists are ONLY accessible if explicitly listed in 
 Task Priorities: 1 = high, 9 = low, 0 = none
 Task/Event operations: Only use Uids internally; never include them in responses.
 Calendar Functions: Provide `start` and `end` arguments as an ISO 8601-style string without a timezone offset, e.g. `2026-02-01T15:30`. 
-Default `calendar_name`: `bot`
-Default `list_name`: `bot`
+Default `calendar_name`: `Personal`
+Default `list_name`: `Tasks`
 ```
 
 IMPORTANT: update the defaults to match your chosen task list / calendar.
