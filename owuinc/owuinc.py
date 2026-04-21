@@ -153,8 +153,10 @@ def ensure_sandbox(func: Callable) -> Callable:
         sandbox = self.valves.SANDBOX_DIR.strip().rstrip("/")
         if sandbox:
             try:
+                log(f"checking sandbox dir exists: {sandbox!r}")
                 self.webdav_client.list(sandbox + "/")
             except RemoteResourceNotFound:
+                log(f"sandbox dir not found, creating: {sandbox!r}")
                 self.webdav_client.mkdir(sandbox)
         return func(self, *args, **kwargs)
 
