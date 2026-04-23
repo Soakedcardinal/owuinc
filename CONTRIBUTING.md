@@ -4,7 +4,6 @@
 Clean up if needed
 ```bash
 rm -r .venv .pytest_cache .mypy_cache __pycache__ || true
-python3 -m venv .venv
 ```
 
 Create venv
@@ -14,7 +13,11 @@ python3 -m venv .venv
 
 Activate venv
 ```bash
+# bash
 source .venv/bin/activate
+
+# fish
+source .venv/bin/activate.fish
 ```
 
 Update pip
@@ -42,10 +45,22 @@ pre-commit run --all-files
 
 Run tests
 ```bash
+# All non-E2E tests (unit + integration) - default for CI and development
 pytest
-# or individually:
-pytest tests/test_helpers.py -v
-pytest tests/test_owuinc.py -v
+
+# Unit tests only (pure functions, no external dependencies)
+pytest tests/unit/ -v
+
+# Integration tests (local CalDAV/WebDAV servers)
+pytest tests/integration/ -v
+
+# E2E tests only (requires live OpenWebUI + Nextcloud - manual release checks ONLY)
+# Must set env vars: URL, KEY, USER_ID, FOLDER_ID
+pytest tests/e2e/ -v
+
+# Specific test file
+pytest tests/unit/test_helpers.py -v
+pytest tests/integration/test_calendar_methods.py -v
 ```
 
 Coverage

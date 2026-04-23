@@ -5,3 +5,6 @@ sphinx
 sphinx-rtd-theme
 setuptools
 pytest-cov
+radicale
+wsgidav
+cheroot

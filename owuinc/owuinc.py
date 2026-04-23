@@ -1,6 +1,6 @@
 """
 title: owuinc
-author: Duncan Nicholson
+author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav,icalendar,webdavclient3
@@ -647,12 +647,14 @@ class Tools:
         """Append content to file, creating it if it does not exist"""
         if content is None:
             content = ""
-        buf = BytesIO()
         res = self.webdav_client.resource(validate_path(path, self.valves))
-        res.write_to(buf)
-        res.read_from(
-            BytesIO((buf.getvalue().decode("utf-8") + content).encode("utf-8"))
-        )
+        try:
+            buf = BytesIO()
+            res.write_to(buf)
+            existing = buf.getvalue().decode("utf-8")
+        except RemoteResourceNotFound:
+            existing = ""
+        res.read_from(BytesIO((existing + content).encode("utf-8")))
 
     @tool_logger
     @ensure_sandbox
@@ -974,7 +976,7 @@ class Tools:
     @caldav_safe
     def complete_task(
         self,
-        summary: str,
+        summary: Optional[str] = None,
         uid: Optional[str] = None,
         list_name: str | None = None,
     ):
