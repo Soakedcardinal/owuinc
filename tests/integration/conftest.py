@@ -442,9 +442,8 @@ async def webdav_tools(wsgidav_server):
         f"sandbox={t.valves.SANDBOX_DIR}"
     )
 
-    original_webdav_client = Tools.webdav_client
+    original_webdav_client = Tools._webdav_client
 
-    @property
     def wsgi_webdav_client(self):
         return WebDAVClient(
             f"{self.valves.NEXTCLOUD_BASE_URL}/remote.php/dav/files/"
@@ -453,11 +452,11 @@ async def webdav_tools(wsgidav_server):
             self.valves.NEXTCLOUD_APP_PASSWORD,
         )
 
-    Tools.webdav_client = wsgi_webdav_client
+    Tools._webdav_client = wsgi_webdav_client
 
     try:
         logger.info(">>> Yielding webdav_tools instance")
         yield t
     finally:
-        Tools.webdav_client = original_webdav_client
-        logger.info(">>> Restored original Tools.webdav_client property")
+        Tools._webdav_client = original_webdav_client
+        logger.info(">>> Restored original Tools._webdav_client method")
