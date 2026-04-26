@@ -367,32 +367,38 @@ class Tools:
     async def get_calendars(self) -> list[str]:
         """Retrieve available calendars"""
         client = await self.caldav_client
-        principal = await client.principal()
-        calendars = await principal.get_calendars()
-        available = [await c.get_display_name() for c in calendars]
-        log(f"found {len(available)} calendars: {available!r}")
+        try:
+            principal = await client.principal()
+            calendars = await principal.get_calendars()
+            available = [await c.get_display_name() for c in calendars]
+            log(f"found {len(available)} calendars: {available!r}")
 
-        return [
-            cal_name
-            for cal_name in available
-            if is_whitelisted(self.valves.CALENDAR_WHITELIST, cal_name)
-        ]
+            return [
+                cal_name
+                for cal_name in available
+                if is_whitelisted(self.valves.CALENDAR_WHITELIST, cal_name)
+            ]
+        finally:
+            await client.close()
 
     @tool_logger
     @caldav_safe
     async def get_task_lists(self) -> list[str]:
         """Retrieve available task lists"""
         client = await self.caldav_client
-        principal = await client.principal()
-        calendars = await principal.get_calendars()
-        available = [await c.get_display_name() for c in calendars]
-        log(f"found {len(available)} task lists: {available!r}")
+        try:
+            principal = await client.principal()
+            calendars = await principal.get_calendars()
+            available = [await c.get_display_name() for c in calendars]
+            log(f"found {len(available)} task lists: {available!r}")
 
-        return [
-            tl
-            for tl in available
-            if is_whitelisted(self.valves.TASK_LIST_WHITELIST, tl)
-        ]
+            return [
+                tl
+                for tl in available
+                if is_whitelisted(self.valves.TASK_LIST_WHITELIST, tl)
+            ]
+        finally:
+            await client.close()
 
     @tool_logger
     @webdav_safe
@@ -828,50 +834,53 @@ class Tools:
             raise Exception(f"{list_name!r} not whitelisted")
 
         client = await self.caldav_client
-        principal = await client.principal()
-        cal = await self._get_calendar(principal, list_name)
-        todos = await cal.todos()
+        try:
+            principal = await client.principal()
+            cal = await self._get_calendar(principal, list_name)
+            todos = await cal.todos()
 
-        task_map: dict[str, dict] = {}
-        for todo in todos:
-            task_map[todo.component["uid"]] = {
-                key: todo.component.get(key)
-                for key in [
-                    "uid",
-                    "summary",
-                    "description",
-                    "location",
-                    "url",
-                    "priority",
-                    "related-to",
-                ]
-                if todo.component.get(key) is not None
-            }
-        subtasks_map: dict[str, list[str]] = {}
-        for uid, task_data in task_map.items():
-            parent_id = task_data.get("related-to")
-            if parent_id and parent_id in task_map:
-                if parent_id not in subtasks_map:
-                    subtasks_map[parent_id] = []
-                subtasks_map[parent_id].append(uid)
+            task_map: dict[str, dict] = {}
+            for todo in todos:
+                task_map[todo.component["uid"]] = {
+                    key: todo.component.get(key)
+                    for key in [
+                        "uid",
+                        "summary",
+                        "description",
+                        "location",
+                        "url",
+                        "priority",
+                        "related-to",
+                    ]
+                    if todo.component.get(key) is not None
+                }
+            subtasks_map: dict[str, list[str]] = {}
+            for uid, task_data in task_map.items():
+                parent_id = task_data.get("related-to")
+                if parent_id and parent_id in task_map:
+                    if parent_id not in subtasks_map:
+                        subtasks_map[parent_id] = []
+                    subtasks_map[parent_id].append(uid)
 
-        def build_subtree(task_id):
-            task_data = task_map.get(task_id)
-            if not task_data:
-                return []
-            node = {k: v for k, v in task_data.items() if k != "related-to"}
-            if task_id in subtasks_map:
-                node["subtasks"] = [
-                    build_subtree(child_id) for child_id in subtasks_map[task_id]
-                ]
-            return node
+            def build_subtree(task_id):
+                task_data = task_map.get(task_id)
+                if not task_data:
+                    return []
+                node = {k: v for k, v in task_data.items() if k != "related-to"}
+                if task_id in subtasks_map:
+                    node["subtasks"] = [
+                        build_subtree(child_id) for child_id in subtasks_map[task_id]
+                    ]
+                return node
 
-        tree = []
-        for task_id, task_data in task_map.items():
-            parent_id = task_data.get("related-to")
-            if not parent_id or parent_id not in task_map:
-                tree.append(build_subtree(task_id))
-        return tree
+            tree = []
+            for task_id, task_data in task_map.items():
+                parent_id = task_data.get("related-to")
+                if not parent_id or parent_id not in task_map:
+                    tree.append(build_subtree(task_id))
+            return tree
+        finally:
+            await client.close()
 
     @tool_logger
     @caldav_safe
@@ -896,38 +905,41 @@ class Tools:
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
         client = await self.caldav_client
-        principal = await client.principal()
-        cal = await self._get_calendar(principal, list_name)
-        todo = None
-        if uid:
-            todo = await cal.todo_by_uid(uid)
-        elif summary is not None:
-            matches = []
-            todos = await cal.todos()
-            for todo in todos:
-                if summary.strip() in todo.component["summary"]:
-                    matches.append(todo.component["uid"])
-            if len(matches) > 1:
-                raise Exception(f"Multiple matches for {summary!r}: {matches}")
-            elif len(matches) == 1:
-                todo = await cal.todo_by_uid(matches[0])
-        if not todo:
-            raise Exception("task not found")
-        if new_summary:
-            todo.component["summary"] = new_summary.strip()
-        if new_location:
-            todo.component["location"] = new_location
-        if new_description:
-            todo.component["description"] = new_description
-        if new_categories:
-            todo.component["categories"] = new_categories
-        if new_priority:
-            todo.component["priority"] = max(0, min(9, new_priority))
-        if new_url:
-            todo.component["url"] = new_url
-        if new_related_to:
-            todo.component["related-to"] = new_related_to
-        await todo.save()
+        try:
+            principal = await client.principal()
+            cal = await self._get_calendar(principal, list_name)
+            todo = None
+            if uid:
+                todo = await cal.todo_by_uid(uid)
+            elif summary is not None:
+                matches = []
+                todos = await cal.todos()
+                for todo in todos:
+                    if summary.strip() in todo.component["summary"]:
+                        matches.append(todo.component["uid"])
+                if len(matches) > 1:
+                    raise Exception(f"Multiple matches for {summary!r}: {matches}")
+                elif len(matches) == 1:
+                    todo = await cal.todo_by_uid(matches[0])
+            if not todo:
+                raise Exception("task not found")
+            if new_summary:
+                todo.component["summary"] = new_summary.strip()
+            if new_location:
+                todo.component["location"] = new_location
+            if new_description:
+                todo.component["description"] = new_description
+            if new_categories:
+                todo.component["categories"] = new_categories
+            if new_priority:
+                todo.component["priority"] = max(0, min(9, new_priority))
+            if new_url:
+                todo.component["url"] = new_url
+            if new_related_to:
+                todo.component["related-to"] = new_related_to
+            await todo.save()
+        finally:
+            await client.close()
 
     @tool_logger
     @caldav_safe
@@ -945,24 +957,29 @@ class Tools:
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
         client = await self.caldav_client
-        principal = await client.principal()
-        cal = await self._get_calendar(principal, list_name)
-        todo = None
-        if uid:
-            todo = await cal.todo_by_uid(uid)
-        elif summary is not None:
-            matches = []
-            todos = await cal.todos()
-            for todo in todos:
-                if summary.strip() in todo.component["summary"]:
-                    matches.append(todo.component["uid"])
-            if len(matches) > 1:
-                raise Exception(f"Error: Multiple matches for {summary!r}: {matches}")
-            elif len(matches) == 1:
-                todo = await cal.todo_by_uid(matches[0])
-        if not todo:
-            raise Exception("Error: task not found")
-        await todo.delete()
+        try:
+            principal = await client.principal()
+            cal = await self._get_calendar(principal, list_name)
+            todo = None
+            if uid:
+                todo = await cal.todo_by_uid(uid)
+            elif summary is not None:
+                matches = []
+                todos = await cal.todos()
+                for todo in todos:
+                    if summary.strip() in todo.component["summary"]:
+                        matches.append(todo.component["uid"])
+                if len(matches) > 1:
+                    raise Exception(
+                        f"Error: Multiple matches for {summary!r}: {matches}"
+                    )
+                elif len(matches) == 1:
+                    todo = await cal.todo_by_uid(matches[0])
+            if not todo:
+                raise Exception("Error: task not found")
+            await todo.delete()
+        finally:
+            await client.close()
 
     @tool_logger
     @caldav_safe
@@ -986,48 +1003,51 @@ class Tools:
         zi = ZoneInfo(__user__["timezone"])
         now = datetime.now(zi).replace(second=0, microsecond=0)
         client = await self.caldav_client
-        principal = await client.principal()
-        cal = await self._get_calendar(principal, calendar_name)
+        try:
+            principal = await client.principal()
+            cal = await self._get_calendar(principal, calendar_name)
 
-        uid = str(uuid.uuid4())
-        e = Event()
-        e.add("uid", uid)
-        e.add("summary", summary)
-        e.add("dtstamp", now)
-        e.add("created", now)
-        e.add("last-modified", now)
+            uid = str(uuid.uuid4())
+            e = Event()
+            e.add("uid", uid)
+            e.add("summary", summary)
+            e.add("dtstamp", now)
+            e.add("created", now)
+            e.add("last-modified", now)
 
-        if start:
-            dtstart = datetime.fromisoformat(start)
-            if dtstart.tzinfo is None:
-                dtstart = dtstart.replace(tzinfo=zi)
-        else:
-            dtstart = now
-        if end:
-            dtend = datetime.fromisoformat(end)
-            if dtend.tzinfo is None:
-                dtend = dtend.replace(tzinfo=zi)
-        else:
-            dtend = dtstart + timedelta(hours=1.0)
-        e.add("dtstart", dtstart)
-        e.add("dtend", dtend)
+            if start:
+                dtstart = datetime.fromisoformat(start)
+                if dtstart.tzinfo is None:
+                    dtstart = dtstart.replace(tzinfo=zi)
+            else:
+                dtstart = now
+            if end:
+                dtend = datetime.fromisoformat(end)
+                if dtend.tzinfo is None:
+                    dtend = dtend.replace(tzinfo=zi)
+            else:
+                dtend = dtstart + timedelta(hours=1.0)
+            e.add("dtstart", dtstart)
+            e.add("dtend", dtend)
 
-        if description:
-            e.add("description", description)
-        if location:
-            e.add("location", location)
-        if rrule:
-            e.add("rrule", rrule)
+            if description:
+                e.add("description", description)
+            if location:
+                e.add("location", location)
+            if rrule:
+                e.add("rrule", rrule)
 
-        if alarms:
-            for r in parse_reminders(alarms):
-                a = Alarm()
-                a.add("action", "DISPLAY")
-                a.add("trigger", timedelta(minutes=-r.get("minutes")))
-                a.add("description", summary)
-                e.add_component(a)
-        await cal.save_event(ical=e)
-        return uid
+            if alarms:
+                for r in parse_reminders(alarms):
+                    a = Alarm()
+                    a.add("action", "DISPLAY")
+                    a.add("trigger", timedelta(minutes=-r.get("minutes")))
+                    a.add("description", summary)
+                    e.add_component(a)
+            await cal.save_event(ical=e)
+            return uid
+        finally:
+            await client.close()
 
     @tool_logger
     @caldav_safe
@@ -1048,23 +1068,26 @@ class Tools:
 
         uid = str(uuid.uuid4())
         client = await self.caldav_client
-        principal = await client.principal()
-        calendars = await principal.get_calendars()
-        available_lists = [await c.get_display_name() for c in calendars]
-        if list_name not in available_lists:
-            log_err("invalid task list")
-            raise Exception("invalid task list")
-        cal = await self._get_calendar(principal, list_name)
-        await cal.save_todo(
-            uid=uid,
-            summary=summary,
-            priority=priority,
-            description=description,
-            categories=categories,
-            url=url,
-            location=location,
-        )
-        return uid
+        try:
+            principal = await client.principal()
+            calendars = await principal.get_calendars()
+            available_lists = [await c.get_display_name() for c in calendars]
+            if list_name not in available_lists:
+                log_err("invalid task list")
+                raise Exception("invalid task list")
+            cal = await self._get_calendar(principal, list_name)
+            await cal.save_todo(
+                uid=uid,
+                summary=summary,
+                priority=priority,
+                description=description,
+                categories=categories,
+                url=url,
+                location=location,
+            )
+            return uid
+        finally:
+            await client.close()
 
     # TODO this duplicates edit task should be a wrapper
     @tool_logger
@@ -1081,25 +1104,28 @@ class Tools:
             raise Exception(f"{list_name!r} not whitelisted")
 
         client = await self.caldav_client
-        principal = await client.principal()
-        cal = await self._get_calendar(principal, list_name)
-        if uid:
-            todo = await cal.todo_by_uid(uid)
-        elif summary is not None:
-            matches = []
-            todos = await cal.todos()
-            for t in todos:
-                if summary.strip() in t.component["summary"]:
-                    matches.append(t)
-            if len(matches) > 1:
-                raise Exception(f"multiple matches found for {summary!r}")
-            if len(matches) == 0:
-                raise Exception(
-                    f"Task with summary {summary!r} not found in list {list_name!r}"
-                )
-            todo = matches[0]
-        todo.component["status"] = "COMPLETED"
-        await todo.save()
+        try:
+            principal = await client.principal()
+            cal = await self._get_calendar(principal, list_name)
+            if uid:
+                todo = await cal.todo_by_uid(uid)
+            elif summary is not None:
+                matches = []
+                todos = await cal.todos()
+                for t in todos:
+                    if summary.strip() in t.component["summary"]:
+                        matches.append(t)
+                if len(matches) > 1:
+                    raise Exception(f"multiple matches found for {summary!r}")
+                if len(matches) == 0:
+                    raise Exception(
+                        f"Task with summary {summary!r} not found in list {list_name!r}"
+                    )
+                todo = matches[0]
+            todo.component["status"] = "COMPLETED"
+            await todo.save()
+        finally:
+            await client.close()
 
     @tool_logger
     @caldav_safe
@@ -1128,56 +1154,59 @@ class Tools:
         tz = __user__["timezone"]
         zi = ZoneInfo(tz)
         client = await self.caldav_client
-        principal = await client.principal()
-        cal = await self._get_calendar(principal, calendar_name)
+        try:
+            principal = await client.principal()
+            cal = await self._get_calendar(principal, calendar_name)
 
-        e = None
-        if uid:
-            e = await cal.event_by_uid(uid)
-        elif summary is not None:
-            matches = []
-            events = await cal.events()
-            for e in events:
-                if summary.strip() in e.component["summary"]:
-                    matches.append(e.component["uid"])
-            if len(matches) > 1:
-                raise Exception("Error: multiple matches")
-            elif len(matches) == 1:
-                e = await cal.event_by_uid(matches[0])
-        if not e:
-            raise Exception("Error: event not found")
+            e = None
+            if uid:
+                e = await cal.event_by_uid(uid)
+            elif summary is not None:
+                matches = []
+                events = await cal.events()
+                for e in events:
+                    if summary.strip() in e.component["summary"]:
+                        matches.append(e.component["uid"])
+                if len(matches) > 1:
+                    raise Exception("Error: multiple matches")
+                elif len(matches) == 1:
+                    e = await cal.event_by_uid(matches[0])
+            if not e:
+                raise Exception("Error: event not found")
 
-        if new_start:
-            dtstart = datetime.fromisoformat(new_start)
-            if dtstart.tzinfo is None:
-                dtstart = dtstart.replace(tzinfo=zi)
-            e.component["dtstart"].dt = dtstart
-        if new_end:
-            dtend = datetime.fromisoformat(new_end)
-            if dtend.tzinfo is None:
-                dtend = dtend.replace(tzinfo=zi)
-            e.component["dtend"].dt = dtend
-        if new_summary:
-            e.component["summary"] = new_summary.strip()
-        if new_location:
-            e.component["location"] = new_location
-        if new_description:
-            e.component["description"] = new_description
-        if new_rrule:
-            e.component["rrule"] = new_rrule
-        if new_alarms:
-            valarm_subs = [
-                sub for sub in e.component.subcomponents if sub.name == "VALARM"
-            ]
-            for sub in valarm_subs[:]:
-                e.component.subcomponents.remove(sub)
-            for reminder in parse_reminders(new_alarms):
-                a = Alarm()
-                a.add("action", "DISPLAY")
-                a.add("trigger", timedelta(minutes=-reminder.get("minutes")))
-                a.add("description", e.component["summary"])
-                e.component.add_component(a)
-        await e.save()
+            if new_start:
+                dtstart = datetime.fromisoformat(new_start)
+                if dtstart.tzinfo is None:
+                    dtstart = dtstart.replace(tzinfo=zi)
+                e.component["dtstart"].dt = dtstart
+            if new_end:
+                dtend = datetime.fromisoformat(new_end)
+                if dtend.tzinfo is None:
+                    dtend = dtend.replace(tzinfo=zi)
+                e.component["dtend"].dt = dtend
+            if new_summary:
+                e.component["summary"] = new_summary.strip()
+            if new_location:
+                e.component["location"] = new_location
+            if new_description:
+                e.component["description"] = new_description
+            if new_rrule:
+                e.component["rrule"] = new_rrule
+            if new_alarms:
+                valarm_subs = [
+                    sub for sub in e.component.subcomponents if sub.name == "VALARM"
+                ]
+                for sub in valarm_subs[:]:
+                    e.component.subcomponents.remove(sub)
+                for reminder in parse_reminders(new_alarms):
+                    a = Alarm()
+                    a.add("action", "DISPLAY")
+                    a.add("trigger", timedelta(minutes=-reminder.get("minutes")))
+                    a.add("description", e.component["summary"])
+                    e.component.add_component(a)
+            await e.save()
+        finally:
+            await client.close()
 
     @tool_logger
     @caldav_safe
@@ -1193,97 +1222,103 @@ class Tools:
 
         event_data = []
         client = await self.caldav_client
-        principal = await client.principal()
-        cal = await self._get_calendar(principal, calendar_name)
-        events = await cal.search(
-            start=datetime.now(ZoneInfo(__user__["timezone"])),
-            expand=False,
-            event=True,
-        )
+        try:
+            principal = await client.principal()
+            cal = await self._get_calendar(principal, calendar_name)
+            events = await cal.search(
+                start=datetime.now(ZoneInfo(__user__["timezone"])),
+                expand=False,
+                event=True,
+            )
 
-        for e in events:
-            event_dict = {}
+            for e in events:
+                event_dict = {}
 
-            for field in [
-                "uid",
-                "summary",
-                "description",
-                "location",
-                "categories",
-                "organizer",
-                "url",
-            ]:
-                if val := e.component.get(field):
-                    event_dict[field] = val
+                for field in [
+                    "uid",
+                    "summary",
+                    "description",
+                    "location",
+                    "categories",
+                    "organizer",
+                    "url",
+                ]:
+                    if val := e.component.get(field):
+                        event_dict[field] = val
 
-            dtstart_val = e.component.get("dtstart")
-            dtend_val = e.component.get("dtend")
-            if dtstart_val:
-                event_dict["dtstart"] = dtstart_val.dt.isoformat()
-            if dtend_val:
-                event_dict["dtend"] = dtend_val.dt.isoformat()
+                dtstart_val = e.component.get("dtstart")
+                dtend_val = e.component.get("dtend")
+                if dtstart_val:
+                    event_dict["dtstart"] = dtstart_val.dt.isoformat()
+                if dtend_val:
+                    event_dict["dtend"] = dtend_val.dt.isoformat()
 
-            if e.component.get("rrule"):
-                event_dict["rrule"] = e.component["rrule"].to_ical().decode("utf-8")
-                log(f"Processing recurring event: {event_dict.get('summary')}")
-                log(f"Original dtstart: {event_dict.get('dtstart')}")
-                try:
-                    duration = (
-                        (dtend_val.dt - dtstart_val.dt)
-                        if dtstart_val and dtend_val
-                        else timedelta(hours=1)
-                    )
-                    log(f"Duration: {duration}")
-
-                    dtstart_dt = dtstart_val.dt
-                    if isinstance(dtstart_dt, date) and not isinstance(
-                        dtstart_dt, datetime
-                    ):
-                        log("All-day event detected")
-                        dtstart_dt = datetime.combine(
-                            dtstart_dt,
-                            datetime.min.time(),
-                            tzinfo=ZoneInfo(__user__["timezone"]),
+                if e.component.get("rrule"):
+                    event_dict["rrule"] = e.component["rrule"].to_ical().decode("utf-8")
+                    log(f"Processing recurring event: {event_dict.get('summary')}")
+                    log(f"Original dtstart: {event_dict.get('dtstart')}")
+                    try:
+                        duration = (
+                            (dtend_val.dt - dtstart_val.dt)
+                            if dtstart_val and dtend_val
+                            else timedelta(hours=1)
                         )
-                    elif dtstart_dt.tzinfo is None:
-                        log("Naive datetime detected")
-                        dtstart_dt = dtstart_dt.replace(
-                            tzinfo=ZoneInfo(__user__["timezone"])
-                        )
-                    else:
-                        log("TZ-aware datetime detected")
-                        dtstart_dt = dtstart_dt.astimezone(
-                            ZoneInfo(__user__["timezone"])
-                        )
+                        log(f"Duration: {duration}")
 
-                    log(f"RRULE: {event_dict['rrule']}")
-                    rrule_obj = rrulestr(event_dict["rrule"], dtstart=dtstart_dt)
-                    now = datetime.now(ZoneInfo(__user__["timezone"]))
-                    log(f"Now: {now}")
-                    next_occurrence = rrule_obj.after(now, inc=False)
+                        dtstart_dt = dtstart_val.dt
+                        if isinstance(dtstart_dt, date) and not isinstance(
+                            dtstart_dt, datetime
+                        ):
+                            log("All-day event detected")
+                            dtstart_dt = datetime.combine(
+                                dtstart_dt,
+                                datetime.min.time(),
+                                tzinfo=ZoneInfo(__user__["timezone"]),
+                            )
+                        elif dtstart_dt.tzinfo is None:
+                            log("Naive datetime detected")
+                            dtstart_dt = dtstart_dt.replace(
+                                tzinfo=ZoneInfo(__user__["timezone"])
+                            )
+                        else:
+                            log("TZ-aware datetime detected")
+                            dtstart_dt = dtstart_dt.astimezone(
+                                ZoneInfo(__user__["timezone"])
+                            )
 
-                    if next_occurrence:
-                        log(f"Next occurrence: {next_occurrence.isoformat()}")
-                        log(
-                            f"New dtstart: {event_dict['dtstart']} -> {next_occurrence}"
-                        )
-                        event_dict["dtstart"] = next_occurrence.isoformat()
-                        event_dict["dtend"] = (next_occurrence + duration).isoformat()
-                        log(f"New dtend: {event_dict['dtend']}")
-                    else:
-                        log("No future occurrence found")
-                except Exception as err:
-                    log(f"RRULE parsing failed: {err}")
-                    pass
+                        log(f"RRULE: {event_dict['rrule']}")
+                        rrule_obj = rrulestr(event_dict["rrule"], dtstart=dtstart_dt)
+                        now = datetime.now(ZoneInfo(__user__["timezone"]))
+                        log(f"Now: {now}")
+                        next_occurrence = rrule_obj.after(now, inc=False)
 
-            if len(e.component.alarms.times) > 0:
-                event_dict["alarms"] = [
-                    str(time.trigger) for time in e.component.alarms.times
-                ]
+                        if next_occurrence:
+                            log(f"Next occurrence: {next_occurrence.isoformat()}")
+                            log(
+                                f"New dtstart: {event_dict['dtstart']}"
+                                f" -> {next_occurrence}"
+                            )
+                            event_dict["dtstart"] = next_occurrence.isoformat()
+                            event_dict["dtend"] = (
+                                next_occurrence + duration
+                            ).isoformat()
+                            log(f"New dtend: {event_dict['dtend']}")
+                        else:
+                            log("No future occurrence found")
+                    except Exception as err:
+                        log(f"RRULE parsing failed: {err}")
+                        pass
 
-            event_data.append(event_dict)
+                if len(e.component.alarms.times) > 0:
+                    event_dict["alarms"] = [
+                        str(time.trigger) for time in e.component.alarms.times
+                    ]
 
-        return event_data
+                event_data.append(event_dict)
+
+            return event_data
+        finally:
+            await client.close()
 
     @tool_logger
     @caldav_safe
@@ -1302,22 +1337,25 @@ class Tools:
             raise Exception("must provide a summary or uid")
 
         client = await self.caldav_client
-        principal = await client.principal()
-        cal = await self._get_calendar(principal, calendar_name)
-        event = None
-        if uid:
-            event = await cal.event_by_uid(uid)
-        elif summary is not None:
-            matches = []
-            events = await cal.events()
-            for e in events:
-                c = e.component
-                if summary.strip() in c["summary"]:
-                    matches.append(c["uid"])
-            if len(matches) > 1:
-                raise Exception(f"multiple matches for summary {summary!r}")
-            elif len(matches) == 1:
-                event = await cal.event_by_uid(matches[0])
-        if not event:
-            raise NotFoundError(f"event not found for {summary!r}")
-        await event.delete()
+        try:
+            principal = await client.principal()
+            cal = await self._get_calendar(principal, calendar_name)
+            event = None
+            if uid:
+                event = await cal.event_by_uid(uid)
+            elif summary is not None:
+                matches = []
+                events = await cal.events()
+                for e in events:
+                    c = e.component
+                    if summary.strip() in c["summary"]:
+                        matches.append(c["uid"])
+                if len(matches) > 1:
+                    raise Exception(f"multiple matches for summary {summary!r}")
+                elif len(matches) == 1:
+                    event = await cal.event_by_uid(matches[0])
+            if not event:
+                raise NotFoundError(f"event not found for {summary!r}")
+            await event.delete()
+        finally:
+            await client.close()
