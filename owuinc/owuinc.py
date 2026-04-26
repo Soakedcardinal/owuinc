@@ -13,6 +13,7 @@ import functools
 import inspect
 import os
 import re
+import time
 import traceback
 import urllib.parse
 import uuid
@@ -76,9 +77,38 @@ def tool_logger(func: Callable) -> Callable:
     async def wrapper(self, *args, **kwargs):
         log_sep(func.__name__)
         log_valves(self.valves)
-        result = func(self, *args, **kwargs)
-        if inspect.isawaitable(result):
-            return await result
+        if DEBUG:
+            arg_parts = []
+            for k, v in kwargs.items():
+                arg_parts.append(f"{k}={v!r}")
+            if arg_parts:
+                log(f"args: {', '.join(arg_parts)}")
+        start = time.monotonic()
+        try:
+            result = func(self, *args, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+            else:
+                result
+        except Exception as e:
+            elapsed = (time.monotonic() - start) * 1000
+            log_err(
+                f"{func.__name__}: FAILED in {elapsed:.1f}ms — {type(e).__name__}: {e}"
+            )
+            raise
+        elapsed = (time.monotonic() - start) * 1000
+        if isinstance(result, dict):
+            ok = result.get("result", "?")
+            data = result.get("data")
+            if data is not None:
+                data_len = (
+                    len(data) if isinstance(data, (list, str)) else type(data).__name__
+                )
+                log(f"{func.__name__}: {ok} in {elapsed:.1f}ms, data={data_len}")
+            else:
+                log(f"{func.__name__}: {ok} in {elapsed:.1f}ms")
+        else:
+            log(f"{func.__name__}: OK in {elapsed:.1f}ms")
         return result
 
     return wrapper
