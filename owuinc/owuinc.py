@@ -72,43 +72,51 @@ def log_valves(valves):
         print(f"TASK_LIST_WHITELIST={valves.TASK_LIST_WHITELIST!r}")
 
 
+def _sanitize_args(kwargs: dict) -> str:
+    parts = []
+    for k, v in kwargs.items():
+        if k == "__user__":
+            continue
+        parts.append(f"{k}={v!r}")
+    return ", ".join(parts)
+
+
 def tool_logger(func: Callable) -> Callable:
     @functools.wraps(func)
     async def wrapper(self, *args, **kwargs):
         log_sep(func.__name__)
-        log_valves(self.valves)
+        if DEBUG and kwargs:
+            log(f"args: {_sanitize_args(kwargs)}")
         if DEBUG:
-            arg_parts = []
-            for k, v in kwargs.items():
-                arg_parts.append(f"{k}={v!r}")
-            if arg_parts:
-                log(f"args: {', '.join(arg_parts)}")
-        start = time.monotonic()
+            start = time.monotonic()
         try:
             result = func(self, *args, **kwargs)
             if inspect.isawaitable(result):
                 result = await result
-            else:
-                result
         except Exception as e:
-            elapsed = (time.monotonic() - start) * 1000
-            log_err(
-                f"{func.__name__}: FAILED in {elapsed:.1f}ms — {type(e).__name__}: {e}"
-            )
-            raise
-        elapsed = (time.monotonic() - start) * 1000
-        if isinstance(result, dict):
-            ok = result.get("result", "?")
-            data = result.get("data")
-            if data is not None:
-                data_len = (
-                    len(data) if isinstance(data, (list, str)) else type(data).__name__
+            if DEBUG:
+                elapsed = (time.monotonic() - start) * 1000
+                log_err(
+                    f"{func.__name__}: FAILED in {elapsed:.1f}ms "
+                    f"— {type(e).__name__}: {e}"
                 )
-                log(f"{func.__name__}: {ok} in {elapsed:.1f}ms, data={data_len}")
+            raise
+        if DEBUG:
+            elapsed = (time.monotonic() - start) * 1000
+            if isinstance(result, dict):
+                ok = result.get("result", "?")
+                data = result.get("data")
+                if data is not None:
+                    data_len = (
+                        len(data)
+                        if isinstance(data, (list, str))
+                        else type(data).__name__
+                    )
+                    log(f"{func.__name__}: {ok} in {elapsed:.1f}ms, data={data_len}")
+                else:
+                    log(f"{func.__name__}: {ok} in {elapsed:.1f}ms")
             else:
-                log(f"{func.__name__}: {ok} in {elapsed:.1f}ms")
-        else:
-            log(f"{func.__name__}: OK in {elapsed:.1f}ms")
+                log(f"{func.__name__}: OK in {elapsed:.1f}ms")
         return result
 
     return wrapper
