@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath("../.."))
 project = "owuinc"
 copyright = "2026, soakedcardinal"
 author = "soakedcardinal"
-release = "2.3.0"
+release = "2.4.0"
 extensions = ["sphinx.ext.autodoc"]
 exclude_patterns: list[str] = []
 html_theme = "sphinx_rtd_theme"

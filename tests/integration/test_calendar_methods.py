@@ -1,12 +1,28 @@
-"""Integration tests for CalDAV methods using local Radicale server"""
+"""Integration tests for CalDAV methods using local Radicale server.
+
+All tests are async to match the async tool methods in owuinc.py.
+Note: caldav.aio only has principal() as async; other methods are sync
+wrappers that delegate to the async client internally.
+"""
 
 import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
+import pytest_asyncio
 
 logger = logging.getLogger(__name__)
+
+
+async def _get_calendar(principal, calendar_name: str):
+    """Get a calendar by name, working around caldav.aio's broken calendar()."""
+    calendars = await principal.get_calendars()
+    for cal in calendars:
+        display_name = await cal.get_display_name()
+        if display_name == calendar_name:
+            return cal
+    raise Exception(f"No calendar with name {calendar_name!r} found")
 
 
 class TestServerHealth:
@@ -97,19 +113,21 @@ class TestServerHealth:
 class TestCaldavClient:
     """Tests for the caldav_client fixture override and client connectivity."""
 
-    def test_caldav_client_is_correct_type(self, caldav_tools):
-        """Verify the overridden caldav_client returns a DAVClient instance."""
-        client = caldav_tools.caldav_client
-        from caldav.davclient import DAVClient
+    @pytest.mark.asyncio
+    async def test_caldav_client_is_correct_type(self, caldav_tools):
+        """Verify the overridden caldav_client returns an AsyncDAVClient instance."""
+        client = await caldav_tools.caldav_client
+        from caldav.aio import AsyncDAVClient
 
         logger.info(f">>> [TEST] caldav_client type: {type(client).__name__}")
         assert isinstance(
-            client, DAVClient
-        ), f"Expected DAVClient, got {type(client).__name__}"
+            client, AsyncDAVClient
+        ), f"Expected AsyncDAVClient, got {type(client).__name__}"
 
-    def test_caldav_client_url_is_radicale_root(self, caldav_tools):
+    @pytest.mark.asyncio
+    async def test_caldav_client_url_is_radicale_root(self, caldav_tools):
         """Verify the client points at Radicale root, NOT /remote.php/dav."""
-        client = caldav_tools.caldav_client
+        client = await caldav_tools.caldav_client
         url_str = str(client.url)
         logger.info(f">>> [TEST] caldav_client.url: {url_str}")
         assert (
@@ -119,21 +137,23 @@ class TestCaldavClient:
             "remote.php" not in url_str
         ), f"Client URL should not contain remote.php/dav: {url_str}"
 
-    def test_principal_discovery_works(self, caldav_tools):
+    @pytest.mark.asyncio
+    async def test_principal_discovery_works(self, caldav_tools):
         """Verify the caldav library can discover the principal against Radicale."""
-        client = caldav_tools.caldav_client
-        principal = client.principal()
+        client = await caldav_tools.caldav_client
+        principal = await client.principal()
         logger.info(
             f">>> [TEST] Principal: {principal}, type: {type(principal).__name__}"
         )
         assert principal is not None, "Principal discovery failed"
 
-    def test_caldav_client_property_restored_after_test(self, caldav_tools):
+    @pytest.mark.asyncio
+    async def test_caldav_client_property_restored_after_test(self, caldav_tools):
         """Verify the override is active during test.
 
         Restoration happens in the fixture's finally block.
         """
-        client = caldav_tools.caldav_client
+        client = await caldav_tools.caldav_client
         url_str = str(client.url)
         logger.info(f">>> [TEST] During test, client.url: {url_str}")
         assert (
@@ -148,7 +168,8 @@ class TestCaldavClient:
 class TestGetCalendars:
     """Tests for get_calendars() tool method."""
 
-    def test_get_calendars_returns_empty_when_no_calendars(self, caldav_tools):
+    @pytest.mark.asyncio
+    async def test_get_calendars_returns_empty_when_no_calendars(self, caldav_tools):
         """Verify get_calendars returns empty list when no calendars exist.
 
         Fresh Radicale server starts with no calendars, so this tests that case.
@@ -163,13 +184,13 @@ class TestGetCalendars:
         )
 
         # Verify the caldav_client property is wired correctly
-        client = caldav_tools.caldav_client
+        client = await caldav_tools.caldav_client
         logger.info(f">>> [TEST] caldav_client type: {type(client).__name__}")
         logger.info(f">>> [TEST] caldav_client.url: {client.url}")
 
         # Call the method under test
         logger.info(">>> [TEST] Calling caldav_tools.get_calendars() ...")
-        result = caldav_tools.get_calendars()
+        result = await caldav_tools.get_calendars()
         logger.info(f">>> [TEST] Raw result: {result!r}")
 
         # Assert structure
@@ -193,9 +214,10 @@ class TestGetCalendars:
 
         logger.info(">>> [TEST] === get_calendars test PASS ===")
 
-    def test_get_calendars_result_has_correct_structure(self, caldav_tools):
+    @pytest.mark.asyncio
+    async def test_get_calendars_result_has_correct_structure(self, caldav_tools):
         """Verify the caldav_safe wrapper produces the expected dict structure."""
-        result = caldav_tools.get_calendars()
+        result = await caldav_tools.get_calendars()
 
         # Must be a dict
         assert isinstance(result, dict), f"Expected dict, got {type(result).__name__}"
@@ -221,9 +243,12 @@ class TestGetCalendars:
 class TestGetTaskLists:
     """Tests for get_task_lists() tool method."""
 
-    def test_get_task_lists_returns_empty_when_no_tasks_calendar(self, caldav_tools):
+    @pytest.mark.asyncio
+    async def test_get_task_lists_returns_empty_when_no_tasks_calendar(
+        self, caldav_tools
+    ):
         """Verify get_task_lists returns empty list when no Tasks calendar exists."""
-        result = caldav_tools.get_task_lists()
+        result = await caldav_tools.get_task_lists()
         assert result["result"] == "True"
         assert "data" in result
         assert result["data"] == []
@@ -235,47 +260,54 @@ class TestTaskOperations:
     Covers: add_task, get_tasks, edit_task, complete_task, delete_task.
     """
 
-    @pytest.fixture
-    def tasks_calendar(self, caldav_tools):
+    @pytest_asyncio.fixture
+    async def tasks_calendar(self, caldav_tools):
         """Create a Tasks calendar on the Radicale server."""
-        principal = caldav_tools.caldav_client.principal()
-        cal = principal.make_calendar(name="Tasks", cal_id="tasks")
+        client = await caldav_tools.caldav_client
+        principal = await client.principal()
+        cal = await principal.make_calendar(name="Tasks", cal_id="tasks")
         yield cal
         try:
-            cal.delete()
+            await cal.delete()
         except Exception:
             pass
 
-    @pytest.fixture
-    def personal_calendar(self, caldav_tools):
+    @pytest_asyncio.fixture
+    async def personal_calendar(self, caldav_tools):
         """Create a Personal calendar on the Radicale server."""
-        principal = caldav_tools.caldav_client.principal()
-        cal = principal.make_calendar(name="Personal", cal_id="personal")
+        client = await caldav_tools.caldav_client
+        principal = await client.principal()
+        cal = await principal.make_calendar(name="Personal", cal_id="personal")
         yield cal
         try:
-            cal.delete()
+            await cal.delete()
         except Exception:
             pass
 
-    def test_get_task_lists_with_tasks_calendar(self, caldav_tools, tasks_calendar):
+    @pytest.mark.asyncio
+    async def test_get_task_lists_with_tasks_calendar(
+        self, caldav_tools, tasks_calendar
+    ):
         """Verify get_task_lists returns the Tasks calendar when it exists."""
-        result = caldav_tools.get_task_lists()
+        result = await caldav_tools.get_task_lists()
         assert result["result"] == "True"
         assert "data" in result
         assert "Tasks" in result["data"]
 
-    def test_add_task(self, caldav_tools, tasks_calendar):
+    @pytest.mark.asyncio
+    async def test_add_task(self, caldav_tools, tasks_calendar):
         """Verify add_task creates a task and returns its UID."""
-        result = caldav_tools.add_task(summary="Test task", list_name="Tasks")
+        result = await caldav_tools.add_task(summary="Test task", list_name="Tasks")
         assert result["result"] == "True"
         assert "data" in result
         assert result["data"] is not None
         assert len(result["data"]) == 36  # UUID format
 
-    def test_get_tasks(self, caldav_tools, tasks_calendar):
+    @pytest.mark.asyncio
+    async def test_get_tasks(self, caldav_tools, tasks_calendar):
         """Verify get_tasks returns tasks from the Tasks calendar."""
-        caldav_tools.add_task(summary="Get tasks test", list_name="Tasks")
-        result = caldav_tools.get_tasks(list_name="Tasks")
+        await caldav_tools.add_task(summary="Get tasks test", list_name="Tasks")
+        result = await caldav_tools.get_tasks(list_name="Tasks")
         assert result["result"] == "True"
         assert "data" in result
         assert isinstance(result["data"], list)
@@ -283,17 +315,18 @@ class TestTaskOperations:
         summaries = [t.get("summary") for t in result["data"]]
         assert "Get tasks test" in summaries
 
-    def test_edit_task(self, caldav_tools, tasks_calendar):
+    @pytest.mark.asyncio
+    async def test_edit_task(self, caldav_tools, tasks_calendar):
         """Verify edit_task modifies a task's summary."""
-        add_result = caldav_tools.add_task(
+        add_result = await caldav_tools.add_task(
             summary="Original summary", list_name="Tasks"
         )
         uid = add_result["data"]
-        edit_result = caldav_tools.edit_task(
+        edit_result = await caldav_tools.edit_task(
             uid=uid, new_summary="Edited summary", list_name="Tasks"
         )
         assert edit_result["result"] == "True"
-        tasks = caldav_tools.get_tasks(list_name="Tasks")
+        tasks = await caldav_tools.get_tasks(list_name="Tasks")
         for t in tasks["data"]:
             if t.get("uid") == uid:
                 assert t.get("summary") == "Edited summary"
@@ -301,35 +334,39 @@ class TestTaskOperations:
         else:
             assert False, f"Task with uid {uid} not found after edit"
 
-    def test_complete_task(self, caldav_tools, tasks_calendar):
+    @pytest.mark.asyncio
+    async def test_complete_task(self, caldav_tools, tasks_calendar):
         """Verify complete_task marks a task as COMPLETED.
 
         Note: get_tasks filters out completed tasks (expected CalDAV behavior),
         so we can't verify via round-trip through get_tasks. We verify the
         method returns success and the task is no longer in get_tasks results.
         """
-        add_result = caldav_tools.add_task(summary="To complete", list_name="Tasks")
+        add_result = await caldav_tools.add_task(
+            summary="To complete", list_name="Tasks"
+        )
         uid = add_result["data"]
         # Confirm task exists before completing
-        before = caldav_tools.get_tasks(list_name="Tasks")
+        before = await caldav_tools.get_tasks(list_name="Tasks")
         uids_before = [t.get("uid") for t in before["data"]]
         assert uid in uids_before, "Task should exist before completing"
 
-        comp_result = caldav_tools.complete_task(uid=uid, list_name="Tasks")
+        comp_result = await caldav_tools.complete_task(uid=uid, list_name="Tasks")
         assert comp_result["result"] == "True"
 
         # Verify task is gone from get_tasks (completed tasks are filtered out)
-        after = caldav_tools.get_tasks(list_name="Tasks")
+        after = await caldav_tools.get_tasks(list_name="Tasks")
         uids_after = [t.get("uid") for t in after["data"]]
         assert uid not in uids_after, "Completed task should not appear in get_tasks"
 
-    def test_delete_task(self, caldav_tools, tasks_calendar):
+    @pytest.mark.asyncio
+    async def test_delete_task(self, caldav_tools, tasks_calendar):
         """Verify delete_task removes a task from the list."""
-        add_result = caldav_tools.add_task(summary="To delete", list_name="Tasks")
+        add_result = await caldav_tools.add_task(summary="To delete", list_name="Tasks")
         uid = add_result["data"]
-        del_result = caldav_tools.delete_task(uid=uid, list_name="Tasks")
+        del_result = await caldav_tools.delete_task(uid=uid, list_name="Tasks")
         assert del_result["result"] == "True"
-        tasks = caldav_tools.get_tasks(list_name="Tasks")
+        tasks = await caldav_tools.get_tasks(list_name="Tasks")
         uids = [t.get("uid") for t in tasks["data"]]
         assert uid not in uids
 
@@ -337,25 +374,26 @@ class TestTaskOperations:
 class TestEventOperations:
     """Tests for calendar event CRUD: create, get, edit, delete."""
 
-    @pytest.fixture
-    def personal_calendar(self, caldav_tools):
+    @pytest_asyncio.fixture
+    async def personal_calendar(self, caldav_tools):
         """Create a Personal calendar on the Radicale server."""
-        principal = caldav_tools.caldav_client.principal()
-        cal = principal.make_calendar(name="Personal", cal_id="personal")
+        client = await caldav_tools.caldav_client
+        principal = await client.principal()
+        cal = await principal.make_calendar(name="Personal", cal_id="personal")
         yield cal
         try:
-            cal.delete()
+            await cal.delete()
         except Exception:
             pass
 
-    @pytest.fixture
-    def future_event(self, caldav_tools, personal_calendar):
+    @pytest_asyncio.fixture
+    async def future_event(self, caldav_tools, personal_calendar):
         """Create an event in the near future for testing."""
         zi = ZoneInfo("America/New_York")
         now = datetime.now(zi).replace(second=0, microsecond=0)
         start = (now + timedelta(hours=1)).isoformat()
         end = (now + timedelta(hours=2)).isoformat()
-        result = caldav_tools.create_calendar_event(
+        result = await caldav_tools.create_calendar_event(
             summary="Test event",
             calendar_name="Personal",
             start=start,
@@ -365,17 +403,18 @@ class TestEventOperations:
         uid = result["data"]
         yield uid
         try:
-            caldav_tools.delete_calendar_event(uid=uid, calendar_name="Personal")
+            await caldav_tools.delete_calendar_event(uid=uid, calendar_name="Personal")
         except Exception:
             pass
 
-    def test_create_calendar_event(self, caldav_tools, personal_calendar):
+    @pytest.mark.asyncio
+    async def test_create_calendar_event(self, caldav_tools, personal_calendar):
         """Verify create_calendar_event creates an event and returns its UID."""
         zi = ZoneInfo("America/New_York")
         now = datetime.now(zi).replace(second=0, microsecond=0)
         start = (now + timedelta(hours=1)).isoformat()
         end = (now + timedelta(hours=2)).isoformat()
-        result = caldav_tools.create_calendar_event(
+        result = await caldav_tools.create_calendar_event(
             summary="Integration test event",
             calendar_name="Personal",
             start=start,
@@ -387,7 +426,8 @@ class TestEventOperations:
         assert result["data"] is not None
         assert len(result["data"]) == 36  # UUID format
 
-    def test_get_calendar_events(self, caldav_tools, future_event):
+    @pytest.mark.asyncio
+    async def test_get_calendar_events(self, caldav_tools, future_event):
         """SKIP: Radicale returns 0 events for all time-range searches.
 
         get_calendar_events uses cal.search(start=datetime.now()), which
@@ -404,12 +444,13 @@ class TestEventOperations:
             "old_flags: no_search_openended)"
         )
 
-    def test_edit_calendar_event(self, caldav_tools, future_event):
+    @pytest.mark.asyncio
+    async def test_edit_calendar_event(self, caldav_tools, future_event):
         """Verify edit_calendar_event modifies an event's summary."""
         zi = ZoneInfo("America/New_York")
         now = datetime.now(zi).replace(second=0, microsecond=0)
         new_start = (now + timedelta(hours=3)).isoformat()
-        edit_result = caldav_tools.edit_calendar_event(
+        edit_result = await caldav_tools.edit_calendar_event(
             uid=future_event,
             calendar_name="Personal",
             new_summary="Edited event",
@@ -419,21 +460,25 @@ class TestEventOperations:
         assert edit_result["result"] == "True"
         # Verify via raw cal.events() — get_calendar_events can't be used
         # because Radicale ignores time-range filters in search()
-        cal = caldav_tools.caldav_client.principal().calendar(name="Personal")
-        for e in cal.events():
+        client = await caldav_tools.caldav_client
+        principal = await client.principal()
+        cal = await _get_calendar(principal, "Personal")
+        events = await cal.events()
+        for e in events:
             if e.component["uid"] == future_event:
                 assert e.component["summary"] == "Edited event"
                 break
         else:
             assert False, f"Event with uid {future_event} not found after edit"
 
-    def test_delete_calendar_event(self, caldav_tools, personal_calendar):
+    @pytest.mark.asyncio
+    async def test_delete_calendar_event(self, caldav_tools, personal_calendar):
         """Verify delete_calendar_event removes an event."""
         zi = ZoneInfo("America/New_York")
         now = datetime.now(zi).replace(second=0, microsecond=0)
         start = (now + timedelta(hours=1)).isoformat()
         end = (now + timedelta(hours=2)).isoformat()
-        add_result = caldav_tools.create_calendar_event(
+        add_result = await caldav_tools.create_calendar_event(
             summary="To delete",
             calendar_name="Personal",
             start=start,
@@ -441,12 +486,14 @@ class TestEventOperations:
             __user__={"timezone": "America/New_York"},
         )
         uid = add_result["data"]
-        del_result = caldav_tools.delete_calendar_event(
+        del_result = await caldav_tools.delete_calendar_event(
             uid=uid, calendar_name="Personal"
         )
         assert del_result["result"] == "True"
         # Verify via raw cal.events() — get_calendar_events can't be used
         # because Radicale ignores time-range filters in search()
-        cal = caldav_tools.caldav_client.principal().calendar(name="Personal")
-        event_uids = [e.component["uid"] for e in cal.events()]
+        client = await caldav_tools.caldav_client
+        principal = await client.principal()
+        cal = await _get_calendar(principal, "Personal")
+        event_uids = [e.component["uid"] for e in await cal.events()]
         assert uid not in event_uids
