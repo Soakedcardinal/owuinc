@@ -298,8 +298,7 @@ class Tools:
         )
         pass  # required for parsing
 
-    @property
-    def webdav_client(self):
+    def _webdav_client(self):
         base = self.valves.NEXTCLOUD_BASE_URL
         wd_user = self.valves.WEBDAV_USERNAME
         url = f"{base}/remote.php/dav/files/{wd_user}/"
@@ -407,7 +406,7 @@ class Tools:
         path: str,
     ) -> None:
         """Create new directory"""
-        client = self.webdav_client
+        client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
             await client.mkdir(_webdav_path(validate_path(path, self.valves)))
@@ -418,7 +417,7 @@ class Tools:
     @webdav_safe
     async def ls(self, path: str | None = None) -> list[str]:
         """List files and directories"""
-        client = self.webdav_client
+        client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
             p = validate_path(path, self.valves)
@@ -452,7 +451,7 @@ class Tools:
         Returns:
             matching file paths sorted by modification time (newest last)
         """
-        client = self.webdav_client
+        client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
             target_dir = validate_path(path if path else "", self.valves)
@@ -541,7 +540,7 @@ class Tools:
             path: The directory to search in. Defaults to root.
             include: File pattern to include (e.g., "*.py", "*.{ts,tsx}")
         """
-        client = self.webdav_client
+        client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
             target_dir = validate_path(path if path else "", self.valves)
@@ -644,7 +643,7 @@ class Tools:
         """Write to a file, overwriting existing content"""
         if content is None:
             content = ""
-        client = self.webdav_client
+        client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
             await client.resource(
@@ -677,7 +676,7 @@ class Tools:
         if limit is not None and limit <= 0:
             raise ValueError(f"limit must be > 0, got {limit}")
 
-        client = self.webdav_client
+        client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
             buf = BytesIO()
@@ -708,7 +707,7 @@ class Tools:
         """Append content to file, creating it if it does not exist"""
         if content is None:
             content = ""
-        client = self.webdav_client
+        client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
             res_path = _webdav_path(validate_path(path, self.valves))
@@ -748,7 +747,7 @@ class Tools:
         if old_string == new_string:
             raise ValueError("old_string and new_string must be different")
 
-        client = self.webdav_client
+        client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
             res_path = _webdav_path(validate_path(file_path, self.valves))
@@ -781,7 +780,7 @@ class Tools:
     @webdav_safe
     async def rm(self, paths: list[str]) -> None:
         """Deletes files/directories"""
-        client = self.webdav_client
+        client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
             for p in paths:
@@ -797,7 +796,7 @@ class Tools:
         dst: str,
     ) -> None:
         """Move/rename a file or directory"""
-        client = self.webdav_client
+        client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
             await client.move(
@@ -815,7 +814,7 @@ class Tools:
         dst: str,
     ) -> None:
         """Copy a file or directory."""
-        client = self.webdav_client
+        client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
             await client.copy(
