@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar,aiowebdav2
-version: 3.0.0
+version: 3.0.1
 license: MIT
 """
 
@@ -459,13 +459,18 @@ class Tools:
         try:
             await self._ensure_sandbox(client)
             p = validate_path(path, self.valves)
-            prefix = f"{self.valves.SANDBOX_DIR.strip().rstrip('/')}/"
+            sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
             raw_paths = await client.list_files(_webdav_path(p))
             paths = [_strip_leading_slash(rp) for rp in raw_paths]
-            parent = p.strip(prefix).strip("/")
-            result_list = [
-                item for item in paths if item != prefix and item.strip("/") != parent
-            ]
+            parent = _strip_leading_slash(p)
+            result_list = []
+            for item in paths:
+                if item == parent:
+                    continue
+                # Strip sandbox prefix to keep it invisible to the agent
+                if item.startswith(sandbox_prefix):
+                    item = item[len(sandbox_prefix) :]
+                result_list.append(item)
             return result_list
         finally:
             await client.close()
