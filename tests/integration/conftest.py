@@ -1,4 +1,7 @@
-"""Integration test fixtures for CalDAV (Radicale) and WebDAV (WsgiDAV) testing."""
+"""Integration test fixtures for CalDAV (Radicale) and WebDAV (WsgiDAV) testing.
+
+All fixtures and tests are async to match the async tool methods in owuinc.py.
+"""
 
 import logging
 import os
@@ -10,6 +13,7 @@ import time
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -194,8 +198,8 @@ level = warning
             logger.info(f">>> Port {RADICALE_PORT} confirmed free after teardown")
 
 
-@pytest.fixture(scope="function")
-def caldav_tools(radicale_server):
+@pytest_asyncio.fixture(scope="function")
+async def caldav_tools(radicale_server):
     """Create Tools instance configured for Radicale CalDAV server.
 
     Args:
@@ -204,10 +208,10 @@ def caldav_tools(radicale_server):
     Yields:
         Tools: Configured owuinc.Tools instance
 
-    Note: Overrides caldav_client to use Radicale's path structure with
+    Note: Overrides caldav_client to use async Radicale client with
           basic auth instead of Nextcloud's /remote.php/dav prefix.
     """
-    from caldav.davclient import get_davclient
+    from caldav.aio import get_async_davclient
 
     from owuinc.owuinc import Tools
 
@@ -233,7 +237,7 @@ def caldav_tools(radicale_server):
 
     @property
     def rad_caldav_client(self):
-        return get_davclient(
+        return get_async_davclient(
             url=self.valves.NEXTCLOUD_BASE_URL,
             username=radicale_server["username"],
             password=radicale_server["password"],
@@ -406,8 +410,8 @@ server.start()
         shutil.rmtree(script_dir, ignore_errors=True)
 
 
-@pytest.fixture(scope="function")
-def webdav_tools(wsgidav_server):
+@pytest_asyncio.fixture(scope="function")
+async def webdav_tools(wsgidav_server):
     """Create Tools instance configured for WsgiDAV with Nextcloud URL structure.
 
     URL: http://127.0.0.1:5233/remote.php/dav/files/testuser/
@@ -418,7 +422,7 @@ def webdav_tools(wsgidav_server):
     Yields:
         Tools: Configured owuinc.Tools instance
     """
-    from webdav3.client import Client
+    from aiowebdav2 import Client as WebDAVClient
 
     from owuinc.owuinc import Tools
 
@@ -438,26 +442,21 @@ def webdav_tools(wsgidav_server):
         f"sandbox={t.valves.SANDBOX_DIR}"
     )
 
-    original_webdav_client = Tools.webdav_client
+    original_webdav_client = Tools._webdav_client
 
-    @property
     def wsgi_webdav_client(self):
-        return Client(
-            {
-                "webdav_hostname": (
-                    f"{self.valves.NEXTCLOUD_BASE_URL}/remote.php/dav/files/"
-                    f"{self.valves.WEBDAV_USERNAME}/"
-                ),
-                "webdav_login": self.valves.NEXTCLOUD_USERNAME,
-                "webdav_password": self.valves.NEXTCLOUD_APP_PASSWORD,
-            }
+        return WebDAVClient(
+            f"{self.valves.NEXTCLOUD_BASE_URL}/remote.php/dav/files/"
+            f"{self.valves.WEBDAV_USERNAME}/",
+            self.valves.NEXTCLOUD_USERNAME,
+            self.valves.NEXTCLOUD_APP_PASSWORD,
         )
 
-    Tools.webdav_client = wsgi_webdav_client
+    Tools._webdav_client = wsgi_webdav_client
 
     try:
         logger.info(">>> Yielding webdav_tools instance")
         yield t
     finally:
-        Tools.webdav_client = original_webdav_client
-        logger.info(">>> Restored original Tools.webdav_client property")
+        Tools._webdav_client = original_webdav_client
+        logger.info(">>> Restored original Tools._webdav_client method")
