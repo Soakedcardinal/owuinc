@@ -182,7 +182,7 @@ def webdav_safe(func: Callable) -> Callable:
             return {"result": "False", "details": f"{op}: WebDAV error"}
         except ValueError as e:
             log_err(f"{op}: validation error - {e}")
-            return {"result": "False", "details": f"{op}: validation error"}
+            return {"result": "False", "details": f"{op}: {str(e)}"}
         except Exception as e:
             log_err(
                 f"{op}: unexpected error - {type(e).__name__}: {e}\
