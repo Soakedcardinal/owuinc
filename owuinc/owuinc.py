@@ -135,9 +135,8 @@ def caldav_safe(func: Callable) -> Callable:
                 response["data"] = result
             return response
         except NotFoundError as e:
-            log(f"{op}: {e}")
-            msg = e.args[0] if hasattr(e, "args") and e.args else str(e)
-            return {"result": "False", "details": msg}
+            log_err(f"{op}: not found - {e}")
+            return {"result": "False", "details": f"{op}: not found"}
         except Exception as e:
             log_err(
                 f"{op}: unexpected error - {type(e).__name__}: {e}\
@@ -183,7 +182,7 @@ def webdav_safe(func: Callable) -> Callable:
             return {"result": "False", "details": f"{op}: WebDAV error"}
         except ValueError as e:
             log_err(f"{op}: validation error - {e}")
-            return {"result": "False", "details": f"{op}: {str(e)}"}
+            return {"result": "False", "details": f"{op}: validation error"}
         except Exception as e:
             log_err(
                 f"{op}: unexpected error - {type(e).__name__}: {e}\
