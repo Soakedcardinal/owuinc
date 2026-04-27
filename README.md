@@ -69,3 +69,17 @@ IMPORTANT: update the defaults to match your chosen task list / calendar.
 * Ensure Advanced Params > Show > Function Calling is set to `Native`
 * Under Tools, tick the checkbox to enable the `owuinc_bot` tool
 * Press Save & Update
+
+<br>
+<br>
+
+---
+
+<br>
+<br>
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/soakedcardinal)
+
+<img src="docs/xmr_donation_address.png" alt="Monero" width="200">
+
+monero:89xxpMUUjddM1EVg8288BHCRqJZ3KxUXnaazscKJTkHc1PkU5jL4Zrqe4gaLry5XdCc9hRasK6a2SR4SHf87bF7RVTAA6X5
