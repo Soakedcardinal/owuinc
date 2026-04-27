@@ -132,11 +132,20 @@ level = warning
     config_file.write_text(config_content)
     logger.info(f">>> Wrote Radicale config: {config_file}")
 
-    # Find radicale in venv
-    venv_bin = Path(__file__).parent.parent.parent / ".venv" / "bin"
-    radicale_exe = venv_bin / "radicale"
-    if not radicale_exe.exists():
-        pytest.skip("Radicale not found in .venv/bin")
+    import shutil
+    import sys
+
+    radicale_exe = shutil.which("radicale")
+    if radicale_exe is None:
+        # Try relative to sys.executable (e.g., .venv/bin/radicale)
+        venv_bin = Path(sys.executable).parent
+        radicale_exe = venv_bin / "radicale"
+        if not radicale_exe.exists():
+            raise RuntimeError(
+                "Radicale not found on PATH or in .venv/bin — "
+                "install radicale or ensure it's on PATH"
+            )
+        radicale_exe = str(radicale_exe)
 
     logger.info(f">>> Radicale executable: {radicale_exe}")
 
@@ -347,10 +356,11 @@ server.start()
 
     logger.info(f">>> WsgiDAV script: {script_path}")
 
-    venv_bin = Path(__file__).parent.parent.parent / ".venv" / "bin"
-    python_exe = venv_bin / "python3"
+    import sys
+
+    python_exe = Path(sys.executable)
     if not python_exe.exists():
-        pytest.skip("Python not found in .venv/bin")
+        raise RuntimeError(f"Python executable not found: {python_exe}")
 
     logger.info(
         f">>> Starting WsgiDAV on port {WSGIDAV_PORT} "
