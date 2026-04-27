@@ -5,7 +5,7 @@ __pycache__
 .env
 docs/build
 docs/modules
-.aider*
+docs/vendor
 archive
 owuinc.egg-info
 logs

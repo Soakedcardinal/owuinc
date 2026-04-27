@@ -1,6 +1,6 @@
 icalendar
-caldav
-webdavclient3
+caldav>=3.0.0
+aiowebdav2
 pydantic
 python-dotenv
 requests
