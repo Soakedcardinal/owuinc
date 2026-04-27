@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar,aiowebdav2
-version: 3.0.0
+version: 3.0.1
 license: MIT
 """
 
@@ -135,9 +135,8 @@ def caldav_safe(func: Callable) -> Callable:
                 response["data"] = result
             return response
         except NotFoundError as e:
-            log(f"{op}: {e}")
-            msg = e.args[0] if hasattr(e, "args") and e.args else str(e)
-            return {"result": "False", "details": msg}
+            log_err(f"{op}: not found - {e}")
+            return {"result": "False", "details": f"{op}: not found"}
         except Exception as e:
             log_err(
                 f"{op}: unexpected error - {type(e).__name__}: {e}\
@@ -180,7 +179,7 @@ def webdav_safe(func: Callable) -> Callable:
             return {"result": "False", "details": f"{op}: connection failed"}
         except WebDavError as e:
             log_err(f"{op}: WebDAV error - {e}\nTraceback: {traceback.format_exc()}")
-            return {"result": "False", "details": f"{op}: {str(e)}"}
+            return {"result": "False", "details": f"{op}: WebDAV error"}
         except ValueError as e:
             log_err(f"{op}: validation error - {e}")
             return {"result": "False", "details": f"{op}: {str(e)}"}
@@ -459,13 +458,18 @@ class Tools:
         try:
             await self._ensure_sandbox(client)
             p = validate_path(path, self.valves)
-            prefix = f"{self.valves.SANDBOX_DIR.strip().rstrip('/')}/"
+            sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
             raw_paths = await client.list_files(_webdav_path(p))
             paths = [_strip_leading_slash(rp) for rp in raw_paths]
-            parent = p.strip(prefix).strip("/")
-            result_list = [
-                item for item in paths if item != prefix and item.strip("/") != parent
-            ]
+            parent = _strip_leading_slash(p)
+            result_list = []
+            for item in paths:
+                if item == parent:
+                    continue
+                # Strip sandbox prefix to keep it invisible to the agent
+                if item.startswith(sandbox_prefix):
+                    item = item[len(sandbox_prefix) :]
+                result_list.append(item)
             return result_list
         finally:
             await client.close()
