@@ -1,0 +1,35 @@
+Run the following tool calls sequentially in this exact order. Verify each result is as expected. If any call fails or the result doesn't match, report it and continue. At the end, summarize pass/fail for each call.
+
+mkdir("foo") → success
+write_file("foo/bar.txt", "Hello world\nLine two") → success
+write_file("foo/baz.md", "# Notes\n\nSanity check") → success
+read("foo/bar.txt") → returns "Hello world..."
+append_file("foo/bar.txt", "\nAppended line") → success
+read("foo/bar.txt") → contains "Appended line"
+ls("foo") → lists bar.txt, baz.md
+ls() → root listing
+glob("**/*.txt") → finds bar.txt
+grep("Hello", include="*.txt") → finds "Hello world"
+edit(file_path="foo/bar.txt", old_string="Hello world", new_string="Hello universe") → success
+read("foo/bar.txt") → contains "Hello universe"
+cp("foo/bar.txt", "foo/bar-copy.txt") → success
+ls("foo") → bar-copy.txt appears
+mkdir("foo/sub") → success
+mv("foo/baz.md", "foo/sub/baz.md") → baz.md moved into sub/
+rm(["foo"]) → success, foo/ gone
+get_task_lists() → owuinc-test in list
+add_task(summary="foo-task", description="bar") → success
+get_tasks() → foo-task appears
+edit_task(summary="foo-task", new_priority=3, new_description="baz") → success
+get_tasks() → foo-task has updated description and priority
+complete_task(summary="foo-task") → success
+add_task(summary="qux-task") → success
+delete_task(summary="qux-task") → success
+get_tasks() → qux-task is gone
+get_calendars() → owuinc-test in list
+create_calendar_event(summary="foo-event", start="<tomorrow 10:00 in your timezone>", end="<tomorrow 11:00>") → success
+get_calendar_events() → foo-event appears
+edit_calendar_event(summary="foo-event", new_summary="bar-event") → success
+get_calendar_events() → summary changed to bar-event
+delete_calendar_event(summary="bar-event") → success
+get_calendar_events() → bar-event is gone
