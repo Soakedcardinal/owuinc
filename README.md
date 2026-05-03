@@ -22,54 +22,58 @@ Connect OpenWebUI Models to Nextcloud.
 
 ## Setup
 
-Pick an existing model, or create one to use. For this example, we will set up an agent named `bot`.
+Pick an existing model, or create one to use. For this example, we will set up a model named `owuinc`.
 
 ### 1. Add to OpenWebUI
-* Navigate to Tools > + New Tool
-* Enter Name and description e.g. `owuinc_bot`
-* Paste the contents of [`owuinc.py`](./owuinc/owuinc.py)
-* Click Save > Confirm
 
-### 2. Create Calendar/Task Lists
-* NextCloud Calendar app > `+` > New calendar with task list > call it `bot`
+![New Tool](docs/new-tool-button.png)
 
-### 3. Configure Valves
-* In NextCloud Files app > Files settings
-* Identify your `<WEBDAV_USERNAME>` from the WebDAV URL `https://your-nextcloud-domain.com/remote.php/dav/files/<WEBDAV_USERNAME>`
+*   Navigate to Workspace > Tools > + New Tool > New Tool
+*   Enter Name and description e.g. `owuinc`
+*   Paste the contents of [`owuinc.py`](./owuinc/owuinc.py)
+*   Click Save > Confirm
 
-* Under Profile Icon > Personal Settings > Security, create an app password e.g. `owuinc_bot`
-* In OpenWebUI > gear icon next to `owuinc_bot` tool > fill in the Valves
-    * `Webdav Username` ( from WebDAV URL)
-    * `Nextcloud Base URL` (nextcloud server address)
-    * `Nextcloud Username` (shown next to app password)
-    * `Nextcloud App Password`
-    * Set `Sandbox Dir` to `owuinc` 
-     * Set `Default Calendar` to `Personal`
-     * Set `Default Task List` to `Tasks`
-     * Set `Calendar Whitelist` to `Personal`
-     * Set `Task List Whitelist` to `Tasks`
-* Press save
+### 2. Configure Valves
+*   Under Profile Icon > Personal Settings > Security, create an app password e.g. `owuinc`
+*   In NextCloud Files app > Files settings, find your WebDAV URL `https://your-nextcloud-domain.com/remote.php/dav/files/<WEBDAV_USERNAME>` and copy the `<WEBDAV_USERNAME>` portion
+*   In OpenWebUI > gear icon next to `owuinc` tool > fill in the Valves
+    *   `Webdav Username` (from above)
+    *   `Nextcloud Base URL` (nextcloud server address)
+    *   `Nextcloud Username` (shown above app password)
+    *   `Nextcloud App Password`
+*   Press save
 
-IMPORTANT: Calendars and task lists are ONLY accessible if explicitly listed in the respective whitelist. Both the whitelist AND default values must be configured for operations to work.
+The other valves default to:
+* sandbox: `owuinc`
+* Calendar: `Personal`
+* Task list: `Tasks`
 
-### 4. Configure Model
-* OpenWebUI > Workspace > Models > `bot`
-* Add to the system prompt
+Change them if you want to use different (isolated) calendar or task list.
+
+> **Note**: If you change the default calendar or task list, you must also update the respective whitelist valve.
+
+### 3. Configure Model
+*   OpenWebUI > Workspace > Models > `owuinc`
+*   Add to the system prompt
 
 ```text
 Task Priorities: 1 = high, 9 = low, 0 = none
 Task/Event operations: Only use Uids internally; never include them in responses.
-Calendar Functions: Provide `start` and `end` arguments as an ISO 8601-style string without a timezone offset, e.g. `2026-02-01T15:30`. 
+Calendar Functions: Provide `start` and `end` arguments as an ISO 8601-style string without a timezone offset, e.g. `2026-02-01T15:30`.
 Default `calendar_name`: `Personal`
 Default `list_name`: `Tasks`
 ```
 
-IMPORTANT: update the defaults to match your chosen task list / calendar.
+> **Note**: Update the defaults in the prompt if you changed the calendar or task list valves in Step 2.
 
-* Ensure Advanced Params > Show > Function Calling is set to `Native`
-* Under Tools, tick the checkbox to enable the `owuinc_bot` tool
-* Press Save & Update
+*   Ensure Advanced Params > Show > Function Calling is set to `Native`
+*   Under Capabilities, match the following settings:
+    ![Recommended Capabilities](docs/recommended-capabilities.png)
+    Built-in tool schemas add significant overhead that can interfere with owuinc function reliability. You can re-enable individual capabilities later if needed, but reliability is not guaranteed with additional schemas enabled.
+*   Under Tools, tick the checkbox to enable the `owuinc` tool
+*   Press Save & Update
 
+<br>
 <br>
 <br>
 
