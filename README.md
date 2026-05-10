@@ -75,11 +75,11 @@ Default `list_name`: `Tasks`
 
 ## Inject Nextcloud Files as System Instructions (Optional)
 
-The [`startup_context_injector`](./startup_context_injector.py) filter auto-injects files of your choosing as system instructions on the first turn, enabling **self-improvement** and **persistent memory**, and other advanced agentic behavior. It uses the same async patterns and WebDAV client as the main tool.
+The [`startup_context_injector`](./startup_context_injector.py) filter auto-injects files of your choosing as system instructions on the first turn, enabling **self-improvement** and **persistent memory**, and other advanced agentic behavior.
 
 To use, paste the file into OpenWebUI Admin Panel > Functions > + New Function and configure the Valves (similar to `owuinc`) and define what files to inject. The filter handles automatic daily memory log injection from `memory/`. For a starting point, refer to [OpenClaw templates](https://docs.openclaw.ai/reference/templates/AGENTS).
 
-> **Note**: The filter is self-contained and works independently from `owuinc`.
+> **Note**: The filter requires the `owuinc` tool to be installed first.
 
 <br>
 <br>

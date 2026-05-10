@@ -4,7 +4,7 @@ author: Soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Injects files from nextcloud as system instructions on first turn.
 requirements: aiowebdav2
-version: 1.0.0
+version: 1.1.0
 license: MIT
 """
 
@@ -21,6 +21,7 @@ from aiowebdav2.exceptions import (
     WebDavError,
 )
 from pydantic import BaseModel, Field
+from tool_owuinc import validate_path
 
 # DEBUG = True
 DEBUG = False
@@ -136,27 +137,27 @@ class Filter:
                 f"files: {files_to_inject}"
             )
 
-            # Build full paths (strip leading / from SANDBOX_DIR)
-            system_dir = self.valves.SANDBOX_DIR.strip().lstrip("/")
-            if system_dir:
-                system_dir += "/"
-
             contexts: List[str] = []
             for filename in files_to_inject:
-                path = f"{system_dir}{filename}"
+                try:
+                    validated = validate_path(filename, self.valves)
+                except Exception as e:
+                    log_err(f"path validation failed for {filename!r} - {e}")
+                    continue
+                path = validated.rstrip("/")
                 log(f"downloading {path}...")
                 content = await self._download_file(client, path)
                 _try_inject(contexts, filename, content)
 
             # Inject daily memory logs
             log("downloading memory/*.md files...")
-            memory_dir = f"{system_dir}memory/"
+            memory_base = validate_path("memory", self.valves).rstrip("/")
 
             today_file = self._get_today_filename()
             yesterday_file = self._get_yesterday_filename()
 
             for log_file in [yesterday_file, today_file]:
-                path = f"{memory_dir}{log_file}"
+                path = f"{memory_base}/{log_file}"
                 log(f"downloading {path}...")
                 content = await self._download_file(client, path)
                 _try_inject(contexts, f"memory/{log_file}", content)
