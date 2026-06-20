@@ -4,11 +4,13 @@ author: Soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Injects files from nextcloud as system instructions on first turn.
 requirements: aiowebdav2
-version: 1.1.0
+version: 1.1.1
 license: MIT
 """
 
+import os
 import traceback
+import urllib.parse
 from datetime import date, timedelta
 from io import BytesIO
 from typing import List, Optional
@@ -21,7 +23,6 @@ from aiowebdav2.exceptions import (
     WebDavError,
 )
 from pydantic import BaseModel, Field
-from tool_owuinc import validate_path
 
 # DEBUG = True
 DEBUG = False
@@ -42,6 +43,65 @@ def log_sep(msg):
         print("\n" + "=" * 60)
         print(f"  {msg}")
         print("=" * 60 + "\n")
+
+
+def validate_path(path, valves):
+    """
+    Validate and normalize file paths for WebDAV operations.
+
+    SECURITY MODEL:
+    - All operations are confined to SANDBOX_DIR (e.g., "owuinc/")
+    - Path traversal ("..") is explicitly blocked
+    - Absolute paths ("/etc/passwd") are stripped and treated as relative
+      to sandbox root ("/etc/passwd" -> "owuinc/etc/passwd")
+
+    NOTE: SANDBOX_DIR is auto-created on first use if it doesn't exist.
+
+    Args:
+        path: User-provided path (can be relative, absolute, or empty)
+        valves: Configuration object with SANDBOX_DIR setting
+
+    Returns:
+        Full WebDAV path prefixed with sandbox directory
+        (e.g., "owuinc/Documents/file.py")
+
+    Raises:
+        Exception: If path contains traversal attempts ("..")
+
+    Examples:
+        validate_path("", valves)         # -> "owuinc/"
+        validate_path(".", valves)        # -> "owuinc/"
+        validate_path("/", valves)        # -> "owuinc/"
+        validate_path("Documents/", valves)  # -> "owuinc/Documents/"
+        validate_path("/etc", valves)     # -> "owuinc/etc" (strips leading /)
+        validate_path("../etc", valves)   # -> Exception (traversal blocked)
+    """
+    prefix = valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+
+    if not path:
+        return prefix
+
+    path = path.strip()
+
+    prev = None
+    while prev != path:
+        prev = path
+        path = urllib.parse.unquote(path)
+
+    if ".." in path:
+        raise Exception("Invalid Path: traversal not allowed")
+
+    if path in ("", ".", "/"):
+        return prefix
+
+    if path.startswith("/"):
+        path = path.lstrip("/")
+
+    full_path = prefix + os.path.normpath(path)
+    if full_path.startswith(prefix):
+        return full_path
+
+    raise Exception("Invalid Path: outside sandbox.")
 
 
 def _try_inject(contexts: list[str], filename: str, content: Optional[str]):
