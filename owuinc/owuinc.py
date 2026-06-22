@@ -70,6 +70,7 @@ def log_valves(valves):
         print(f"DEFAULT_TASK_LIST={valves.DEFAULT_TASK_LIST!r}")
         print(f"CALENDAR_WHITELIST={valves.CALENDAR_WHITELIST!r}")
         print(f"TASK_LIST_WHITELIST={valves.TASK_LIST_WHITELIST!r}")
+        print(f"FILE_BLACKLIST={valves.FILE_BLACKLIST!r}")
 
 
 def _sanitize_args(kwargs: dict) -> str:
@@ -302,6 +303,17 @@ def is_whitelisted(whitelist: str, item: str) -> bool:
     return item in cleaned_whitelist
 
 
+def is_blacklisted(blacklist: str, path: str) -> bool:
+    """Check if path is under any blacklisted directory prefix."""
+    if not blacklist:
+        return False
+    cleaned = {s.strip() for s in blacklist.split(",") if s.strip()}
+    for prefix in cleaned:
+        if path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
+
+
 class Tools:
     def __init__(self):
         log_sep("Tools")
@@ -332,6 +344,13 @@ class Tools:
         TASK_LIST_WHITELIST: str = Field(
             default="Tasks",
             description="Comma-separated list of allowed task lists",
+        )
+        FILE_BLACKLIST: str = Field(
+            default="",
+            description=(
+                "Comma-separated paths (relative to sandbox root) to exclude "
+                "from all file operations"
+            ),
         )
         pass  # required for parsing
 
@@ -398,6 +417,17 @@ class Tools:
                 log(f"sandbox dir not found, creating: {sandbox!r}")
                 await client.mkdir(_webdav_path(sandbox))
 
+    def _check_blacklisted(self, rel_path: str) -> None:
+        """Raise ValueError if rel_path (relative to sandbox) is blacklisted."""
+        rel_path = rel_path.strip("/")
+        if rel_path and is_blacklisted(self.valves.FILE_BLACKLIST, rel_path):
+            raise ValueError(f"Path is blacklisted: {rel_path}")
+
+    def _is_result_blacklisted(self, rel_path: str) -> bool:
+        """Check if a result path (relative to sandbox) should be hidden."""
+        rel_path = rel_path.strip("/")
+        return bool(rel_path) and is_blacklisted(self.valves.FILE_BLACKLIST, rel_path)
+
     @tool_logger
     @caldav_safe
     async def get_calendars(self) -> list[str]:
@@ -443,10 +473,18 @@ class Tools:
         path: str,
     ) -> None:
         """Create new directory"""
+        full_path = validate_path(path, self.valves)
+        sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+        rel_path = (
+            full_path[len(sandbox_prefix) :]
+            if full_path.startswith(sandbox_prefix)
+            else full_path
+        )
+        self._check_blacklisted(rel_path)
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
-            await client.mkdir(_webdav_path(validate_path(path, self.valves)))
+            await client.mkdir(_webdav_path(full_path))
         finally:
             await client.close()
 
@@ -454,22 +492,28 @@ class Tools:
     @webdav_safe
     async def ls(self, path: str | None = None) -> list[str]:
         """List files and directories"""
+        full_path = validate_path(path, self.valves)
+        sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+        rel_path = (
+            full_path[len(sandbox_prefix) :]
+            if full_path.startswith(sandbox_prefix)
+            else full_path
+        )
+        self._check_blacklisted(rel_path)
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
-            p = validate_path(path, self.valves)
-            sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
-            raw_paths = await client.list_files(_webdav_path(p))
+            raw_paths = await client.list_files(_webdav_path(full_path))
             paths = [_strip_leading_slash(rp) for rp in raw_paths]
-            parent = _strip_leading_slash(p)
+            parent = _strip_leading_slash(full_path)
             result_list = []
             for item in paths:
                 if item == parent:
                     continue
-                # Strip sandbox prefix to keep it invisible to the agent
                 if item.startswith(sandbox_prefix):
                     item = item[len(sandbox_prefix) :]
-                result_list.append(item)
+                if not self._is_result_blacklisted(item):
+                    result_list.append(item)
             return result_list
         finally:
             await client.close()
@@ -493,10 +537,18 @@ class Tools:
         Returns:
             matching file paths sorted by modification time (newest last)
         """
+        target_dir = validate_path(path if path else "", self.valves)
+        sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+        rel_path = (
+            target_dir[len(sandbox_prefix) :]
+            if target_dir.startswith(sandbox_prefix)
+            else target_dir
+        )
+        self._check_blacklisted(rel_path)
+
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
-            target_dir = validate_path(path if path else "", self.valves)
 
             log(f"glob: pattern={pattern}, target_dir={target_dir}")
 
@@ -552,15 +604,20 @@ class Tools:
             except Exception as e:
                 log(f"glob: sort error - {e}")
 
-            sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
             result = []
             for f in matched:
                 full_path = f["path"]
                 if sandbox_prefix in full_path:
-                    rel_path = full_path.split(sandbox_prefix, 1)[1]
+                    rel = full_path.split(sandbox_prefix, 1)[1]
+                elif full_path.startswith(rel_path + "/"):
+                    rel = full_path[len(rel_path) + 1 :]
                 else:
-                    rel_path = os.path.basename(full_path)
-                result.append(rel_path)
+                    rel = os.path.basename(full_path)
+
+                if self._is_result_blacklisted(rel):
+                    continue
+
+                result.append(rel)
 
             log(f"glob: returning {len(result)} matches")
             return result
@@ -582,10 +639,18 @@ class Tools:
             path: The directory to search in. Defaults to root.
             include: File pattern to include (e.g., "*.py", "*.{ts,tsx}")
         """
+        target_dir = validate_path(path if path else "", self.valves)
+        sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+        search_rel = (
+            target_dir[len(sandbox_prefix) :]
+            if target_dir.startswith(sandbox_prefix)
+            else target_dir
+        )
+        self._check_blacklisted(search_rel)
+
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
-            target_dir = validate_path(path if path else "", self.valves)
 
             log(
                 f"grep: pattern={pattern!r}, "
@@ -624,13 +689,17 @@ class Tools:
 
             results = []
             for full_path in file_list:
-                sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
-                rel_path = (
-                    full_path.split(sandbox_prefix, 1)[1]
-                    if sandbox_prefix in full_path
-                    else os.path.basename(full_path)
-                )
-                filename = os.path.basename(rel_path)
+                if sandbox_prefix in full_path:
+                    rel = full_path.split(sandbox_prefix, 1)[1]
+                elif full_path.startswith(search_rel + "/"):
+                    rel = full_path[len(search_rel) + 1 :]
+                else:
+                    rel = os.path.basename(full_path)
+
+                if self._is_result_blacklisted(rel):
+                    continue
+
+                filename = os.path.basename(rel)
 
                 if patterns_to_match:
                     matched = False
@@ -642,8 +711,8 @@ class Tools:
                     if not matched:
                         continue
 
-                webdav_path = _webdav_path(validate_path(rel_path, self.valves))
-                log(f"grep: searching {rel_path}")
+                webdav_path = _webdav_path(validate_path(rel, self.valves))
+                log(f"grep: searching {rel}")
 
                 try:
                     buf = BytesIO()
@@ -659,14 +728,14 @@ class Tools:
                         if compiled_regex.search(line):
                             results.append(
                                 {
-                                    "file": rel_path,
+                                    "file": rel,
                                     "line": line_num,
                                     "content": line.strip(),
                                 }
                             )
 
                 except Exception as e:
-                    log(f"grep: error reading {rel_path}: {e}")
+                    log(f"grep: error reading {rel}: {e}")
                     continue
 
             results.sort(key=lambda x: (x["file"], x["line"]))
@@ -685,12 +754,20 @@ class Tools:
         """Write to a file, overwriting existing content"""
         if content is None:
             content = ""
+        full_path = validate_path(path, self.valves)
+        sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+        rel_path = (
+            full_path[len(sandbox_prefix) :]
+            if full_path.startswith(sandbox_prefix)
+            else full_path
+        )
+        self._check_blacklisted(rel_path)
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
-            await client.resource(
-                _webdav_path(validate_path(path, self.valves))
-            ).write_to(BytesIO(content.encode("utf-8")))
+            await client.resource(_webdav_path(full_path)).write_to(
+                BytesIO(content.encode("utf-8"))
+            )
         finally:
             await client.close()
 
@@ -718,13 +795,20 @@ class Tools:
         if limit is not None and limit <= 0:
             raise ValueError(f"limit must be > 0, got {limit}")
 
+        full_path = validate_path(path, self.valves)
+        sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+        rel_path = (
+            full_path[len(sandbox_prefix) :]
+            if full_path.startswith(sandbox_prefix)
+            else full_path
+        )
+        self._check_blacklisted(rel_path)
+
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
             buf = BytesIO()
-            await client.resource(
-                _webdav_path(validate_path(path, self.valves))
-            ).read_from(buf)
+            await client.resource(_webdav_path(full_path)).read_from(buf)
             content = buf.getvalue().decode("utf-8")
             lines = content.splitlines()
 
@@ -749,10 +833,19 @@ class Tools:
         """Append content to file, creating it if it does not exist"""
         if content is None:
             content = ""
+        full_path = validate_path(path, self.valves)
+        sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+        rel_path = (
+            full_path[len(sandbox_prefix) :]
+            if full_path.startswith(sandbox_prefix)
+            else full_path
+        )
+        self._check_blacklisted(rel_path)
+
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
-            res_path = _webdav_path(validate_path(path, self.valves))
+            res_path = _webdav_path(full_path)
             res = client.resource(res_path)
             try:
                 buf = BytesIO()
@@ -789,10 +882,19 @@ class Tools:
         if old_string == new_string:
             raise ValueError("old_string and new_string must be different")
 
+        full_path = validate_path(file_path, self.valves)
+        sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+        rel_path = (
+            full_path[len(sandbox_prefix) :]
+            if full_path.startswith(sandbox_prefix)
+            else full_path
+        )
+        self._check_blacklisted(rel_path)
+
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
-            res_path = _webdav_path(validate_path(file_path, self.valves))
+            res_path = _webdav_path(full_path)
             buf = BytesIO()
             await client.resource(res_path).read_from(buf)
             content = buf.getvalue().decode("utf-8")
@@ -822,6 +924,16 @@ class Tools:
     @webdav_safe
     async def rm(self, paths: list[str]) -> None:
         """Deletes files/directories"""
+        sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+        for p in paths:
+            full_path = validate_path(p, self.valves)
+            rel_path = (
+                full_path[len(sandbox_prefix) :]
+                if full_path.startswith(sandbox_prefix)
+                else full_path
+            )
+            self._check_blacklisted(rel_path)
+
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
@@ -838,12 +950,29 @@ class Tools:
         dst: str,
     ) -> None:
         """Move/rename a file or directory"""
+        sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+        src_full = validate_path(src, self.valves)
+        src_rel = (
+            src_full[len(sandbox_prefix) :]
+            if src_full.startswith(sandbox_prefix)
+            else src_full
+        )
+        self._check_blacklisted(src_rel)
+
+        dst_full = validate_path(dst, self.valves)
+        dst_rel = (
+            dst_full[len(sandbox_prefix) :]
+            if dst_full.startswith(sandbox_prefix)
+            else dst_full
+        )
+        self._check_blacklisted(dst_rel)
+
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
             await client.move(
-                remote_path_from=_webdav_path(validate_path(src, self.valves)),
-                remote_path_to=_webdav_path(validate_path(dst, self.valves)),
+                remote_path_from=_webdav_path(src_full),
+                remote_path_to=_webdav_path(dst_full),
             )
         finally:
             await client.close()
@@ -856,12 +985,29 @@ class Tools:
         dst: str,
     ) -> None:
         """Copy a file or directory."""
+        sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+        src_full = validate_path(src, self.valves)
+        src_rel = (
+            src_full[len(sandbox_prefix) :]
+            if src_full.startswith(sandbox_prefix)
+            else src_full
+        )
+        self._check_blacklisted(src_rel)
+
+        dst_full = validate_path(dst, self.valves)
+        dst_rel = (
+            dst_full[len(sandbox_prefix) :]
+            if dst_full.startswith(sandbox_prefix)
+            else dst_full
+        )
+        self._check_blacklisted(dst_rel)
+
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
             await client.copy(
-                remote_path_from=_webdav_path(validate_path(src, self.valves)),
-                remote_path_to=_webdav_path(validate_path(dst, self.valves)),
+                remote_path_from=_webdav_path(src_full),
+                remote_path_to=_webdav_path(dst_full),
             )
         finally:
             await client.close()

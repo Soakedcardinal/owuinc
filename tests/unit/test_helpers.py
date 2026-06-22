@@ -5,7 +5,7 @@ Tests sandbox security, path traversal prevention, and normalization
 
 import pytest
 
-from owuinc.owuinc import is_whitelisted, validate_path
+from owuinc.owuinc import is_blacklisted, is_whitelisted, validate_path
 
 
 @pytest.fixture
@@ -241,3 +241,58 @@ class TestValidatePathSecurityEdgeCases:
         """Four dots contain .. and should be blocked"""
         with pytest.raises(Exception, match="traversal not allowed"):
             validate_path("....", valves)
+
+
+class TestIsBlacklisted:
+    """Test blacklist prefix matching logic"""
+
+    def test_empty_blacklist_returns_false(self):
+        assert is_blacklisted("", "any/path") is False
+
+    def test_exact_match(self):
+        assert is_blacklisted("foo", "foo") is True
+
+    def test_prefix_match(self):
+        assert is_blacklisted("foo/bar", "foo/bar/baz/file.txt") is True
+
+    def test_prefix_match_deep(self):
+        assert is_blacklisted("foo", "foo/a/b/c/deep/file.txt") is True
+
+    def test_no_match_different_prefix(self):
+        assert is_blacklisted("foo", "other/file.txt") is False
+
+    def test_no_match_similar_name(self):
+        assert is_blacklisted("foo", "foobar/file.txt") is False
+
+    def test_no_match_substring_without_separator(self):
+        assert is_blacklisted("foo", "Myfoo/file.txt") is False
+
+    def test_comma_separated_multiple(self):
+        assert is_blacklisted("foo, bar", "bar/file.txt") is True
+
+    def test_comma_separated_first_match(self):
+        assert is_blacklisted("foo, bar", "foo/file.txt") is True
+
+    def test_comma_separated_no_match(self):
+        assert is_blacklisted("foo, bar", "other/file.txt") is False
+
+    def test_whitespace_normalized(self):
+        assert is_blacklisted("  foo  ,  bar  ", "foo/file.txt") is True
+
+    def test_trailing_comma_filtered(self):
+        assert is_blacklisted("foo,", "foo/file.txt") is True
+
+    def test_single_level_path(self):
+        assert is_blacklisted("foo", "foo") is True
+
+    def test_multilevel_blacklist_exact(self):
+        assert is_blacklisted("a/b/c", "a/b/c/file.txt") is True
+
+    def test_multilevel_blacklist_exact_match(self):
+        assert is_blacklisted("a/b/c", "a/b/c") is True
+
+    def test_multilevel_blacklist_no_partial_match(self):
+        assert is_blacklisted("a/b/c", "a/b/file.txt") is False
+
+    def test_leading_slash_stripped_by_caller(self):
+        assert is_blacklisted("foo", "foo/file.txt") is True
