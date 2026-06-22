@@ -875,6 +875,7 @@ class Tools:
             raise Exception(f"{list_name!r} not whitelisted")
 
         client = await self.caldav_client
+
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, list_name)
@@ -895,9 +896,13 @@ class Tools:
                     ]
                     if todo.component.get(key) is not None
                 }
+
             subtasks_map: dict[str, list[str]] = {}
             for uid, task_data in task_map.items():
                 parent_id = task_data.get("related-to")
+                # icalendar may return RELATED-TO as a list; grab the first item
+                if isinstance(parent_id, list):
+                    parent_id = parent_id[0] if parent_id else None
                 if parent_id and parent_id in task_map:
                     if parent_id not in subtasks_map:
                         subtasks_map[parent_id] = []
@@ -912,14 +917,19 @@ class Tools:
                     node["subtasks"] = [
                         build_subtree(child_id) for child_id in subtasks_map[task_id]
                     ]
+
                 return node
 
             tree = []
             for task_id, task_data in task_map.items():
                 parent_id = task_data.get("related-to")
+                if isinstance(parent_id, list):
+                    parent_id = parent_id[0] if parent_id else None
                 if not parent_id or parent_id not in task_map:
                     tree.append(build_subtree(task_id))
+
             return tree
+
         finally:
             await client.close()
 
