@@ -28,6 +28,55 @@ class TestLs:
         assert any("ls_testdir" in p for p in listing["data"])
         assert any("ls_testfile.txt" in p for p in listing["data"])
 
+    @pytest.mark.asyncio
+    async def test_ls_detail_shows_file_info(self, webdav_tools):
+        await webdav_tools.write_file("detail_file.txt", "x" * 100)
+
+        listing = await webdav_tools.ls("", detail=True)
+        assert listing["result"] == "True"
+        assert any("detail_file.txt" in entry for entry in listing["data"])
+        matching = [e for e in listing["data"] if "detail_file.txt" in e]
+        assert "[FILE]" in matching[0]
+        assert "2026-" in matching[0] or "2025-" in matching[0]
+        assert "B" in matching[0]
+
+    @pytest.mark.asyncio
+    async def test_ls_detail_shows_directory(self, webdav_tools):
+        await webdav_tools.mkdir("detail_dir")
+
+        listing = await webdav_tools.ls("", detail=True)
+        assert listing["result"] == "True"
+        matching = [e for e in listing["data"] if "detail_dir" in e]
+        assert matching
+        assert "[DIR]" in matching[0]
+
+    @pytest.mark.asyncio
+    async def test_ls_detail_vs_normal(self, webdav_tools):
+        await webdav_tools.write_file("compare.txt", "data")
+
+        normal = await webdav_tools.ls("")
+        detailed = await webdav_tools.ls("", detail=True)
+
+        assert normal["result"] == "True"
+        assert detailed["result"] == "True"
+        assert any("compare.txt" in p for p in normal["data"])
+        assert any("compare.txt" in p for p in detailed["data"])
+        assert any("[FILE]" in p for p in detailed["data"])
+
+    @pytest.mark.asyncio
+    async def test_ls_detail_hides_blacklisted(self, webdav_tools):
+        webdav_tools.valves.FILE_BLACKLIST = "secret"
+        await webdav_tools.write_file("visible.txt", "ok")
+        await webdav_tools.mkdir("secret")
+        await webdav_tools.write_file("secret/hidden.txt", "nope")
+
+        listing = await webdav_tools.ls("", detail=True)
+        assert listing["result"] == "True"
+        assert any("visible.txt" in e for e in listing["data"])
+        assert not any("secret" in e for e in listing["data"])
+        assert not any("hidden" in e for e in listing["data"])
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
 
 class TestWriteFile:
     @pytest.mark.asyncio

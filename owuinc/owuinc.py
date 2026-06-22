@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar,aiowebdav2
-version: 3.1.0
+version: 3.2.0
 license: MIT
 """
 
@@ -488,10 +488,53 @@ class Tools:
         finally:
             await client.close()
 
+    def _format_size(self, size_str: str) -> str:
+        """Format file size to human-readable string."""
+        try:
+            size: float = int(size_str)
+        except (ValueError, TypeError):
+            return size_str
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if abs(size) < 1024:
+                if unit == "B":
+                    return f"{int(size)} {unit}"
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} PB"
+
+    def _format_datetime(self, dt_str: str) -> str:
+        """Format WebDAV datetime string to a readable format."""
+        if not dt_str:
+            return "n/a"
+        for fmt in (
+            "%a, %d %b %Y %H:%M:%S %Z",
+            "%Y-%m-%dT%H:%M:%SZ",
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%S",
+        ):
+            try:
+                parsed = datetime.strptime(dt_str.replace(" +0000", "+00:00"), fmt)
+                return parsed.strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+        try:
+            parsed = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+            return parsed.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return dt_str
+
     @tool_logger
     @webdav_safe
-    async def ls(self, path: str | None = None) -> list[str]:
-        """List files and directories"""
+    async def ls(self, path: str | None = None, detail: bool = False) -> list[str]:
+        """List files and directories.
+
+        Args:
+            path: The directory to list. Defaults to sandbox root.
+            detail: If True, include file details (size, modified, type).
+
+        Returns:
+            List of file names, or list of detailed strings when detail=True.
+        """
         full_path = validate_path(path, self.valves)
         sandbox_prefix = self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
         rel_path = (
@@ -503,6 +546,31 @@ class Tools:
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
+
+            if detail:
+                raw_items = await client.list_with_infos(_webdav_path(full_path))
+                result_list = []
+                for item in raw_items:
+                    full_item_path = _strip_leading_slash(item.get("path", ""))
+                    if full_item_path == _strip_leading_slash(full_path):
+                        continue
+                    rel_item = (
+                        full_item_path[len(sandbox_prefix) :]
+                        if full_item_path.startswith(sandbox_prefix)
+                        else os.path.basename(full_item_path)
+                    )
+                    if self._is_result_blacklisted(rel_item):
+                        continue
+                    is_dir = str(item.get("isdir", "False")).lower() == "true"
+                    type_str = "DIR" if is_dir else "FILE"
+                    size_str = self._format_size(item.get("size", "0"))
+                    modified = self._format_datetime(item.get("modified", ""))
+                    name = item.get("name", os.path.basename(full_item_path))
+                    result_list.append(
+                        f"[{type_str}] {size_str:>10}  {modified}  {name}"
+                    )
+                return result_list
+
             raw_paths = await client.list_files(_webdav_path(full_path))
             paths = [_strip_leading_slash(rp) for rp in raw_paths]
             parent = _strip_leading_slash(full_path)
