@@ -28,6 +28,55 @@ class TestLs:
         assert any("ls_testdir" in p for p in listing["data"])
         assert any("ls_testfile.txt" in p for p in listing["data"])
 
+    @pytest.mark.asyncio
+    async def test_ls_detail_shows_file_info(self, webdav_tools):
+        await webdav_tools.write_file("detail_file.txt", "x" * 100)
+
+        listing = await webdav_tools.ls("", detail=True)
+        assert listing["result"] == "True"
+        assert any("detail_file.txt" in entry for entry in listing["data"])
+        matching = [e for e in listing["data"] if "detail_file.txt" in e]
+        assert "[FILE]" in matching[0]
+        assert "2026-" in matching[0] or "2025-" in matching[0]
+        assert "B" in matching[0]
+
+    @pytest.mark.asyncio
+    async def test_ls_detail_shows_directory(self, webdav_tools):
+        await webdav_tools.mkdir("detail_dir")
+
+        listing = await webdav_tools.ls("", detail=True)
+        assert listing["result"] == "True"
+        matching = [e for e in listing["data"] if "detail_dir" in e]
+        assert matching
+        assert "[DIR]" in matching[0]
+
+    @pytest.mark.asyncio
+    async def test_ls_detail_vs_normal(self, webdav_tools):
+        await webdav_tools.write_file("compare.txt", "data")
+
+        normal = await webdav_tools.ls("")
+        detailed = await webdav_tools.ls("", detail=True)
+
+        assert normal["result"] == "True"
+        assert detailed["result"] == "True"
+        assert any("compare.txt" in p for p in normal["data"])
+        assert any("compare.txt" in p for p in detailed["data"])
+        assert any("[FILE]" in p for p in detailed["data"])
+
+    @pytest.mark.asyncio
+    async def test_ls_detail_hides_blacklisted(self, webdav_tools):
+        webdav_tools.valves.FILE_BLACKLIST = "secret"
+        await webdav_tools.write_file("visible.txt", "ok")
+        await webdav_tools.mkdir("secret")
+        await webdav_tools.write_file("secret/hidden.txt", "nope")
+
+        listing = await webdav_tools.ls("", detail=True)
+        assert listing["result"] == "True"
+        assert any("visible.txt" in e for e in listing["data"])
+        assert not any("secret" in e for e in listing["data"])
+        assert not any("hidden" in e for e in listing["data"])
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
 
 class TestWriteFile:
     @pytest.mark.asyncio
@@ -210,3 +259,198 @@ class TestCp:
         src = await webdav_tools.read("cpsrc.txt")
         dst = await webdav_tools.read("cpdst.txt")
         assert src["data"] == dst["data"] == "copy me"
+
+
+class TestFileBlacklist:
+    @pytest.mark.asyncio
+    async def test_ls_hides_blacklisted_directory(self, webdav_tools):
+        await webdav_tools.mkdir("blacklisted_dir")
+        await webdav_tools.mkdir("allowed_dir")
+        webdav_tools.valves.FILE_BLACKLIST = "blacklisted_dir"
+
+        listing = await webdav_tools.ls("")
+        assert listing["result"] == "True"
+        assert not any("blacklisted_dir" in p for p in listing["data"])
+        assert any("allowed_dir" in p for p in listing["data"])
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_ls_blocks_blacklisted_path(self, webdav_tools):
+        await webdav_tools.mkdir("bl_dir")
+        await webdav_tools.write_file("bl_dir/file.txt", "content")
+        webdav_tools.valves.FILE_BLACKLIST = "bl_dir"
+
+        result = await webdav_tools.ls("bl_dir")
+        assert result["result"] == "False"
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_glob_filters_blacklisted_files(self, webdav_tools):
+        await webdav_tools.mkdir("bl_sub")
+        await webdav_tools.write_file("allowed.txt", "a")
+        await webdav_tools.write_file("bl_sub/hidden.txt", "b")
+        webdav_tools.valves.FILE_BLACKLIST = "bl_sub"
+
+        result = await webdav_tools.glob("*.txt", path=".")
+        assert result["result"] == "True"
+        assert not any("bl_sub" in f for f in result["data"])
+        assert any("allowed.txt" in f for f in result["data"])
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_glob_blocks_blacklisted_path(self, webdav_tools):
+        await webdav_tools.mkdir("bl_glob")
+        await webdav_tools.write_file("bl_glob/f.txt", "x")
+        webdav_tools.valves.FILE_BLACKLIST = "bl_glob"
+
+        result = await webdav_tools.glob("*.txt", path="bl_glob")
+        assert result["result"] == "False"
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_grep_filters_blacklisted_files(self, webdav_tools):
+        await webdav_tools.mkdir("bl_grep")
+        await webdav_tools.write_file("allowed.py", "def foo():")
+        await webdav_tools.write_file("bl_grep/hidden.py", "def foo():")
+        webdav_tools.valves.FILE_BLACKLIST = "bl_grep"
+
+        result = await webdav_tools.grep("def foo", include="*.py")
+        assert result["result"] == "True"
+        assert not any("bl_grep" in m["file"] for m in result["data"])
+        assert any("allowed.py" in m["file"] for m in result["data"])
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_grep_blocks_blacklisted_path(self, webdav_tools):
+        await webdav_tools.mkdir("bl_grep2")
+        await webdav_tools.write_file("bl_grep2/f.py", "def bar():")
+        webdav_tools.valves.FILE_BLACKLIST = "bl_grep2"
+
+        result = await webdav_tools.grep("def bar", path="bl_grep2")
+        assert result["result"] == "False"
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_read_blocks_blacklisted_file(self, webdav_tools):
+        await webdav_tools.mkdir("bl_read")
+        await webdav_tools.write_file("bl_read/secret.txt", "hidden")
+        webdav_tools.valves.FILE_BLACKLIST = "bl_read"
+
+        result = await webdav_tools.read("bl_read/secret.txt")
+        assert result["result"] == "False"
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_write_file_blocks_blacklisted_path(self, webdav_tools):
+        webdav_tools.valves.FILE_BLACKLIST = "bl_write"
+
+        result = await webdav_tools.write_file("bl_write/newfile.txt", "data")
+        assert result["result"] == "False"
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_append_file_blocks_blacklisted_path(self, webdav_tools):
+        webdav_tools.valves.FILE_BLACKLIST = "bl_append"
+
+        result = await webdav_tools.append_file("bl_append/file.txt", "data")
+        assert result["result"] == "False"
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_edit_blocks_blacklisted_file(self, webdav_tools):
+        await webdav_tools.mkdir("bl_edit")
+        await webdav_tools.write_file("bl_edit/file.txt", "original")
+        webdav_tools.valves.FILE_BLACKLIST = "bl_edit"
+
+        result = await webdav_tools.edit("bl_edit/file.txt", "original", "replaced")
+        assert result["result"] == "False"
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_mkdir_blocks_blacklisted_path(self, webdav_tools):
+        webdav_tools.valves.FILE_BLACKLIST = "bl_mkdir"
+
+        result = await webdav_tools.mkdir("bl_mkdir/subdir")
+        assert result["result"] == "False"
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_rm_blocks_blacklisted_path(self, webdav_tools):
+        await webdav_tools.mkdir("bl_rm")
+        webdav_tools.valves.FILE_BLACKLIST = "bl_rm"
+
+        result = await webdav_tools.rm(["bl_rm"])
+        assert result["result"] == "False"
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_mv_blocks_blacklisted_src(self, webdav_tools):
+        await webdav_tools.mkdir("bl_mv")
+        await webdav_tools.write_file("bl_mv/src.txt", "move me")
+        webdav_tools.valves.FILE_BLACKLIST = "bl_mv"
+
+        result = await webdav_tools.mv("bl_mv/src.txt", "allowed.txt")
+        assert result["result"] == "False"
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_mv_blocks_blacklisted_dst(self, webdav_tools):
+        await webdav_tools.write_file("allowed_src.txt", "move me")
+        webdav_tools.valves.FILE_BLACKLIST = "bl_mv_dst"
+
+        result = await webdav_tools.mv("allowed_src.txt", "bl_mv_dst/dst.txt")
+        assert result["result"] == "False"
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_cp_blocks_blacklisted_src(self, webdav_tools):
+        await webdav_tools.mkdir("bl_cp")
+        await webdav_tools.write_file("bl_cp/src.txt", "copy me")
+        webdav_tools.valves.FILE_BLACKLIST = "bl_cp"
+
+        result = await webdav_tools.cp("bl_cp/src.txt", "allowed_dst.txt")
+        assert result["result"] == "False"
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_cp_blocks_blacklisted_dst(self, webdav_tools):
+        await webdav_tools.write_file("allowed_src2.txt", "copy me")
+        webdav_tools.valves.FILE_BLACKLIST = "bl_cp_dst"
+
+        result = await webdav_tools.cp("allowed_src2.txt", "bl_cp_dst/dst.txt")
+        assert result["result"] == "False"
+
+        webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_multiple_blacklist_entries(self, webdav_tools):
+        await webdav_tools.mkdir("bl_a")
+        await webdav_tools.mkdir("bl_b")
+        await webdav_tools.mkdir("allowed")
+        await webdav_tools.write_file("bl_a/f.txt", "a")
+        await webdav_tools.write_file("bl_b/f.txt", "b")
+        await webdav_tools.write_file("allowed/f.txt", "c")
+        webdav_tools.valves.FILE_BLACKLIST = "bl_a, bl_b"
+
+        listing = await webdav_tools.ls("")
+        assert listing["result"] == "True"
+        assert not any("bl_a" in p for p in listing["data"])
+        assert not any("bl_b" in p for p in listing["data"])
+        assert any("allowed" in p for p in listing["data"])
+
+        webdav_tools.valves.FILE_BLACKLIST = ""

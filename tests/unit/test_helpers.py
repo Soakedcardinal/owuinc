@@ -5,7 +5,7 @@ Tests sandbox security, path traversal prevention, and normalization
 
 import pytest
 
-from owuinc.owuinc import is_whitelisted, validate_path
+from owuinc.owuinc import Tools, is_blacklisted, is_whitelisted, validate_path
 
 
 @pytest.fixture
@@ -241,3 +241,125 @@ class TestValidatePathSecurityEdgeCases:
         """Four dots contain .. and should be blocked"""
         with pytest.raises(Exception, match="traversal not allowed"):
             validate_path("....", valves)
+
+
+class TestIsBlacklisted:
+    """Test blacklist prefix matching logic"""
+
+    def test_empty_blacklist_returns_false(self):
+        assert is_blacklisted("", "any/path") is False
+
+    def test_exact_match(self):
+        assert is_blacklisted("foo", "foo") is True
+
+    def test_prefix_match(self):
+        assert is_blacklisted("foo/bar", "foo/bar/baz/file.txt") is True
+
+    def test_prefix_match_deep(self):
+        assert is_blacklisted("foo", "foo/a/b/c/deep/file.txt") is True
+
+    def test_no_match_different_prefix(self):
+        assert is_blacklisted("foo", "other/file.txt") is False
+
+    def test_no_match_similar_name(self):
+        assert is_blacklisted("foo", "foobar/file.txt") is False
+
+    def test_no_match_substring_without_separator(self):
+        assert is_blacklisted("foo", "Myfoo/file.txt") is False
+
+    def test_comma_separated_multiple(self):
+        assert is_blacklisted("foo, bar", "bar/file.txt") is True
+
+    def test_comma_separated_first_match(self):
+        assert is_blacklisted("foo, bar", "foo/file.txt") is True
+
+    def test_comma_separated_no_match(self):
+        assert is_blacklisted("foo, bar", "other/file.txt") is False
+
+    def test_whitespace_normalized(self):
+        assert is_blacklisted("  foo  ,  bar  ", "foo/file.txt") is True
+
+    def test_trailing_comma_filtered(self):
+        assert is_blacklisted("foo,", "foo/file.txt") is True
+
+    def test_single_level_path(self):
+        assert is_blacklisted("foo", "foo") is True
+
+    def test_multilevel_blacklist_exact(self):
+        assert is_blacklisted("a/b/c", "a/b/c/file.txt") is True
+
+    def test_multilevel_blacklist_exact_match(self):
+        assert is_blacklisted("a/b/c", "a/b/c") is True
+
+    def test_multilevel_blacklist_no_partial_match(self):
+        assert is_blacklisted("a/b/c", "a/b/file.txt") is False
+
+    def test_leading_slash_stripped_by_caller(self):
+        assert is_blacklisted("foo", "foo/file.txt") is True
+
+
+class TestFormatSize:
+    """Test _format_size helper"""
+
+    @pytest.fixture
+    def tools(self):
+        return Tools()
+
+    def test_zero_bytes(self, tools):
+        assert tools._format_size("0") == "0 B"
+
+    def test_small_bytes(self, tools):
+        assert tools._format_size("42") == "42 B"
+
+    def test_exactly_1023_bytes(self, tools):
+        assert tools._format_size("1023") == "1023 B"
+
+    def test_kilobytes(self, tools):
+        assert tools._format_size("1024") == "1.0 KB"
+
+    def test_large_kilobytes(self, tools):
+        assert tools._format_size("2048") == "2.0 KB"
+
+    def test_megabytes(self, tools):
+        assert tools._format_size("1048576") == "1.0 MB"
+
+    def test_gigabytes(self, tools):
+        assert tools._format_size("1073741824") == "1.0 GB"
+
+    def test_terabytes(self, tools):
+        assert tools._format_size("1099511627776") == "1.0 TB"
+
+    def test_petabytes(self, tools):
+        assert tools._format_size("1125899906842624") == "1.0 PB"
+
+    def test_invalid_input(self, tools):
+        assert tools._format_size("abc") == "abc"
+
+    def test_none_input(self, tools):
+        assert tools._format_size(None) is None  # type: ignore
+
+
+class TestFormatDatetime:
+    """Test _format_datetime helper"""
+
+    @pytest.fixture
+    def tools(self):
+        return Tools()
+
+    def test_empty_string(self, tools):
+        assert tools._format_datetime("") == "n/a"
+
+    def test_none_input(self, tools):
+        assert tools._format_datetime(None) == "n/a"  # type: ignore
+
+    def test_iso_format_with_z(self, tools):
+        result = tools._format_datetime("2026-06-22T10:30:00Z")
+        assert "2026-06-22" in result
+
+    def test_iso_format_with_offset(self, tools):
+        result = tools._format_datetime("2026-06-22T10:30:00+00:00")
+        assert "2026-06-22" in result
+
+    def test_invalid_format_returns_original(self, tools):
+        result = tools._format_datetime("not-a-date")
+        assert result == "not-a-date"
