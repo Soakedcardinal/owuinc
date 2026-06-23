@@ -651,14 +651,20 @@ class Tools:
             target_root = target_dir.rstrip("/")
             matched = []
             for file_info in files_only:
-                full_path = _strip_leading_slash(file_info.get("path", ""))
+                raw_path = _strip_leading_slash(file_info.get("path", ""))
+                # aiowebdav2.list_with_infos may return full WebDAV paths
+                # (e.g., "remote.php/dav/files/testuser/owuinc/foo.txt") or
+                # sandbox-relative paths (e.g., "owuinc/foo.txt").
+                # Normalize: if target_root is already in the path, use as-is;
+                # otherwise prepend target_root.
+                if raw_path.startswith(target_root + "/") or raw_path == target_root:
+                    full_path = raw_path
+                elif target_root + "/" in raw_path:
+                    # Full WebDAV path — use as-is (sandbox_prefix will strip later)
+                    full_path = raw_path
+                else:
+                    full_path = target_root + "/" + raw_path
                 filename = os.path.basename(full_path)
-
-                # Skip files outside target directory
-                if not (
-                    full_path == target_root or full_path.startswith(target_root + "/")
-                ):
-                    continue
 
                 # Compute path relative to target directory
                 if full_path.startswith(target_root + "/"):
@@ -717,8 +723,11 @@ class Tools:
                 full_path = f["path"]
                 if sandbox_prefix in full_path:
                     rel = full_path.split(sandbox_prefix, 1)[1]
-                elif full_path.startswith(rel_path + "/"):
+                elif rel_path and full_path.startswith(rel_path + "/"):
                     rel = full_path[len(rel_path) + 1 :]
+                elif not rel_path:
+                    # At sandbox root — full_path is already relative to sandbox
+                    rel = full_path
                 else:
                     rel = os.path.basename(full_path)
 
