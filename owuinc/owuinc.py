@@ -648,17 +648,57 @@ class Tools:
                     alternatives = pattern[start + 1 : end].split(",")
                     patterns_to_match = [prefix + alt + suffix for alt in alternatives]
 
+            target_root = target_dir.rstrip("/")
             matched = []
             for file_info in files_only:
                 full_path = _strip_leading_slash(file_info.get("path", ""))
                 filename = os.path.basename(full_path)
 
-                log(f"glob: checking {filename} against patterns")
+                # Skip files outside target directory
+                if not (
+                    full_path == target_root or full_path.startswith(target_root + "/")
+                ):
+                    continue
+
+                # Compute path relative to target directory
+                if full_path.startswith(target_root + "/"):
+                    rel_to_target = full_path[len(target_root) + 1 :]
+                else:
+                    rel_to_target = filename
+
+                log(f"glob: checking {rel_to_target} against patterns")
 
                 for pat in patterns_to_match:
-                    pattern_name = pat.split("/")[-1] if "/" in pat else pat
+                    # Split pattern into directory prefix and name pattern
+                    if "/**/" in pat:
+                        dir_prefix, pattern_name = pat.split("/**/", 1)
+                    elif "/" in pat:
+                        # Pattern like "subdir/*.py" — match only in that directory
+                        parts = pat.rsplit("/", 1)
+                        dir_prefix = parts[0]
+                        pattern_name = parts[1]
+                    else:
+                        dir_prefix = ""
+                        pattern_name = pat
+
+                    # Enforce directory scope from pattern
+                    if dir_prefix:
+                        if "/**" in dir_prefix:
+                            # dir_prefix itself may contain ** (edge case)
+                            base = dir_prefix.split("/**")[0]
+                            if not rel_to_target.startswith(base + "/"):
+                                continue
+                        else:
+                            # Exact directory match only
+                            if not rel_to_target.startswith(dir_prefix + "/"):
+                                continue
+                            # No subdirs for non-** patterns
+                            remaining = rel_to_target[len(dir_prefix) + 1 :]
+                            if "/" in remaining:
+                                continue
+
                     if fnmatch.fnmatch(filename, pattern_name):
-                        log(f"glob: matched {filename}")
+                        log(f"glob: matched {rel_to_target}")
                         matched.append(
                             {
                                 "path": full_path,
