@@ -1050,6 +1050,26 @@ class Tools:
         finally:
             await client.close()
 
+    async def _recursive_cp(self, client, src_full: str, dst_full: str) -> None:
+        """Recursively copy a file or directory."""
+        src_path = _webdav_path(src_full)
+        dst_path = _webdav_path(dst_full)
+        if await client.is_dir(src_path):
+            await client.mkdir(dst_path, exist_ok=True)
+            items = await client.list_files(src_path)
+            for item in items:
+                item_stripped = _strip_leading_slash(item)
+                if item_stripped == _strip_leading_slash(src_full):
+                    continue
+                src_item = src_full.rstrip("/") + "/" + item_stripped.lstrip("/")
+                dst_item = dst_full.rstrip("/") + "/" + item_stripped.lstrip("/")
+                await self._recursive_cp(client, src_item, dst_item)
+        else:
+            await client.copy(
+                remote_path_from=src_path,
+                remote_path_to=dst_path,
+            )
+
     @tool_logger
     @webdav_safe
     async def mv(
@@ -1081,6 +1101,7 @@ class Tools:
             await client.move(
                 remote_path_from=_webdav_path(src_full),
                 remote_path_to=_webdav_path(dst_full),
+                overwrite=True,
             )
         finally:
             await client.close()
@@ -1113,10 +1134,7 @@ class Tools:
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
-            await client.copy(
-                remote_path_from=_webdav_path(src_full),
-                remote_path_to=_webdav_path(dst_full),
-            )
+            await self._recursive_cp(client, src_full, dst_full)
         finally:
             await client.close()
 
@@ -1140,7 +1158,6 @@ class Tools:
                 task_map[todo.component["uid"]] = {
                     key: todo.component.get(key)
                     for key in [
-                        "uid",
                         "summary",
                         "description",
                         "location",
