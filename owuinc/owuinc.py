@@ -19,7 +19,7 @@ import urllib.parse
 import uuid
 from datetime import date, datetime, timedelta
 from io import BytesIO
-from typing import Any, Callable, List, Optional
+from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 from aiowebdav2 import Client as WebDAVClient
@@ -1166,7 +1166,7 @@ class Tools:
 
     @tool_logger
     @caldav_safe
-    async def get_tasks(self, list_name: str | None = None) -> list[dict] | Any:
+    async def get_tasks(self, list_name: str | None = None) -> list[dict]:
         """Retrieve task from specified list"""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
@@ -1354,7 +1354,7 @@ class Tools:
         end: Optional[str] = None,
         description: Optional[str] = None,
         location: Optional[str] = None,
-        alarms: List[str] = ["0min"],
+        alarms: list[str] = ["0min"],
         rrule: Optional[str] = None,
         __user__: dict = {},
     ):
@@ -1420,7 +1420,7 @@ class Tools:
         list_name: str | None = None,
         priority: Optional[int] = 0,
         description: Optional[str] = None,
-        categories: Optional[List[str]] = None,
+        categories: Optional[list[str]] = None,
         url: Optional[str] = None,
         location: Optional[str] = None,
         parent: Optional[str] = None,
@@ -1511,7 +1511,7 @@ class Tools:
         new_end: Optional[str] = None,
         new_description: Optional[str] = None,
         new_location: Optional[str] = None,
-        new_alarms: Optional[List[str]] = None,
+        new_alarms: Optional[list[str]] = None,
         new_rrule: Optional[str] = None,
     ):
         """Edits events by summary/uid."""
