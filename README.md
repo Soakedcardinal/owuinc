@@ -79,15 +79,10 @@ The [`startup_context_injector`](./startup_context_injector.py) filter auto-inje
 
 To use, paste the file into OpenWebUI Admin Panel > Functions > + New Function and configure the Valves (similar to `owuinc`) and define what files to inject. The filter handles automatic daily memory log injection from `memory/`. For a starting point, refer to [OpenClaw templates](https://docs.openclaw.ai/reference/templates/AGENTS).
 
-> **Note**: The filter requires the `owuinc` tool to be installed first.
-
-<br>
-<br>
 <br>
 
 ---
 
-<br>
 <br>
 
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/soakedcardinal)
