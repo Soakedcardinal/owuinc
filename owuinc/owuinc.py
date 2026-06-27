@@ -420,6 +420,23 @@ class Tools:
                 return todo.component["uid"]
         raise Exception(f"Parent task with summary {identifier!r} not found")
 
+    async def _find_task_by_uid_or_summary(
+        self, cal, uid: str | None, summary: str | None
+    ):
+        """Find a task by uid or summary. Raises if not found or ambiguous."""
+        if uid:
+            return await cal.todo_by_uid(uid)
+        if summary is not None:
+            matches = []
+            for todo in await cal.todos():
+                if summary.strip() in todo.component["summary"]:
+                    matches.append(todo.component["uid"])
+            if len(matches) > 1:
+                raise Exception(f"Multiple matches for {summary!r}: {matches}")
+            if len(matches) == 1:
+                return await cal.todo_by_uid(matches[0])
+        raise Exception("task not found")
+
     async def _ensure_sandbox(self, client):
         """Ensure sandbox directory exists.
 
@@ -1208,21 +1225,7 @@ class Tools:
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, list_name)
-            todo = None
-            if uid:
-                todo = await cal.todo_by_uid(uid)
-            elif summary is not None:
-                matches = []
-                todos = await cal.todos()
-                for todo in todos:
-                    if summary.strip() in todo.component["summary"]:
-                        matches.append(todo.component["uid"])
-                if len(matches) > 1:
-                    raise Exception(f"Multiple matches for {summary!r}: {matches}")
-                elif len(matches) == 1:
-                    todo = await cal.todo_by_uid(matches[0])
-            if not todo:
-                raise Exception("task not found")
+            todo = await self._find_task_by_uid_or_summary(cal, uid, summary)
             if new_summary:
                 todo.component["summary"] = new_summary.strip()
             if new_location:
@@ -1261,23 +1264,7 @@ class Tools:
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, list_name)
-            todo = None
-            if uid:
-                todo = await cal.todo_by_uid(uid)
-            elif summary is not None:
-                matches = []
-                todos = await cal.todos()
-                for todo in todos:
-                    if summary.strip() in todo.component["summary"]:
-                        matches.append(todo.component["uid"])
-                if len(matches) > 1:
-                    raise Exception(
-                        f"Error: Multiple matches for {summary!r}: {matches}"
-                    )
-                elif len(matches) == 1:
-                    todo = await cal.todo_by_uid(matches[0])
-            if not todo:
-                raise Exception("Error: task not found")
+            todo = await self._find_task_by_uid_or_summary(cal, uid, summary)
             await todo.delete()
         finally:
             await client.close()
@@ -1416,21 +1403,7 @@ class Tools:
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, list_name)
-            if uid:
-                todo = await cal.todo_by_uid(uid)
-            elif summary is not None:
-                matches = []
-                todos = await cal.todos()
-                for t in todos:
-                    if summary.strip() in t.component["summary"]:
-                        matches.append(t)
-                if len(matches) > 1:
-                    raise Exception(f"multiple matches found for {summary!r}")
-                if len(matches) == 0:
-                    raise Exception(
-                        f"Task with summary {summary!r} not found in list {list_name!r}"
-                    )
-                todo = matches[0]
+            todo = await self._find_task_by_uid_or_summary(cal, uid, summary)
             todo.component["status"] = "COMPLETED"
             await todo.save()
         finally:
