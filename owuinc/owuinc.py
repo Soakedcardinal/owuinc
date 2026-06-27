@@ -445,6 +445,17 @@ class Tools:
         rel_path = rel_path.strip("/")
         return bool(rel_path) and is_blacklisted(self.valves.FILE_BLACKLIST, rel_path)
 
+    @property
+    def sandbox_prefix(self) -> str:
+        """Return the sandbox prefix string (e.g., 'owuinc/')."""
+        return self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+
+    def _get_rel_path(self, full_path: str) -> str:
+        """Convert a sandbox-prefixed full_path to a relative path."""
+        if full_path.startswith(self.sandbox_prefix):
+            return full_path[len(self.sandbox_prefix) :]
+        return full_path
+
     @tool_logger
     @caldav_safe
     async def get_calendars(self) -> list[str]:
