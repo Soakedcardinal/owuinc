@@ -437,6 +437,23 @@ class Tools:
                 return await cal.todo_by_uid(matches[0])
         raise Exception("task not found")
 
+    async def _find_event_by_uid_or_summary(
+        self, cal, uid: str | None, summary: str | None
+    ):
+        """Find an event by uid or summary. Raises if not found or ambiguous."""
+        if uid:
+            return await cal.event_by_uid(uid)
+        if summary is not None:
+            matches = []
+            for e in await cal.events():
+                if summary.strip() in e.component["summary"]:
+                    matches.append(e.component["uid"])
+            if len(matches) > 1:
+                raise NotFoundError("Error: multiple matches")
+            if len(matches) == 1:
+                return await cal.event_by_uid(matches[0])
+        raise NotFoundError("Error: event not found")
+
     async def _ensure_sandbox(self, client):
         """Ensure sandbox directory exists.
 
@@ -1439,22 +1456,7 @@ class Tools:
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, calendar_name)
-
-            e = None
-            if uid:
-                e = await cal.event_by_uid(uid)
-            elif summary is not None:
-                matches = []
-                events = await cal.events()
-                for e in events:
-                    if summary.strip() in e.component["summary"]:
-                        matches.append(e.component["uid"])
-                if len(matches) > 1:
-                    raise Exception("Error: multiple matches")
-                elif len(matches) == 1:
-                    e = await cal.event_by_uid(matches[0])
-            if not e:
-                raise Exception("Error: event not found")
+            e = await self._find_event_by_uid_or_summary(cal, uid, summary)
 
             if new_start:
                 dtstart = datetime.fromisoformat(new_start)
@@ -1622,22 +1624,7 @@ class Tools:
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, calendar_name)
-            event = None
-            if uid:
-                event = await cal.event_by_uid(uid)
-            elif summary is not None:
-                matches = []
-                events = await cal.events()
-                for e in events:
-                    c = e.component
-                    if summary.strip() in c["summary"]:
-                        matches.append(c["uid"])
-                if len(matches) > 1:
-                    raise Exception(f"multiple matches for summary {summary!r}")
-                elif len(matches) == 1:
-                    event = await cal.event_by_uid(matches[0])
-            if not event:
-                raise NotFoundError(f"event not found for {summary!r}")
+            event = await self._find_event_by_uid_or_summary(cal, uid, summary)
             await event.delete()
         finally:
             await client.close()
