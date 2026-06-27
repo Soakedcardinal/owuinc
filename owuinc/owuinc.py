@@ -667,8 +667,10 @@ class Tools:
             log(f"glob: pattern={pattern}, target_dir={target_dir}")
 
             pattern_parts = pattern.split("/")
-            is_recursive = "**" in pattern_parts or (
-                len(pattern_parts) == 1 and "*" in pattern_parts[0]
+            is_recursive = (
+                "**" in pattern_parts
+                or "/" in pattern
+                or (len(pattern_parts) == 1 and "*" in pattern_parts[0])
             )
 
             log(f"glob: is_recursive={is_recursive}")
