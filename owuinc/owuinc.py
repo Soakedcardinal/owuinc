@@ -403,6 +403,23 @@ class Tools:
                 return cal
         raise NotFoundError(f"No calendar with name {calendar_name!r} found")
 
+    async def _resolve_task_uid(self, cal, identifier: str) -> str:
+        """Resolve a task identifier to its UID.
+
+        If identifier is a UUID, return it directly.
+        Otherwise, look up the task by summary and return its UID.
+        """
+        try:
+            uuid.UUID(identifier)
+            return identifier
+        except (ValueError, AttributeError):
+            pass
+        todos = await cal.todos()
+        for todo in todos:
+            if identifier.strip() in todo.component["summary"]:
+                return todo.component["uid"]
+        raise Exception(f"Parent task with summary {identifier!r} not found")
+
     async def _ensure_sandbox(self, client):
         """Ensure sandbox directory exists.
 
@@ -1164,25 +1181,41 @@ class Tools:
 
             task_map: dict[str, dict] = {}
             for todo in todos:
-                task_map[todo.component["uid"]] = {
-                    key: todo.component.get(key)
+                uid = str(todo.component["uid"])
+                # Extract parent-only RELATED-TO from raw iCal, ignoring CHILD
+                # reverse-relations added by caldav's _handle_reverse_relations.
+                # icalendar.property_items() flattens params, so we parse raw text.
+                ical_text = todo.component.to_ical().decode()
+                parent_id = None
+                for m in re.finditer(
+                    r"RELATED-TO(;RELTYPE=(?:PARENT|[^;]*))?:([^;\r\n]+)", ical_text
+                ):
+                    reltype_part = m.group(1)
+                    rel_uid = m.group(2).strip()
+                    if reltype_part is None or reltype_part == ";RELTYPE=PARENT":
+                        parent_id = rel_uid
+                        break
+
+                task_map[uid] = {
+                    key: (
+                        str(todo.component.get(key))
+                        if todo.component.get(key) is not None
+                        else None
+                    )
                     for key in [
                         "summary",
                         "description",
                         "location",
                         "url",
                         "priority",
-                        "related-to",
                     ]
-                    if todo.component.get(key) is not None
                 }
+                if parent_id is not None:
+                    task_map[uid]["related-to"] = parent_id
 
             subtasks_map: dict[str, list[str]] = {}
             for uid, task_data in task_map.items():
                 parent_id = task_data.get("related-to")
-                # icalendar may return RELATED-TO as a list; grab the first item
-                if isinstance(parent_id, list):
-                    parent_id = parent_id[0] if parent_id else None
                 if parent_id and parent_id in task_map:
                     if parent_id not in subtasks_map:
                         subtasks_map[parent_id] = []
@@ -1203,8 +1236,6 @@ class Tools:
             tree = []
             for task_id, task_data in task_map.items():
                 parent_id = task_data.get("related-to")
-                if isinstance(parent_id, list):
-                    parent_id = parent_id[0] if parent_id else None
                 if not parent_id or parent_id not in task_map:
                     tree.append(build_subtree(task_id))
 
@@ -1267,7 +1298,8 @@ class Tools:
             if new_url:
                 todo.component["url"] = new_url
             if new_related_to:
-                todo.component["related-to"] = new_related_to
+                parent_uid = await self._resolve_task_uid(cal, new_related_to)
+                todo.component["related-to"] = parent_uid
             await todo.save()
         finally:
             await client.close()
@@ -1391,8 +1423,12 @@ class Tools:
         categories: Optional[List[str]] = None,
         url: Optional[str] = None,
         location: Optional[str] = None,
+        parent: Optional[str] = None,
     ):
-        """Add a task to the specified list."""
+        """Add a task to the specified list.
+
+        If parent is provided, create as subtask of the given parent task.
+        """
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
@@ -1407,15 +1443,19 @@ class Tools:
                 log_err("invalid task list")
                 raise Exception("invalid task list")
             cal = await self._get_calendar(principal, list_name)
-            await cal.save_todo(
-                uid=uid,
-                summary=summary,
-                priority=priority,
-                description=description,
-                categories=categories,
-                url=url,
-                location=location,
-            )
+            kwargs = {
+                "uid": uid,
+                "summary": summary,
+                "priority": priority,
+                "description": description,
+                "categories": categories,
+                "url": url,
+                "location": location,
+            }
+            if parent:
+                parent_uid = await self._resolve_task_uid(cal, parent)
+                kwargs["parent"] = [parent_uid]
+            await cal.save_todo(**kwargs)
             return uid
         finally:
             await client.close()

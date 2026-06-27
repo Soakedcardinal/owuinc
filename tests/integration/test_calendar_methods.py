@@ -331,6 +331,68 @@ class TestTaskOperations:
         assert "Edited summary" in summaries
 
     @pytest.mark.asyncio
+    async def test_add_subtask(self, caldav_tools, tasks_calendar):
+        """Verify add_task with parent and edit_task nest subtasks correctly."""
+        parent_result = await caldav_tools.add_task(
+            summary="Parent Task", list_name="Tasks"
+        )
+        assert parent_result["result"] == "True"
+
+        # Child via add_task parent parameter
+        child_add_result = await caldav_tools.add_task(
+            summary="Child Task by add", parent="Parent Task", list_name="Tasks"
+        )
+        assert (
+            child_add_result["result"] == "True"
+        ), f"add child by parent: {child_add_result}"
+
+        # Child via edit_task new_related_to
+        child_result = await caldav_tools.add_task(
+            summary="Child Task by edit", list_name="Tasks"
+        )
+        assert child_result["result"] == "True"
+        child_uid = child_result["data"]
+
+        edit_result = await caldav_tools.edit_task(
+            uid=child_uid, new_related_to="Parent Task", list_name="Tasks"
+        )
+        assert edit_result["result"] == "True", f"edit_task for nesting: {edit_result}"
+
+        tasks = await caldav_tools.get_tasks(list_name="Tasks")
+        assert tasks["result"] == "True", f"get_tasks failed: {tasks}"
+        assert len(tasks["data"]) >= 1, f"tasks missing: {tasks}"
+
+        parent_node = None
+        all_summaries = []
+
+        def collect_summaries(nodes):
+            for node in nodes:
+                s = node.get("summary")
+                all_summaries.append(s)
+                if s == "Parent Task":
+                    nonlocal parent_node
+                    parent_node = node
+                if "subtasks" in node:
+                    collect_summaries(node["subtasks"])
+
+        collect_summaries(tasks["data"])
+
+        assert parent_node is not None, (
+            f"Parent Task should exist in results. "
+            f"All summaries: {all_summaries}, full data: {tasks['data']}"
+        )
+        assert "subtasks" in parent_node, "Parent Task should have subtasks"
+        child_summaries = [s.get("summary") for s in parent_node["subtasks"]]
+        assert "Child Task by add" in child_summaries, (
+            f"Child Task by add should be nested under Parent Task, "
+            f"got {child_summaries}"
+        )
+        assert "Child Task by edit" in child_summaries, (
+            f"Child Task by edit should be nested under Parent Task, "
+            f"got {child_summaries}"
+        )
+
+    @pytest.mark.asyncio
     async def test_complete_task(self, caldav_tools, tasks_calendar):
         """Verify complete_task marks a task as COMPLETED.
 
