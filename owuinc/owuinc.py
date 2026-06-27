@@ -1379,11 +1379,6 @@ class Tools:
         client = await self.caldav_client
         try:
             principal = await client.principal()
-            calendars = await principal.get_calendars()
-            available_lists = [await c.get_display_name() for c in calendars]
-            if list_name not in available_lists:
-                log_err("invalid task list")
-                raise Exception("invalid task list")
             cal = await self._get_calendar(principal, list_name)
             kwargs = {
                 "uid": uid,
