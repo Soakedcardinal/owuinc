@@ -242,11 +242,10 @@ async def caldav_tools(radicale_server):
         f"sandbox={t.valves.SANDBOX_DIR}"
     )
 
-    original_caldav_client = Tools.caldav_client
+    original_get_caldav_client = Tools.get_caldav_client
 
-    @property
-    def rad_caldav_client(self):
-        return get_async_davclient(
+    async def rad_get_caldav_client(self):
+        return await get_async_davclient(
             url=self.valves.NEXTCLOUD_BASE_URL,
             username=radicale_server["username"],
             password=radicale_server["password"],
@@ -254,14 +253,14 @@ async def caldav_tools(radicale_server):
             enable_rfc6764=False,
         )
 
-    Tools.caldav_client = rad_caldav_client
+    Tools.get_caldav_client = rad_get_caldav_client
 
     try:
         logger.info(">>> Yielding caldav_tools instance")
         yield t
     finally:
-        Tools.caldav_client = original_caldav_client
-        logger.info(">>> Restored original Tools.caldav_client property")
+        Tools.get_caldav_client = original_get_caldav_client
+        logger.info(">>> Restored original Tools.get_caldav_client method")
 
 
 # ============================================================================

@@ -145,6 +145,21 @@ class TestGlob:
         assert any("glob_a.py" in f for f in files)
         assert any("glob_b.py" in f for f in files)
 
+    @pytest.mark.asyncio
+    async def test_glob_subdir_pattern(self, webdav_tools):
+        """Glob with subdir prefix pattern like 'subdir/*.py' finds files."""
+        await webdav_tools.mkdir("subdir")
+        await webdav_tools.write_file("subdir/a.py", "x")
+        await webdav_tools.write_file("subdir/b.py", "y")
+        await webdav_tools.write_file("subdir/c.txt", "z")
+
+        result = await webdav_tools.glob("subdir/*.py")
+        assert result["result"] == "True", result
+        files = result["data"]
+        assert len(files) == 2, f"expected 2 files, got {len(files)}: {files}"
+        assert any("a.py" in f for f in files)
+        assert any("b.py" in f for f in files)
+
 
 class TestGrep:
     @pytest.mark.asyncio

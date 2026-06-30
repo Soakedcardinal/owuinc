@@ -116,7 +116,7 @@ class TestCaldavClient:
     @pytest.mark.asyncio
     async def test_caldav_client_is_correct_type(self, caldav_tools):
         """Verify the overridden caldav_client returns an AsyncDAVClient instance."""
-        client = await caldav_tools.caldav_client
+        client = await caldav_tools.get_caldav_client()
         from caldav.aio import AsyncDAVClient
 
         logger.info(f">>> [TEST] caldav_client type: {type(client).__name__}")
@@ -127,7 +127,7 @@ class TestCaldavClient:
     @pytest.mark.asyncio
     async def test_caldav_client_url_is_radicale_root(self, caldav_tools):
         """Verify the client points at Radicale root, NOT /remote.php/dav."""
-        client = await caldav_tools.caldav_client
+        client = await caldav_tools.get_caldav_client()
         url_str = str(client.url)
         logger.info(f">>> [TEST] caldav_client.url: {url_str}")
         assert (
@@ -140,7 +140,7 @@ class TestCaldavClient:
     @pytest.mark.asyncio
     async def test_principal_discovery_works(self, caldav_tools):
         """Verify the caldav library can discover the principal against Radicale."""
-        client = await caldav_tools.caldav_client
+        client = await caldav_tools.get_caldav_client()
         principal = await client.principal()
         logger.info(
             f">>> [TEST] Principal: {principal}, type: {type(principal).__name__}"
@@ -153,7 +153,7 @@ class TestCaldavClient:
 
         Restoration happens in the fixture's finally block.
         """
-        client = await caldav_tools.caldav_client
+        client = await caldav_tools.get_caldav_client()
         url_str = str(client.url)
         logger.info(f">>> [TEST] During test, client.url: {url_str}")
         assert (
@@ -184,7 +184,7 @@ class TestGetCalendars:
         )
 
         # Verify the caldav_client property is wired correctly
-        client = await caldav_tools.caldav_client
+        client = await caldav_tools.get_caldav_client()
         logger.info(f">>> [TEST] caldav_client type: {type(client).__name__}")
         logger.info(f">>> [TEST] caldav_client.url: {client.url}")
 
@@ -263,7 +263,7 @@ class TestTaskOperations:
     @pytest_asyncio.fixture
     async def tasks_calendar(self, caldav_tools):
         """Create a Tasks calendar on the Radicale server."""
-        client = await caldav_tools.caldav_client
+        client = await caldav_tools.get_caldav_client()
         principal = await client.principal()
         cal = await principal.make_calendar(name="Tasks", cal_id="tasks")
         yield cal
@@ -275,7 +275,7 @@ class TestTaskOperations:
     @pytest_asyncio.fixture
     async def personal_calendar(self, caldav_tools):
         """Create a Personal calendar on the Radicale server."""
-        client = await caldav_tools.caldav_client
+        client = await caldav_tools.get_caldav_client()
         principal = await client.principal()
         cal = await principal.make_calendar(name="Personal", cal_id="personal")
         yield cal
@@ -435,7 +435,7 @@ class TestEventOperations:
     @pytest_asyncio.fixture
     async def personal_calendar(self, caldav_tools):
         """Create a Personal calendar on the Radicale server."""
-        client = await caldav_tools.caldav_client
+        client = await caldav_tools.get_caldav_client()
         principal = await client.principal()
         cal = await principal.make_calendar(name="Personal", cal_id="personal")
         yield cal
@@ -518,7 +518,7 @@ class TestEventOperations:
         assert edit_result["result"] == "True"
         # Verify via raw cal.events() — get_calendar_events can't be used
         # because Radicale ignores time-range filters in search()
-        client = await caldav_tools.caldav_client
+        client = await caldav_tools.get_caldav_client()
         principal = await client.principal()
         cal = await _get_calendar(principal, "Personal")
         events = await cal.events()
@@ -550,7 +550,7 @@ class TestEventOperations:
         assert del_result["result"] == "True"
         # Verify via raw cal.events() — get_calendar_events can't be used
         # because Radicale ignores time-range filters in search()
-        client = await caldav_tools.caldav_client
+        client = await caldav_tools.get_caldav_client()
         principal = await client.principal()
         cal = await _get_calendar(principal, "Personal")
         event_uids = [e.component["uid"] for e in await cal.events()]

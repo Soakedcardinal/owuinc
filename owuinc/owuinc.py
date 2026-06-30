@@ -369,13 +369,12 @@ class Tools:
             log_err(f"failed to create webdav_client: {type(e).__name__}: {e}")
             raise
 
-    @property
-    def caldav_client(self):
+    async def get_caldav_client(self):
         base = self.valves.NEXTCLOUD_BASE_URL
         url = f"{base}/remote.php/dav"
         log(f"creating new caldav_client with url={url!r}")
         try:
-            return get_async_davclient(
+            return await get_async_davclient(
                 username=self.valves.NEXTCLOUD_USERNAME,
                 password=self.valves.NEXTCLOUD_APP_PASSWORD,
                 url=url,
@@ -494,7 +493,7 @@ class Tools:
     @caldav_safe
     async def get_calendars(self) -> list[str]:
         """Retrieve available calendars"""
-        client = await self.caldav_client
+        client = await self.get_caldav_client()
         try:
             principal = await client.principal()
             calendars = await principal.get_calendars()
@@ -513,7 +512,7 @@ class Tools:
     @caldav_safe
     async def get_task_lists(self) -> list[str]:
         """Retrieve available task lists"""
-        client = await self.caldav_client
+        client = await self.get_caldav_client()
         try:
             principal = await client.principal()
             calendars = await principal.get_calendars()
@@ -705,6 +704,7 @@ class Tools:
                 # sandbox-relative paths (e.g., "owuinc/foo.txt").
                 # Normalize: if target_root is already in the path, use as-is;
                 # otherwise prepend target_root.
+                log(f"glob: raw_path={raw_path!r}, target_root={target_root!r}")
                 if raw_path.startswith(target_root + "/") or raw_path == target_root:
                     full_path = raw_path
                 elif target_root + "/" in raw_path:
@@ -714,11 +714,25 @@ class Tools:
                     full_path = target_root + "/" + raw_path
                 filename = os.path.basename(full_path)
 
-                # Compute path relative to target directory
-                if full_path.startswith(target_root + "/"):
-                    rel_to_target = full_path[len(target_root) + 1 :]
+                # Compute sandbox-relative path first
+                if self.sandbox_prefix in full_path:
+                    sandbox_rel = full_path.split(self.sandbox_prefix, 1)[1]
                 else:
+                    sandbox_rel = (
+                        full_path[len(target_root) + 1 :]
+                        if full_path.startswith(target_root + "/")
+                        else filename
+                    )
+
+                # Compute path relative to target directory
+                if sandbox_rel.startswith(rel_path + "/"):
+                    rel_to_target = (
+                        sandbox_rel[len(rel_path) + 1 :] if rel_path else sandbox_rel
+                    )
+                elif rel_path:
                     rel_to_target = filename
+                else:
+                    rel_to_target = sandbox_rel
 
                 log(f"glob: checking {rel_to_target} against patterns")
 
@@ -1146,7 +1160,7 @@ class Tools:
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
 
-        client = await self.caldav_client
+        client = await self.get_caldav_client()
 
         try:
             principal = await client.principal()
@@ -1240,7 +1254,7 @@ class Tools:
 
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
-        client = await self.caldav_client
+        client = await self.get_caldav_client()
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, list_name)
@@ -1279,7 +1293,7 @@ class Tools:
 
         if not (summary or uid):
             raise Exception("must specify summary or uid of task to edit")
-        client = await self.caldav_client
+        client = await self.get_caldav_client()
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, list_name)
@@ -1309,7 +1323,7 @@ class Tools:
 
         zi = ZoneInfo(__user__["timezone"])
         now = datetime.now(zi).replace(second=0, microsecond=0)
-        client = await self.caldav_client
+        client = await self.get_caldav_client()
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, calendar_name)
@@ -1378,7 +1392,7 @@ class Tools:
             raise Exception(f"{list_name!r} not whitelisted")
 
         uid = str(uuid.uuid4())
-        client = await self.caldav_client
+        client = await self.get_caldav_client()
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, list_name)
@@ -1413,7 +1427,7 @@ class Tools:
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
 
-        client = await self.caldav_client
+        client = await self.get_caldav_client()
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, list_name)
@@ -1449,7 +1463,7 @@ class Tools:
 
         tz = __user__["timezone"]
         zi = ZoneInfo(tz)
-        client = await self.caldav_client
+        client = await self.get_caldav_client()
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, calendar_name)
@@ -1502,7 +1516,7 @@ class Tools:
             raise Exception(f"{calendar_name!r} not in whitelist")
 
         event_data = []
-        client = await self.caldav_client
+        client = await self.get_caldav_client()
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, calendar_name)
@@ -1617,7 +1631,7 @@ class Tools:
         if not (summary or uid):
             raise Exception("must provide a summary or uid")
 
-        client = await self.caldav_client
+        client = await self.get_caldav_client()
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, calendar_name)
