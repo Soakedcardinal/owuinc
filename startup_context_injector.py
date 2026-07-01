@@ -3,7 +3,7 @@ title: startup_context_injector
 author: Soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Injects files from nextcloud as system instructions on first turn.
-requirements: aiowebdav2
+requirements: aiowebdav2,tiktoken
 version: 1.1.1
 license: MIT
 """
@@ -15,6 +15,7 @@ from datetime import date, timedelta
 from io import BytesIO
 from typing import List, Optional
 
+import tiktoken
 from aiowebdav2 import Client as WebDAVClient
 from aiowebdav2.exceptions import (
     ConnectionExceptionError,
@@ -27,6 +28,8 @@ from pydantic import BaseModel, Field
 # DEBUG = True
 DEBUG = False
 
+_tokenizer = tiktoken.get_encoding("cl100k_base")
+
 
 def log(msg):
     if DEBUG:
@@ -36,6 +39,11 @@ def log(msg):
 def log_err(msg):
     if DEBUG:
         print("ERROR: " + msg)
+
+
+def _token_count(text: str) -> int:
+    """Count tokens using tiktoken's cl100k_base encoder."""
+    return len(_tokenizer.encode(text))
 
 
 def log_sep(msg):
@@ -104,13 +112,28 @@ def validate_path(path, valves):
     raise Exception("Invalid Path: outside sandbox.")
 
 
-def _try_inject(contexts: list[str], filename: str, content: Optional[str]):
-    """Wrap downloaded content in XML tags and append to contexts."""
+def _try_inject(
+    contexts: list[str],
+    injected_info: list[dict],
+    filename: str,
+    content: Optional[str],
+):
+    """Wrap downloaded content in XML tags and append to contexts.
+
+    Returns a dict with name/tokens if injected, None otherwise.
+    """
     if content:
         contexts.append(f"<{filename}>\n{content}\n</{filename}>")
+        info = {
+            "name": filename,
+            "tokens": _token_count(content),
+        }
+        injected_info.append(info)
         log(f"OK - {filename} ({len(content)} chars)")
+        return info
     else:
         log(f"FAILED - {filename} not found")
+        return None
 
 
 def _webdav_path(p: str) -> str:
@@ -173,7 +196,7 @@ class Filter:
         yesterday = date.today() - timedelta(days=1)
         return yesterday.strftime("%Y-%m-%d") + ".md"
 
-    async def _build_context(self) -> list[str]:
+    async def _build_context(self, __event_emitter__=None) -> list[str]:
         """Download all system files and return list of context strings."""
         base = self.valves.NEXTCLOUD_BASE_URL.rstrip("/")
         wd_user = self.valves.WEBDAV_USERNAME.strip()
@@ -188,7 +211,6 @@ class Filter:
         )
 
         try:
-            # Parse file list from valves
             files_to_inject = [
                 f.strip() for f in self.valves.FILES_TO_INJECT.split(",") if f.strip()
             ]
@@ -198,6 +220,8 @@ class Filter:
             )
 
             contexts: List[str] = []
+            injected_info: list[dict] = []
+
             for filename in files_to_inject:
                 try:
                     validated = validate_path(filename, self.valves)
@@ -207,9 +231,19 @@ class Filter:
                 path = validated.rstrip("/")
                 log(f"downloading {path}...")
                 content = await self._download_file(client, path)
-                _try_inject(contexts, filename, content)
+                info = _try_inject(contexts, injected_info, filename, content)
+                if info and __event_emitter__:
+                    desc = f"{info['name']} ({info['tokens']} tokens)"
+                    await __event_emitter__(
+                        {
+                            "type": "status",
+                            "data": {
+                                "description": desc,
+                                "done": False,
+                            },
+                        }
+                    )
 
-            # Inject daily memory logs
             log("downloading memory/*.md files...")
             memory_base = validate_path("memory", self.valves).rstrip("/")
 
@@ -220,13 +254,41 @@ class Filter:
                 path = f"{memory_base}/{log_file}"
                 log(f"downloading {path}...")
                 content = await self._download_file(client, path)
-                _try_inject(contexts, f"memory/{log_file}", content)
+                info = _try_inject(
+                    contexts, injected_info, f"memory/{log_file}", content
+                )
+                if info and __event_emitter__:
+                    desc = f"{info['name']} ({info['tokens']} tokens)"
+                    await __event_emitter__(
+                        {
+                            "type": "status",
+                            "data": {
+                                "description": desc,
+                                "done": False,
+                            },
+                        }
+                    )
+
+            # Emit final summary.
+            if injected_info and __event_emitter__:
+                total_tokens = sum(f["tokens"] for f in injected_info)
+                n_files = len(injected_info)
+                desc = f"Context injected: {total_tokens} tokens ({n_files} files)"
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {
+                            "description": desc,
+                            "done": True,
+                        },
+                    }
+                )
 
             return contexts
         finally:
             await client.close()
 
-    async def inlet(self, body: dict) -> dict:
+    async def inlet(self, body: dict, __event_emitter__=None) -> dict:
         """
         Inlet filter that injects system files as context before LLM request.
 
@@ -235,6 +297,7 @@ class Filter:
 
         Args:
             body: Chat completion request body with messages array
+            __event_emitter__: Optional event emitter for UI status feedback
 
         Returns:
             Modified body with system context prepended (first turn only)
@@ -262,7 +325,7 @@ class Filter:
             # This is the first turn - download and inject context
             log("FIRST TURN DETECTED - downloading system files...")
 
-            contexts = await self._build_context()
+            contexts = await self._build_context(__event_emitter__)
 
             if not contexts:
                 log("no context files downloaded, skipping injection")
