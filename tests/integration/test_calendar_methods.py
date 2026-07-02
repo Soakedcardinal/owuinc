@@ -296,12 +296,11 @@ class TestTaskOperations:
 
     @pytest.mark.asyncio
     async def test_add_task(self, caldav_tools, tasks_calendar):
-        """Verify add_task creates a task and returns its UID."""
+        """Verify add_task creates a task and returns its summary."""
         result = await caldav_tools.add_task(summary="Test task", list_name="Tasks")
         assert result["result"] == "True"
         assert "data" in result
-        assert result["data"] is not None
-        assert len(result["data"]) == 36  # UUID format
+        assert result["data"] == "Test task"
 
     @pytest.mark.asyncio
     async def test_get_tasks(self, caldav_tools, tasks_calendar):
@@ -321,9 +320,9 @@ class TestTaskOperations:
         add_result = await caldav_tools.add_task(
             summary="Original summary", list_name="Tasks"
         )
-        uid = add_result["data"]
+        summary = add_result["data"]
         edit_result = await caldav_tools.edit_task(
-            uid=uid, new_summary="Edited summary", list_name="Tasks"
+            summary=summary, new_summary="Edited summary", list_name="Tasks"
         )
         assert edit_result["result"] == "True"
         tasks = await caldav_tools.get_tasks(list_name="Tasks")
@@ -351,10 +350,10 @@ class TestTaskOperations:
             summary="Child Task by edit", list_name="Tasks"
         )
         assert child_result["result"] == "True"
-        child_uid = child_result["data"]
+        child_summary = child_result["data"]
 
         edit_result = await caldav_tools.edit_task(
-            uid=child_uid, new_related_to="Parent Task", list_name="Tasks"
+            summary=child_summary, new_related_to="Parent Task", list_name="Tasks"
         )
         assert edit_result["result"] == "True", f"edit_task for nesting: {edit_result}"
 
@@ -403,30 +402,34 @@ class TestTaskOperations:
         add_result = await caldav_tools.add_task(
             summary="To complete", list_name="Tasks"
         )
-        uid = add_result["data"]
+        summary = add_result["data"]
         # Confirm task exists before completing
         before = await caldav_tools.get_tasks(list_name="Tasks")
         summaries_before = [t.get("summary") for t in before["data"]]
         assert "To complete" in summaries_before, "Task should exist before completing"
 
-        comp_result = await caldav_tools.complete_task(uid=uid, list_name="Tasks")
+        comp_result = await caldav_tools.complete_task(
+            summary=summary, list_name="Tasks"
+        )
         assert comp_result["result"] == "True"
 
         # Verify task is gone from get_tasks (completed tasks are filtered out)
         after = await caldav_tools.get_tasks(list_name="Tasks")
-        uids_after = [t.get("uid") for t in after["data"]]
-        assert uid not in uids_after, "Completed task should not appear in get_tasks"
+        summaries_after = [t.get("summary") for t in after["data"]]
+        assert (
+            summary not in summaries_after
+        ), "Completed task should not appear in get_tasks"
 
     @pytest.mark.asyncio
     async def test_delete_task(self, caldav_tools, tasks_calendar):
         """Verify delete_task removes a task from the list."""
         add_result = await caldav_tools.add_task(summary="To delete", list_name="Tasks")
-        uid = add_result["data"]
-        del_result = await caldav_tools.delete_task(uid=uid, list_name="Tasks")
+        summary = add_result["data"]
+        del_result = await caldav_tools.delete_task(summary=summary, list_name="Tasks")
         assert del_result["result"] == "True"
         tasks = await caldav_tools.get_tasks(list_name="Tasks")
-        uids = [t.get("uid") for t in tasks["data"]]
-        assert uid not in uids
+        summaries = [t.get("summary") for t in tasks["data"]]
+        assert summary not in summaries
 
 
 class TestEventOperations:
@@ -458,16 +461,18 @@ class TestEventOperations:
             end=end,
             __user__={"timezone": "America/New_York"},
         )
-        uid = result["data"]
-        yield uid
+        summary = result["data"]
+        yield summary
         try:
-            await caldav_tools.delete_calendar_event(uid=uid, calendar_name="Personal")
+            await caldav_tools.delete_calendar_event(
+                summary=summary, calendar_name="Personal"
+            )
         except Exception:
             pass
 
     @pytest.mark.asyncio
     async def test_create_calendar_event(self, caldav_tools, personal_calendar):
-        """Verify create_calendar_event creates an event and returns its UID."""
+        """Verify create_calendar_event creates an event and returns its summary."""
         zi = ZoneInfo("America/New_York")
         now = datetime.now(zi).replace(second=0, microsecond=0)
         start = (now + timedelta(hours=1)).isoformat()
@@ -481,8 +486,7 @@ class TestEventOperations:
         )
         assert result["result"] == "True"
         assert "data" in result
-        assert result["data"] is not None
-        assert len(result["data"]) == 36  # UUID format
+        assert result["data"] == "Integration test event"
 
     @pytest.mark.asyncio
     async def test_get_calendar_events(self, caldav_tools, future_event):
@@ -509,7 +513,7 @@ class TestEventOperations:
         now = datetime.now(zi).replace(second=0, microsecond=0)
         new_start = (now + timedelta(hours=3)).isoformat()
         edit_result = await caldav_tools.edit_calendar_event(
-            uid=future_event,
+            summary=future_event,
             calendar_name="Personal",
             new_summary="Edited event",
             new_start=new_start,
@@ -523,11 +527,10 @@ class TestEventOperations:
         cal = await _get_calendar(principal, "Personal")
         events = await cal.events()
         for e in events:
-            if e.component["uid"] == future_event:
-                assert e.component["summary"] == "Edited event"
+            if e.component["summary"] == "Edited event":
                 break
         else:
-            assert False, f"Event with uid {future_event} not found after edit"
+            assert False, "Event not found after edit"
 
     @pytest.mark.asyncio
     async def test_delete_calendar_event(self, caldav_tools, personal_calendar):
@@ -543,9 +546,9 @@ class TestEventOperations:
             end=end,
             __user__={"timezone": "America/New_York"},
         )
-        uid = add_result["data"]
+        summary = add_result["data"]
         del_result = await caldav_tools.delete_calendar_event(
-            uid=uid, calendar_name="Personal"
+            summary=summary, calendar_name="Personal"
         )
         assert del_result["result"] == "True"
         # Verify via raw cal.events() — get_calendar_events can't be used
@@ -553,5 +556,5 @@ class TestEventOperations:
         client = await caldav_tools.get_caldav_client()
         principal = await client.principal()
         cal = await _get_calendar(principal, "Personal")
-        event_uids = [e.component["uid"] for e in await cal.events()]
-        assert uid not in event_uids
+        event_summaries = [e.component["summary"] for e in await cal.events()]
+        assert summary not in event_summaries

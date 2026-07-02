@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar,aiowebdav2
-version: 3.2.1
+version: 3.3.0
 license: MIT
 """
 
@@ -76,7 +76,9 @@ def log_valves(valves):
 def _sanitize_args(kwargs: dict) -> str:
     parts = []
     for k, v in kwargs.items():
-        if k == "__user__":
+        if k in ("__user__", "__event_emitter__"):
+            continue
+        if callable(v):
             continue
         parts.append(f"{k}={v!r}")
     return ", ".join(parts)
@@ -85,9 +87,16 @@ def _sanitize_args(kwargs: dict) -> str:
 def tool_logger(func: Callable) -> Callable:
     @functools.wraps(func)
     async def wrapper(self, *args, **kwargs):
+        emitter = kwargs.pop("__event_emitter__", None)
         log_sep(func.__name__)
         if DEBUG and kwargs:
             log(f"args: {_sanitize_args(kwargs)}")
+        if emitter:
+            arg_str = _sanitize_args(kwargs)
+            desc = f"{func.__name__}({arg_str})" if arg_str else func.__name__
+            await emitter(
+                {"type": "status", "data": {"description": desc, "done": False}}
+            )
         if DEBUG:
             start = time.monotonic()
         try:
@@ -135,6 +144,14 @@ def caldav_safe(func: Callable) -> Callable:
             if result is not None:
                 response["data"] = result
             return response
+        except ConnectionError as e:
+            log_err(
+                f"{op}: connection failed - {e}\nTraceback: {traceback.format_exc()}"
+            )
+            raise
+        except TimeoutError as e:
+            log_err(f"{op}: timeout - {e}\nTraceback: {traceback.format_exc()}")
+            raise
         except NotFoundError as e:
             log_err(f"{op}: not found - {e}")
             return {"result": "False", "details": f"{op}: not found"}
@@ -177,7 +194,7 @@ def webdav_safe(func: Callable) -> Callable:
             log_err(
                 f"{op}: connection failed - {e}\nTraceback: {traceback.format_exc()}"
             )
-            return {"result": "False", "details": f"{op}: connection failed"}
+            raise
         except WebDavError as e:
             log_err(f"{op}: WebDAV error - {e}\nTraceback: {traceback.format_exc()}")
             return {"result": "False", "details": f"{op}: WebDAV error"}
@@ -364,6 +381,7 @@ class Tools:
                 url,
                 self.valves.NEXTCLOUD_USERNAME,
                 self.valves.NEXTCLOUD_APP_PASSWORD,
+                timeout=30,
             )
         except Exception as e:
             log_err(f"failed to create webdav_client: {type(e).__name__}: {e}")
@@ -380,6 +398,7 @@ class Tools:
                 url=url,
                 features="nextcloud",
                 enable_rfc6764=False,
+                timeout=30,
             )
         except Exception as e:
             log_err(
@@ -387,6 +406,55 @@ class Tools:
                     {type(e).__name__}: {e}"
             )
             raise
+
+    @tool_logger
+    async def ping(self):
+        """Probe Nextcloud connectivity.
+
+        Returns {"result": "True", "data": {"webdav": bool, "caldav": bool}}.
+        Raises if both WebDAV and CalDAV fail.
+        """
+        import asyncio
+
+        webdav_ok = False
+        caldav_ok = False
+
+        probe_timeout = 5
+
+        # Probe WebDAV
+        try:
+            client = self._webdav_client()
+            try:
+                await asyncio.wait_for(client.ping(), timeout=probe_timeout)
+                webdav_ok = True
+            except (asyncio.TimeoutError, Exception) as e:
+                log_err(f"WebDAV ping failed: {type(e).__name__}: {e}")
+            finally:
+                await client.close()
+        except Exception as e:
+            log_err(f"WebDAV client creation failed: {type(e).__name__}: {e}")
+
+        # Probe CalDAV
+        try:
+            client = await self.get_caldav_client()
+            try:
+                principal = await asyncio.wait_for(
+                    client.principal(), timeout=probe_timeout
+                )
+                caldav_ok = bool(principal)
+            except (asyncio.TimeoutError, Exception) as e:
+                log_err(f"CalDAV ping failed: {type(e).__name__}: {e}")
+            finally:
+                await client.close()
+        except Exception as e:
+            log_err(f"CalDAV client creation failed: {type(e).__name__}: {e}")
+
+        if not webdav_ok and not caldav_ok:
+            raise RuntimeError(
+                "Nextcloud is unreachable: both WebDAV and CalDAV probes failed"
+            )
+
+        return {"result": "True", "data": {"webdav": webdav_ok, "caldav": caldav_ok}}
 
     async def _get_calendar(self, principal, calendar_name: str):
         """Get a calendar by name, working around caldav.aio's broken calendar().
@@ -1366,7 +1434,7 @@ class Tools:
                     a.add("description", summary)
                     e.add_component(a)
             await cal.save_event(ical=e)
-            return uid
+            return summary
         finally:
             await client.close()
 
@@ -1409,7 +1477,7 @@ class Tools:
                 parent_uid = await self._resolve_task_uid(cal, parent)
                 kwargs["parent"] = [parent_uid]
             await cal.save_todo(**kwargs)
-            return uid
+            return summary
         finally:
             await client.close()
 
@@ -1530,7 +1598,6 @@ class Tools:
                 event_dict = {}
 
                 for field in [
-                    "uid",
                     "summary",
                     "description",
                     "location",
