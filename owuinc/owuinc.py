@@ -95,7 +95,10 @@ def tool_logger(func: Callable) -> Callable:
             arg_str = _sanitize_args(kwargs)
             desc = f"{func.__name__}({arg_str})" if arg_str else func.__name__
             await emitter(
-                {"type": "status", "data": {"description": desc, "done": False}}
+                {
+                    "type": "status",
+                    "data": {"description": f"Calling: {desc}", "done": True},
+                }
             )
         if DEBUG:
             start = time.monotonic()
