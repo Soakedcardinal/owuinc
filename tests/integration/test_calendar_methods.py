@@ -12,6 +12,8 @@ from zoneinfo import ZoneInfo
 import pytest
 import pytest_asyncio
 
+from owuinc.owuinc import is_whitelisted
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,6 +25,18 @@ async def _get_calendar(principal, calendar_name: str):
         if display_name == calendar_name:
             return cal
     raise Exception(f"No calendar with name {calendar_name!r} found")
+
+
+async def _make_calendar(principal, name: str, cal_id: str):
+    """Idempotently create a calendar, deleting any leftover first."""
+    for cal in await principal.get_calendars():
+        try:
+            dn = await cal.get_display_name()
+        except Exception:
+            dn = None
+        if dn == name or cal.url.path.rstrip("/").endswith("/" + cal_id):
+            await cal.delete()
+    return await principal.make_calendar(name=name, cal_id=cal_id)
 
 
 class TestServerHealth:
@@ -244,14 +258,19 @@ class TestGetTaskLists:
     """Tests for get_task_lists() tool method."""
 
     @pytest.mark.asyncio
-    async def test_get_task_lists_returns_empty_when_no_tasks_calendar(
-        self, caldav_tools
-    ):
-        """Verify get_task_lists returns empty list when no Tasks calendar exists."""
+    async def test_get_task_lists_returns_only_whitelisted(self, caldav_tools):
+        """Verify get_task_lists returns only whitelisted calendars.
+
+        'Tasks' is a Nextcloud default and may exist from prior runs, so we
+        only assert structural correctness and that the whitelist filters
+        correctly.
+        """
         result = await caldav_tools.get_task_lists()
         assert result["result"] == "True"
         assert "data" in result
-        assert result["data"] == []
+        assert isinstance(result["data"], list)
+        for item in result["data"]:
+            assert is_whitelisted(caldav_tools.valves.TASK_LIST_WHITELIST, item)
 
 
 class TestTaskOperations:
@@ -265,7 +284,7 @@ class TestTaskOperations:
         """Create a Tasks calendar on the Radicale server."""
         client = await caldav_tools.get_caldav_client()
         principal = await client.principal()
-        cal = await principal.make_calendar(name="Tasks", cal_id="tasks")
+        cal = await _make_calendar(principal, name="Tasks", cal_id="tasks")
         yield cal
         try:
             await cal.delete()
@@ -277,7 +296,7 @@ class TestTaskOperations:
         """Create a Personal calendar on the Radicale server."""
         client = await caldav_tools.get_caldav_client()
         principal = await client.principal()
-        cal = await principal.make_calendar(name="Personal", cal_id="personal")
+        cal = await _make_calendar(principal, name="Personal", cal_id="personal")
         yield cal
         try:
             await cal.delete()
@@ -440,7 +459,7 @@ class TestEventOperations:
         """Create a Personal calendar on the Radicale server."""
         client = await caldav_tools.get_caldav_client()
         principal = await client.principal()
-        cal = await principal.make_calendar(name="Personal", cal_id="personal")
+        cal = await _make_calendar(principal, name="Personal", cal_id="personal")
         yield cal
         try:
             await cal.delete()

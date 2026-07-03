@@ -261,7 +261,7 @@ class Tools:
                 url,
                 self.valves.NEXTCLOUD_USERNAME,
                 self.valves.NEXTCLOUD_APP_PASSWORD,
-                options=ClientOptions(timeout=ClientTimeout(total=30)),
+                options=ClientOptions(timeout=ClientTimeout(total=10)),
             )
         except Exception:
             raise
@@ -276,58 +276,10 @@ class Tools:
                 url=url,
                 features="nextcloud",
                 enable_rfc6764=False,
-                timeout=30,
+                timeout=10,
             )
         except Exception:
             raise
-
-    async def ping(self):
-        """Probe Nextcloud connectivity.
-
-        Returns {"result": "True", "data": {"webdav": bool, "caldav": bool}}.
-        Raises if both WebDAV and CalDAV fail.
-        """
-        import asyncio
-
-        webdav_ok = False
-        caldav_ok = False
-
-        probe_timeout = 5
-
-        # Probe WebDAV
-        try:
-            client = self._webdav_client()
-            try:
-                await asyncio.wait_for(client.ping(), timeout=probe_timeout)
-                webdav_ok = True
-            except (asyncio.TimeoutError, Exception):
-                pass
-            finally:
-                await client.close()
-        except Exception:
-            pass
-
-        # Probe CalDAV
-        try:
-            client = await self.get_caldav_client()
-            try:
-                principal = await asyncio.wait_for(
-                    client.principal(), timeout=probe_timeout
-                )
-                caldav_ok = bool(principal)
-            except (asyncio.TimeoutError, Exception):
-                pass
-            finally:
-                await client.close()
-        except Exception:
-            pass
-
-        if not webdav_ok and not caldav_ok:
-            raise RuntimeError(
-                "Nextcloud is unreachable: both WebDAV and CalDAV probes failed"
-            )
-
-        return {"result": "True", "data": {"webdav": webdav_ok, "caldav": caldav_ok}}
 
     async def _get_calendar(self, principal, calendar_name: str):
         """Get a calendar by name, working around caldav.aio's broken calendar().
@@ -431,6 +383,7 @@ class Tools:
     @caldav_safe
     async def get_calendars(self) -> list[str]:
         """Retrieve available calendars"""
+
         client = await self.get_caldav_client()
         try:
             principal = await client.principal()
@@ -448,6 +401,7 @@ class Tools:
     @caldav_safe
     async def get_task_lists(self) -> list[str]:
         """Retrieve available task lists"""
+
         client = await self.get_caldav_client()
         try:
             principal = await client.principal()
@@ -468,6 +422,7 @@ class Tools:
         path: str,
     ) -> None:
         """Create new directory"""
+
         full_path = validate_path(path, self.valves)
         self._check_blacklisted(self._get_rel_path(full_path))
         client = self._webdav_client()
@@ -523,6 +478,7 @@ class Tools:
         Returns:
             List of file names, or list of detailed strings when detail=True.
         """
+
         full_path = validate_path(path, self.valves)
         self._check_blacklisted(self._get_rel_path(full_path))
         client = self._webdav_client()
@@ -587,6 +543,7 @@ class Tools:
         Returns:
             matching file paths sorted by modification time (newest last)
         """
+
         target_dir = validate_path(path if path else "", self.valves)
         rel_path = self._get_rel_path(target_dir)
         self._check_blacklisted(rel_path)
@@ -736,6 +693,7 @@ class Tools:
             path: The directory to search in. Defaults to root.
             include: File pattern to include (e.g., "*.py", "*.{ts,tsx}")
         """
+
         target_dir = validate_path(path if path else "", self.valves)
         search_rel = self._get_rel_path(target_dir)
         self._check_blacklisted(search_rel)
@@ -826,6 +784,7 @@ class Tools:
         content: Optional[str] = None,
     ) -> None:
         """Write to a file, overwriting existing content"""
+
         if content is None:
             content = ""
         full_path = validate_path(path, self.valves)
@@ -853,6 +812,7 @@ class Tools:
             offset: Line number to start from (1-indexed)
             limit: Maximum number of lines to return
         """
+
         if not path:
             raise ValueError("path cannot be empty")
 
@@ -891,6 +851,7 @@ class Tools:
         content: Optional[str] = None,
     ) -> None:
         """Append content to file, creating it if it does not exist"""
+
         if content is None:
             content = ""
         full_path = validate_path(path, self.valves)
@@ -929,6 +890,7 @@ class Tools:
             new_string: Replacement text
             replace_all: Replace all occurrences (default: false)
         """
+
         if not old_string:
             raise ValueError("old_string cannot be empty")
 
@@ -970,6 +932,7 @@ class Tools:
     @webdav_safe
     async def rm(self, paths: list[str]) -> None:
         """Deletes files/directories"""
+
         for p in paths:
             full_path = validate_path(p, self.valves)
             self._check_blacklisted(self._get_rel_path(full_path))
@@ -1009,6 +972,7 @@ class Tools:
         dst: str,
     ) -> None:
         """Move/rename a file or directory"""
+
         src_full = validate_path(src, self.valves)
         self._check_blacklisted(self._get_rel_path(src_full))
 
@@ -1033,6 +997,7 @@ class Tools:
         dst: str,
     ) -> None:
         """Copy a file or directory."""
+
         src_full = validate_path(src, self.valves)
         self._check_blacklisted(self._get_rel_path(src_full))
 
@@ -1049,6 +1014,7 @@ class Tools:
     @caldav_safe
     async def get_tasks(self, list_name: str | None = None) -> list[dict]:
         """Retrieve task from specified list"""
+
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
@@ -1140,6 +1106,7 @@ class Tools:
         new_related_to: str | None = None,
     ):
         """Update task properties by summary or uid"""
+
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
@@ -1178,6 +1145,7 @@ class Tools:
         list_name: str | None = None,
     ):
         """Delete task from specified list by summary or uid"""
+
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
@@ -1207,6 +1175,7 @@ class Tools:
         __user__: dict = {},
     ):
         """Add event to specified calendar."""
+
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             raise Exception(f"{calendar_name!r} not in whitelist")
@@ -1276,6 +1245,7 @@ class Tools:
 
         If parent is provided, create as subtask of the given parent task.
         """
+
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
@@ -1311,6 +1281,7 @@ class Tools:
         list_name: str | None = None,
     ):
         """Marks a task completed."""
+
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
@@ -1341,6 +1312,7 @@ class Tools:
         new_rrule: Optional[str] = None,
     ):
         """Edits events by summary/uid."""
+
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             raise Exception(f"{calendar_name!r} not in whitelist")
@@ -1397,6 +1369,7 @@ class Tools:
         __user__: dict = {},
     ):
         """Retrieves upcoming events on the specified calendar."""
+
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             raise Exception(f"{calendar_name!r} not in whitelist")
@@ -1491,6 +1464,7 @@ class Tools:
         calendar_name: str | None = None,
     ):
         """Deletes an event from the specified calendar."""
+
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             raise Exception(f"{calendar_name!r} not in whitelist")
