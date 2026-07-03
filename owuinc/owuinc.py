@@ -13,8 +13,6 @@ import functools
 import inspect
 import os
 import re
-import time
-import traceback
 import urllib.parse
 import uuid
 from datetime import date, datetime, timedelta
@@ -23,6 +21,7 @@ from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 from aiowebdav2 import Client as WebDAVClient
+from aiowebdav2.client import ClientOptions
 from aiowebdav2.exceptions import (
     ConnectionExceptionError,
     LocalResourceNotFoundError,
@@ -38,102 +37,6 @@ from dateutil.rrule import rrulestr
 from icalendar import Alarm, Event
 from pydantic import BaseModel, Field
 
-DEBUG = False
-# DEBUG = True
-
-
-def log(msg):
-    if DEBUG:
-        print(msg)
-
-
-def log_err(msg):
-    if DEBUG:
-        print("ERROR: " + msg)
-
-
-def log_sep(msg):
-    if DEBUG:
-        print("\n" + "=" * 60)
-        print(f"  {msg}")
-        print("=" * 60 + "\n")
-
-
-def log_valves(valves):
-    if DEBUG:
-        print(f"NEXTCLOUD_BASE_URL={valves.NEXTCLOUD_BASE_URL!r}")
-        print(f"WEBDAV_USERNAME={valves.WEBDAV_USERNAME!r}")
-        print(f"NEXTCLOUD_USERNAME={valves.NEXTCLOUD_USERNAME!r}")
-        print(f"NEXTCLOUD_APP_PASSWORD_LEN={len(valves.NEXTCLOUD_APP_PASSWORD)}")
-        print(f"SANDBOX_DIR={valves.SANDBOX_DIR!r}")
-        print(f"DEFAULT_CALENDAR={valves.DEFAULT_CALENDAR!r}")
-        print(f"DEFAULT_TASK_LIST={valves.DEFAULT_TASK_LIST!r}")
-        print(f"CALENDAR_WHITELIST={valves.CALENDAR_WHITELIST!r}")
-        print(f"TASK_LIST_WHITELIST={valves.TASK_LIST_WHITELIST!r}")
-        print(f"FILE_BLACKLIST={valves.FILE_BLACKLIST!r}")
-
-
-def _sanitize_args(kwargs: dict) -> str:
-    parts = []
-    for k, v in kwargs.items():
-        if k in ("__user__", "__event_emitter__"):
-            continue
-        if callable(v):
-            continue
-        parts.append(f"{k}={v!r}")
-    return ", ".join(parts)
-
-
-def tool_logger(func: Callable) -> Callable:
-    @functools.wraps(func)
-    async def wrapper(self, *args, **kwargs):
-        emitter = kwargs.pop("__event_emitter__", None)
-        log_sep(func.__name__)
-        if DEBUG and kwargs:
-            log(f"args: {_sanitize_args(kwargs)}")
-        if emitter:
-            arg_str = _sanitize_args(kwargs)
-            desc = f"{func.__name__}({arg_str})" if arg_str else func.__name__
-            await emitter(
-                {
-                    "type": "status",
-                    "data": {"description": f"Calling: {desc}", "done": True},
-                }
-            )
-        if DEBUG:
-            start = time.monotonic()
-        try:
-            result = func(self, *args, **kwargs)
-            if inspect.isawaitable(result):
-                result = await result
-        except Exception as e:
-            if DEBUG:
-                elapsed = (time.monotonic() - start) * 1000
-                log_err(
-                    f"{func.__name__}: FAILED in {elapsed:.1f}ms "
-                    f"— {type(e).__name__}: {e}"
-                )
-            raise
-        if DEBUG:
-            elapsed = (time.monotonic() - start) * 1000
-            if isinstance(result, dict):
-                ok = result.get("result", "?")
-                data = result.get("data")
-                if data is not None:
-                    data_len = (
-                        len(data)
-                        if isinstance(data, (list, str))
-                        else type(data).__name__
-                    )
-                    log(f"{func.__name__}: {ok} in {elapsed:.1f}ms, data={data_len}")
-                else:
-                    log(f"{func.__name__}: {ok} in {elapsed:.1f}ms")
-            else:
-                log(f"{func.__name__}: OK in {elapsed:.1f}ms")
-        return result
-
-    return wrapper
-
 
 def caldav_safe(func: Callable) -> Callable:
     @functools.wraps(func)
@@ -147,22 +50,13 @@ def caldav_safe(func: Callable) -> Callable:
             if result is not None:
                 response["data"] = result
             return response
-        except ConnectionError as e:
-            log_err(
-                f"{op}: connection failed - {e}\nTraceback: {traceback.format_exc()}"
-            )
+        except ConnectionError:
             raise
-        except TimeoutError as e:
-            log_err(f"{op}: timeout - {e}\nTraceback: {traceback.format_exc()}")
+        except TimeoutError:
             raise
-        except NotFoundError as e:
-            log_err(f"{op}: not found - {e}")
+        except NotFoundError:
             return {"result": "False", "details": f"{op}: not found"}
         except Exception as e:
-            log_err(
-                f"{op}: unexpected error - {type(e).__name__}: {e}\
-                \nTraceback: {traceback.format_exc()}"
-            )
             return {"result": "False", "details": f"{op}: error ({type(e).__name__})"}
 
     return wrapper
@@ -180,35 +74,19 @@ def webdav_safe(func: Callable) -> Callable:
             if result is not None:
                 response["data"] = result
             return response
-        except (RemoteResourceNotFoundError, RemoteParentNotFoundError) as e:
-            log_err(
-                f"{op}: resource not found - {e}\nTraceback: {traceback.format_exc()}"
-            )
+        except (RemoteResourceNotFoundError, RemoteParentNotFoundError):
             return {"result": "False", "details": f"{op}: not found"}
-        except LocalResourceNotFoundError as e:
-            log_err(
-                f"{op}: local file not found - {e}\nTraceback: {traceback.format_exc()}"
-            )
+        except LocalResourceNotFoundError:
             return {"result": "False", "details": f"{op}: local file not found"}
-        except ResourceLockedError as e:
-            log_err(f"{op}: resource locked - {e}\nTraceback: {traceback.format_exc()}")
+        except ResourceLockedError:
             return {"result": "False", "details": f"{op}: resource locked"}
-        except (ConnectionExceptionError, NoConnectionError) as e:
-            log_err(
-                f"{op}: connection failed - {e}\nTraceback: {traceback.format_exc()}"
-            )
+        except (ConnectionExceptionError, NoConnectionError):
             raise
-        except WebDavError as e:
-            log_err(f"{op}: WebDAV error - {e}\nTraceback: {traceback.format_exc()}")
+        except WebDavError:
             return {"result": "False", "details": f"{op}: WebDAV error"}
         except ValueError as e:
-            log_err(f"{op}: validation error - {e}")
             return {"result": "False", "details": f"{op}: {str(e)}"}
         except Exception as e:
-            log_err(
-                f"{op}: unexpected error - {type(e).__name__}: {e}\
-                \nTraceback: {traceback.format_exc()}"
-            )
             return {"result": "False", "details": f"{op}: error ({type(e).__name__})"}
 
     return wrapper
@@ -317,7 +195,6 @@ def parse_reminders(reminders: list | None = None) -> list:
 def is_whitelisted(whitelist: str, item: str) -> bool:
     """Check if item is in whitelist"""
     if not whitelist:
-        log_err("whitelist is empty")
         return False
     cleaned_whitelist = {s.strip() for s in whitelist.split(",") if s.strip()}
     return item in cleaned_whitelist
@@ -336,7 +213,6 @@ def is_blacklisted(blacklist: str, path: str) -> bool:
 
 class Tools:
     def __init__(self):
-        log_sep("Tools")
         self.valves = self.Valves()
 
     class Valves(BaseModel):
@@ -378,22 +254,21 @@ class Tools:
         base = self.valves.NEXTCLOUD_BASE_URL
         wd_user = self.valves.WEBDAV_USERNAME
         url = f"{base}/remote.php/dav/files/{wd_user}/"
-        log(f"create webdav_client with url={url!r}")
         try:
+            from aiohttp import ClientTimeout
+
             return WebDAVClient(
                 url,
                 self.valves.NEXTCLOUD_USERNAME,
                 self.valves.NEXTCLOUD_APP_PASSWORD,
-                timeout=30,
+                options=ClientOptions(timeout=ClientTimeout(total=30)),
             )
-        except Exception as e:
-            log_err(f"failed to create webdav_client: {type(e).__name__}: {e}")
+        except Exception:
             raise
 
     async def get_caldav_client(self):
         base = self.valves.NEXTCLOUD_BASE_URL
         url = f"{base}/remote.php/dav"
-        log(f"creating new caldav_client with url={url!r}")
         try:
             return await get_async_davclient(
                 username=self.valves.NEXTCLOUD_USERNAME,
@@ -403,14 +278,9 @@ class Tools:
                 enable_rfc6764=False,
                 timeout=30,
             )
-        except Exception as e:
-            log_err(
-                f"Failed to create caldav_client: \
-                    {type(e).__name__}: {e}"
-            )
+        except Exception:
             raise
 
-    @tool_logger
     async def ping(self):
         """Probe Nextcloud connectivity.
 
@@ -430,12 +300,12 @@ class Tools:
             try:
                 await asyncio.wait_for(client.ping(), timeout=probe_timeout)
                 webdav_ok = True
-            except (asyncio.TimeoutError, Exception) as e:
-                log_err(f"WebDAV ping failed: {type(e).__name__}: {e}")
+            except (asyncio.TimeoutError, Exception):
+                pass
             finally:
                 await client.close()
-        except Exception as e:
-            log_err(f"WebDAV client creation failed: {type(e).__name__}: {e}")
+        except Exception:
+            pass
 
         # Probe CalDAV
         try:
@@ -445,12 +315,12 @@ class Tools:
                     client.principal(), timeout=probe_timeout
                 )
                 caldav_ok = bool(principal)
-            except (asyncio.TimeoutError, Exception) as e:
-                log_err(f"CalDAV ping failed: {type(e).__name__}: {e}")
+            except (asyncio.TimeoutError, Exception):
+                pass
             finally:
                 await client.close()
-        except Exception as e:
-            log_err(f"CalDAV client creation failed: {type(e).__name__}: {e}")
+        except Exception:
+            pass
 
         if not webdav_ok and not caldav_ok:
             raise RuntimeError(
@@ -532,10 +402,8 @@ class Tools:
         sandbox = self.valves.SANDBOX_DIR.strip().rstrip("/")
         if sandbox:
             try:
-                log(f"checking sandbox dir exists: {sandbox!r}")
                 await client.list_files(_webdav_path(sandbox + "/"))
             except RemoteResourceNotFoundError:
-                log(f"sandbox dir not found, creating: {sandbox!r}")
                 await client.mkdir(_webdav_path(sandbox))
 
     def _check_blacklisted(self, rel_path: str) -> None:
@@ -560,7 +428,6 @@ class Tools:
             return full_path[len(self.sandbox_prefix) :]
         return full_path
 
-    @tool_logger
     @caldav_safe
     async def get_calendars(self) -> list[str]:
         """Retrieve available calendars"""
@@ -569,7 +436,6 @@ class Tools:
             principal = await client.principal()
             calendars = await principal.get_calendars()
             available = [await c.get_display_name() for c in calendars]
-            log(f"found {len(available)} calendars: {available!r}")
 
             return [
                 cal_name
@@ -579,7 +445,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @caldav_safe
     async def get_task_lists(self) -> list[str]:
         """Retrieve available task lists"""
@@ -588,7 +453,6 @@ class Tools:
             principal = await client.principal()
             calendars = await principal.get_calendars()
             available = [await c.get_display_name() for c in calendars]
-            log(f"found {len(available)} task lists: {available!r}")
 
             return [
                 tl
@@ -598,7 +462,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @webdav_safe
     async def mkdir(
         self,
@@ -649,7 +512,6 @@ class Tools:
         except Exception:
             return dt_str
 
-    @tool_logger
     @webdav_safe
     async def ls(self, path: str | None = None, detail: bool = False) -> list[str]:
         """List files and directories.
@@ -707,7 +569,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @webdav_safe
     async def glob(
         self,
@@ -734,8 +595,6 @@ class Tools:
         try:
             await self._ensure_sandbox(client)
 
-            log(f"glob: pattern={pattern}, target_dir={target_dir}")
-
             pattern_parts = pattern.split("/")
             is_recursive = (
                 "**" in pattern_parts
@@ -743,19 +602,13 @@ class Tools:
                 or (len(pattern_parts) == 1 and "*" in pattern_parts[0])
             )
 
-            log(f"glob: is_recursive={is_recursive}")
-
             all_files = await client.list_with_infos(
                 _webdav_path(target_dir), recursive=is_recursive
             )
 
-            log(f"glob: fetched {len(all_files)} items")
-
             files_only = [
                 f for f in all_files if str(f.get("isdir", "False")).lower() != "true"
             ]
-
-            log(f"glob: {len(files_only)} files after filtering dirs")
 
             patterns_to_match = [pattern]
             if "{" in pattern and "}" in pattern:
@@ -775,7 +628,6 @@ class Tools:
                 # sandbox-relative paths (e.g., "owuinc/foo.txt").
                 # Normalize: if target_root is already in the path, use as-is;
                 # otherwise prepend target_root.
-                log(f"glob: raw_path={raw_path!r}, target_root={target_root!r}")
                 if raw_path.startswith(target_root + "/") or raw_path == target_root:
                     full_path = raw_path
                 elif target_root + "/" in raw_path:
@@ -804,8 +656,6 @@ class Tools:
                     rel_to_target = filename
                 else:
                     rel_to_target = sandbox_rel
-
-                log(f"glob: checking {rel_to_target} against patterns")
 
                 for pat in patterns_to_match:
                     # Split pattern into directory prefix and name pattern
@@ -837,7 +687,6 @@ class Tools:
                                 continue
 
                     if fnmatch.fnmatch(filename, pattern_name):
-                        log(f"glob: matched {rel_to_target}")
                         matched.append(
                             {
                                 "path": full_path,
@@ -848,8 +697,8 @@ class Tools:
 
             try:
                 matched.sort(key=lambda x: x.get("modified", ""))
-            except Exception as e:
-                log(f"glob: sort error - {e}")
+            except Exception:
+                pass
 
             result = []
             for f in matched:
@@ -869,12 +718,10 @@ class Tools:
 
                 result.append(rel)
 
-            log(f"glob: returning {len(result)} matches")
             return result
         finally:
             await client.close()
 
-    @tool_logger
     @webdav_safe
     async def grep(
         self,
@@ -897,26 +744,17 @@ class Tools:
         try:
             await self._ensure_sandbox(client)
 
-            log(
-                f"grep: pattern={pattern!r}, "
-                f"target_dir={target_dir}, include={include!r}"
-            )
-
             all_items = await client.list_with_infos(
                 _webdav_path(target_dir), recursive=True
             )
             if not all_items:
                 return []
 
-            log(f"grep: fetched {len(all_items)} items")
-
             file_list = [
                 _strip_leading_slash(item.get("path", item))
                 for item in all_items
                 if str(item.get("isdir", "False")).lower() != "true"
             ]
-
-            log(f"grep: {len(file_list)} files after filtering directories")
 
             patterns_to_match = [include] if include else []
             if include and "{" in include and "}" in include:
@@ -957,17 +795,11 @@ class Tools:
                         continue
 
                 webdav_path = _webdav_path(validate_path(rel, self.valves))
-                log(f"grep: searching {rel}")
 
                 try:
                     buf = BytesIO()
                     await client.resource(webdav_path).read_from(buf)
                     content = buf.getvalue().decode("utf-8")
-
-                    log(
-                        f"grep: read {len(c := content)} bytes, "
-                        f"{len(c.splitlines())} lines"
-                    )
 
                     for line_num, line in enumerate(content.splitlines(), start=1):
                         if compiled_regex.search(line):
@@ -979,17 +811,14 @@ class Tools:
                                 }
                             )
 
-                except Exception as e:
-                    log(f"grep: error reading {rel}: {e}")
+                except Exception:
                     continue
 
             results.sort(key=lambda x: (x["file"], x["line"]))
-            log(f"grep: found {len(results)} matches")
             return results
         finally:
             await client.close()
 
-    @tool_logger
     @webdav_safe
     async def write_file(
         self,
@@ -1010,7 +839,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @webdav_safe
     async def read(
         self,
@@ -1056,7 +884,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @webdav_safe
     async def append_file(
         self,
@@ -1084,7 +911,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @webdav_safe
     async def edit(
         self,
@@ -1141,7 +967,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @webdav_safe
     async def rm(self, paths: list[str]) -> None:
         """Deletes files/directories"""
@@ -1162,7 +987,7 @@ class Tools:
         src_path = _webdav_path(src_full)
         dst_path = _webdav_path(dst_full)
         if await client.is_dir(src_path):
-            await client.mkdir(dst_path, exist_ok=True)
+            await client.mkdir(dst_path, recursive=True)
             items = await client.list_files(src_path)
             for item in items:
                 item_stripped = _strip_leading_slash(item)
@@ -1177,7 +1002,6 @@ class Tools:
                 remote_path_to=dst_path,
             )
 
-    @tool_logger
     @webdav_safe
     async def mv(
         self,
@@ -1202,7 +1026,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @webdav_safe
     async def cp(
         self,
@@ -1223,7 +1046,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @caldav_safe
     async def get_tasks(self, list_name: str | None = None) -> list[dict]:
         """Retrieve task from specified list"""
@@ -1303,7 +1125,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @caldav_safe
     async def edit_task(
         self,
@@ -1349,7 +1170,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @caldav_safe
     async def delete_task(
         self,
@@ -1373,7 +1193,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @caldav_safe
     async def create_calendar_event(
         self,
@@ -1441,7 +1260,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @caldav_safe
     async def add_task(
         self,
@@ -1485,7 +1303,6 @@ class Tools:
             await client.close()
 
     # TODO this duplicates edit task should be a wrapper
-    @tool_logger
     @caldav_safe
     async def complete_task(
         self,
@@ -1508,7 +1325,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @caldav_safe
     async def edit_calendar_event(
         self,
@@ -1574,7 +1390,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @caldav_safe
     async def get_calendar_events(
         self,
@@ -1620,58 +1435,41 @@ class Tools:
 
                 if e.component.get("rrule"):
                     event_dict["rrule"] = e.component["rrule"].to_ical().decode("utf-8")
-                    log(f"Processing recurring event: {event_dict.get('summary')}")
-                    log(f"Original dtstart: {event_dict.get('dtstart')}")
                     try:
                         duration = (
                             (dtend_val.dt - dtstart_val.dt)
                             if dtstart_val and dtend_val
                             else timedelta(hours=1)
                         )
-                        log(f"Duration: {duration}")
 
                         dtstart_dt = dtstart_val.dt
                         if isinstance(dtstart_dt, date) and not isinstance(
                             dtstart_dt, datetime
                         ):
-                            log("All-day event detected")
                             dtstart_dt = datetime.combine(
                                 dtstart_dt,
                                 datetime.min.time(),
                                 tzinfo=ZoneInfo(__user__["timezone"]),
                             )
                         elif dtstart_dt.tzinfo is None:
-                            log("Naive datetime detected")
                             dtstart_dt = dtstart_dt.replace(
                                 tzinfo=ZoneInfo(__user__["timezone"])
                             )
                         else:
-                            log("TZ-aware datetime detected")
                             dtstart_dt = dtstart_dt.astimezone(
                                 ZoneInfo(__user__["timezone"])
                             )
 
-                        log(f"RRULE: {event_dict['rrule']}")
                         rrule_obj = rrulestr(event_dict["rrule"], dtstart=dtstart_dt)
                         now = datetime.now(ZoneInfo(__user__["timezone"]))
-                        log(f"Now: {now}")
                         next_occurrence = rrule_obj.after(now, inc=False)
 
                         if next_occurrence:
-                            log(f"Next occurrence: {next_occurrence.isoformat()}")
-                            log(
-                                f"New dtstart: {event_dict['dtstart']}"
-                                f" -> {next_occurrence}"
-                            )
                             event_dict["dtstart"] = next_occurrence.isoformat()
                             event_dict["dtend"] = (
                                 next_occurrence + duration
                             ).isoformat()
-                            log(f"New dtend: {event_dict['dtend']}")
-                        else:
-                            log("No future occurrence found")
-                    except Exception as err:
-                        log(f"RRULE parsing failed: {err}")
+                    except Exception:
                         pass
 
                 if len(e.component.alarms.times) > 0:
@@ -1685,7 +1483,6 @@ class Tools:
         finally:
             await client.close()
 
-    @tool_logger
     @caldav_safe
     async def delete_calendar_event(
         self,

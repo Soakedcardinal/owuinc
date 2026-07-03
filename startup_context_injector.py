@@ -9,7 +9,6 @@ license: MIT
 """
 
 import os
-import traceback
 import urllib.parse
 from datetime import date, timedelta
 from io import BytesIO
@@ -25,32 +24,12 @@ from aiowebdav2.exceptions import (
 )
 from pydantic import BaseModel, Field
 
-# DEBUG = True
-DEBUG = False
-
 _tokenizer = tiktoken.get_encoding("cl100k_base")
-
-
-def log(msg):
-    if DEBUG:
-        print(msg)
-
-
-def log_err(msg):
-    if DEBUG:
-        print("ERROR: " + msg)
 
 
 def _token_count(text: str) -> int:
     """Count tokens using tiktoken's cl100k_base encoder."""
     return len(_tokenizer.encode(text))
-
-
-def log_sep(msg):
-    if DEBUG:
-        print("\n" + "=" * 60)
-        print(f"  {msg}")
-        print("=" * 60 + "\n")
 
 
 def validate_path(path, valves):
@@ -129,11 +108,8 @@ def _try_inject(
             "tokens": _token_count(content),
         }
         injected_info.append(info)
-        log(f"OK - {filename} ({len(content)} chars)")
         return info
-    else:
-        log(f"FAILED - {filename} not found")
-        return None
+    return None
 
 
 def _webdav_path(p: str) -> str:
@@ -165,7 +141,6 @@ class Filter:
         )
 
     def __init__(self):
-        log_sep("startup_context_injector")
         self.valves = self.Valves()
 
     async def _download_file(self, client: WebDAVClient, path: str) -> Optional[str]:
@@ -175,16 +150,10 @@ class Filter:
             await client.resource(_webdav_path(path)).read_from(buf)
             return buf.getvalue().decode("utf-8")
         except RemoteResourceNotFoundError:
-            log_err(f"file not found - {path}")
             return None
-        except WebDavError as e:
-            log_err(f"WebDAV error for {path} - {e}")
+        except WebDavError:
             return None
-        except Exception as e:
-            log_err(
-                f"unexpected error downloading {path} - "
-                f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
-            )
+        except Exception:
             return None
 
     def _get_today_filename(self) -> str:
@@ -202,8 +171,6 @@ class Filter:
         wd_user = self.valves.WEBDAV_USERNAME.strip()
         nc_url = f"{base}/remote.php/dav/files/{wd_user}/"
 
-        log(f"creating WebDAV client for {nc_url}")
-
         client = WebDAVClient(
             nc_url,
             self.valves.NEXTCLOUD_USERNAME,
@@ -214,10 +181,6 @@ class Filter:
             files_to_inject = [
                 f.strip() for f in self.valves.FILES_TO_INJECT.split(",") if f.strip()
             ]
-            log(
-                f"attempting to download {len(files_to_inject)} "
-                f"files: {files_to_inject}"
-            )
 
             contexts: List[str] = []
             injected_info: list[dict] = []
@@ -225,11 +188,9 @@ class Filter:
             for filename in files_to_inject:
                 try:
                     validated = validate_path(filename, self.valves)
-                except Exception as e:
-                    log_err(f"path validation failed for {filename!r} - {e}")
+                except Exception:
                     continue
                 path = validated.rstrip("/")
-                log(f"downloading {path}...")
                 content = await self._download_file(client, path)
                 info = _try_inject(contexts, injected_info, filename, content)
                 if info and __event_emitter__:
@@ -244,7 +205,6 @@ class Filter:
                         }
                     )
 
-            log("downloading memory/*.md files...")
             memory_base = validate_path("memory", self.valves).rstrip("/")
 
             today_file = self._get_today_filename()
@@ -252,7 +212,6 @@ class Filter:
 
             for log_file in [yesterday_file, today_file]:
                 path = f"{memory_base}/{log_file}"
-                log(f"downloading {path}...")
                 content = await self._download_file(client, path)
                 info = _try_inject(
                     contexts, injected_info, f"memory/{log_file}", content
@@ -302,58 +261,35 @@ class Filter:
         Returns:
             Modified body with system context prepended (first turn only)
         """
-        log_sep("inlet")
-
         try:
             # Check if this is the first turn of a new chat
             messages = body.get("messages", [])
-            log(f"INLET - messages={len(messages)}, body_keys={list(body.keys())}")
 
             # Count user messages (assistant responses indicate ongoing conversation)
             user_messages = [m for m in messages if m.get("role") == "user"]
             has_assistant_response = any(m.get("role") == "assistant" for m in messages)
 
-            log(
-                f"user_msgs={len(user_messages)}, "
-                f"has_assistant={has_assistant_response}"
-            )
-
             if has_assistant_response or len(user_messages) != 1:
-                log("not first turn, skipping injection")
                 return body
 
             # This is the first turn - download and inject context
-            log("FIRST TURN DETECTED - downloading system files...")
-
             contexts = await self._build_context(__event_emitter__)
 
             if not contexts:
-                log("no context files downloaded, skipping injection")
                 return body
 
             # Combine all contexts into single message
             full_context = "\n\n".join(contexts)
-            log(f"total context size = {len(full_context)} chars")
 
             # Create system message at position 0 (before user messages)
             context_message = {"role": "system", "content": full_context}
 
             body.setdefault("messages", []).insert(0, context_message)
 
-            log("injected system message at position 0")
-            log(f"final messages array has {len(body['messages'])} items:")
-            for i, msg in enumerate(body["messages"]):
-                role = msg.get("role", "UNKNOWN")
-                preview = str(msg.get("content", "")).replace("\n", " ")[:100]
-                log(f"  [{i}] role={role}, preview='{preview}...'")
-
             return body
 
-        except (ConnectionExceptionError, NoConnectionError) as e:
-            log_err(f"connection failed - {e}")
-        except Exception as e:
-            log_err(
-                f"error building context - "
-                f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
-            )
+        except (ConnectionExceptionError, NoConnectionError):
+            pass
+        except Exception:
+            pass
         return body
