@@ -84,7 +84,7 @@ class TestWriteFile:
         result = await webdav_tools.write_file("writefile.txt", "hello world")
         assert result == {"result": "True"}
 
-        content = await webdav_tools.read("writefile.txt")
+        content = await webdav_tools.read_file("writefile.txt")
         assert content["data"] == "hello world"
 
     @pytest.mark.asyncio
@@ -93,7 +93,7 @@ class TestWriteFile:
         result = await webdav_tools.write_file("overwrite.txt", "replaced")
         assert result == {"result": "True"}
 
-        content = await webdav_tools.read("overwrite.txt")
+        content = await webdav_tools.read_file("overwrite.txt")
         assert content["data"] == "replaced"
 
     @pytest.mark.asyncio
@@ -101,7 +101,7 @@ class TestWriteFile:
         result = await webdav_tools.write_file("empty.txt")
         assert result == {"result": "True"}
 
-        content = await webdav_tools.read("empty.txt")
+        content = await webdav_tools.read_file("empty.txt")
         assert content["data"] == ""
 
 
@@ -109,25 +109,25 @@ class TestRead:
     @pytest.mark.asyncio
     async def test_read_returns_file_content(self, webdav_tools):
         await webdav_tools.write_file("readfile.txt", "line1\nline2\nline3")
-        content = await webdav_tools.read("readfile.txt")
+        content = await webdav_tools.read_file("readfile.txt")
         assert content["data"] == "line1\nline2\nline3"
 
     @pytest.mark.asyncio
     async def test_read_with_offset(self, webdav_tools):
         await webdav_tools.write_file("offsetfile.txt", "line1\nline2\nline3")
-        content = await webdav_tools.read("offsetfile.txt", offset=2)
+        content = await webdav_tools.read_file("offsetfile.txt", offset=2)
         assert content["data"] == "line2\nline3"
 
     @pytest.mark.asyncio
     async def test_read_with_limit(self, webdav_tools):
         await webdav_tools.write_file("limitfile.txt", "line1\nline2\nline3")
-        content = await webdav_tools.read("limitfile.txt", limit=2)
+        content = await webdav_tools.read_file("limitfile.txt", limit=2)
         assert content["data"] == "line1\nline2"
 
     @pytest.mark.asyncio
     async def test_read_with_offset_and_limit(self, webdav_tools):
         await webdav_tools.write_file("bothfile.txt", "a\nb\nc\nd")
-        content = await webdav_tools.read("bothfile.txt", offset=2, limit=2)
+        content = await webdav_tools.read_file("bothfile.txt", offset=2, limit=2)
         assert content["data"] == "b\nc"
 
 
@@ -191,7 +191,7 @@ class TestAppendFile:
         result = await webdav_tools.append_file("appendfile.txt", "appended\n")
         assert result == {"result": "True"}
 
-        content = await webdav_tools.read("appendfile.txt")
+        content = await webdav_tools.read_file("appendfile.txt")
         assert content["data"] == "original\nappended"
 
     @pytest.mark.asyncio
@@ -199,7 +199,7 @@ class TestAppendFile:
         result = await webdav_tools.append_file("newfile.txt", "first line\n")
         assert result == {"result": "True"}
 
-        content = await webdav_tools.read("newfile.txt")
+        content = await webdav_tools.read_file("newfile.txt")
         assert content["data"] == "first line"
 
 
@@ -210,7 +210,7 @@ class TestEdit:
         result = await webdav_tools.edit("editfile.txt", "foo", "qux")
         assert result["result"] == "True"
 
-        content = await webdav_tools.read("editfile.txt")
+        content = await webdav_tools.read_file("editfile.txt")
         assert content["data"] == "qux bar baz"
 
     @pytest.mark.asyncio
@@ -219,7 +219,7 @@ class TestEdit:
         result = await webdav_tools.edit("editall.txt", "a", "z", replace_all=True)
         assert result["result"] == "True"
 
-        content = await webdav_tools.read("editall.txt")
+        content = await webdav_tools.read_file("editall.txt")
         assert content["data"] == "z b z b z"
 
     @pytest.mark.asyncio
@@ -236,7 +236,7 @@ class TestRm:
         result = await webdav_tools.rm(["rmfile.txt"])
         assert result == {"result": "True"}
 
-        result = await webdav_tools.read("rmfile.txt")
+        result = await webdav_tools.read_file("rmfile.txt")
         assert result["result"] == "False"
 
     @pytest.mark.asyncio
@@ -257,10 +257,10 @@ class TestMv:
         result = await webdav_tools.mv("mvsrc.txt", "mvdst.txt")
         assert result == {"result": "True"}
 
-        content = await webdav_tools.read("mvdst.txt")
+        content = await webdav_tools.read_file("mvdst.txt")
         assert content["data"] == "move me"
 
-        result = await webdav_tools.read("mvsrc.txt")
+        result = await webdav_tools.read_file("mvsrc.txt")
         assert result["result"] == "False"
 
 
@@ -271,8 +271,8 @@ class TestCp:
         result = await webdav_tools.cp("cpsrc.txt", "cpdst.txt")
         assert result == {"result": "True"}
 
-        src = await webdav_tools.read("cpsrc.txt")
-        dst = await webdav_tools.read("cpdst.txt")
+        src = await webdav_tools.read_file("cpsrc.txt")
+        dst = await webdav_tools.read_file("cpdst.txt")
         assert src["data"] == dst["data"] == "copy me"
 
 
@@ -357,7 +357,7 @@ class TestFileBlacklist:
         await webdav_tools.write_file("bl_read/secret.txt", "hidden")
         webdav_tools.valves.FILE_BLACKLIST = "bl_read"
 
-        result = await webdav_tools.read("bl_read/secret.txt")
+        result = await webdav_tools.read_file("bl_read/secret.txt")
         assert result["result"] == "False"
 
         webdav_tools.valves.FILE_BLACKLIST = ""

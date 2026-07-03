@@ -17,7 +17,7 @@ import urllib.parse
 import uuid
 from datetime import date, datetime, timedelta
 from io import BytesIO
-from typing import Callable, Optional
+from typing import Callable
 from zoneinfo import ZoneInfo
 
 from aiowebdav2 import Client as WebDAVClient
@@ -417,11 +417,8 @@ class Tools:
             await client.close()
 
     @webdav_safe
-    async def mkdir(
-        self,
-        path: str,
-    ) -> None:
-        """Create new directory"""
+    async def mkdir(self, path: str) -> None:
+        """Create a directory."""
 
         full_path = validate_path(path, self.valves)
         self._check_blacklisted(self._get_rel_path(full_path))
@@ -469,15 +466,7 @@ class Tools:
 
     @webdav_safe
     async def ls(self, path: str | None = None, detail: bool = False) -> list[str]:
-        """List files and directories.
-
-        Args:
-            path: The directory to list. Defaults to sandbox root.
-            detail: If True, include file details (size, modified, type).
-
-        Returns:
-            List of file names, or list of detailed strings when detail=True.
-        """
+        """List files and directories. Set detail=True for size/modified info."""
 
         full_path = validate_path(path, self.valves)
         self._check_blacklisted(self._get_rel_path(full_path))
@@ -526,23 +515,8 @@ class Tools:
             await client.close()
 
     @webdav_safe
-    async def glob(
-        self,
-        pattern: str,
-        path: Optional[str] = None,
-    ) -> list[str]:
-        """File pattern matching tool
-
-        Use this tool when you need to find files by name patterns
-
-        Args:
-            pattern: The glob pattern to match files against
-                (e.g., "**/*.py", "src/**/*.tsx")
-            path: The directory to search in.
-
-        Returns:
-            matching file paths sorted by modification time (newest last)
-        """
+    async def glob(self, pattern: str, path: str | None = None) -> list[str]:
+        """Find files by glob pattern (e.g. '**/*.py'). Supports brace expansion."""
 
         target_dir = validate_path(path if path else "", self.valves)
         rel_path = self._get_rel_path(target_dir)
@@ -681,18 +655,9 @@ class Tools:
 
     @webdav_safe
     async def grep(
-        self,
-        pattern: str,
-        path: Optional[str] = None,
-        include: Optional[str] = None,
+        self, pattern: str, path: str | None = None, include: str | None = None
     ) -> list[dict]:
-        """Search file contents for pattern using regex
-
-        Args:
-            pattern: The regex pattern to search for
-            path: The directory to search in. Defaults to root.
-            include: File pattern to include (e.g., "*.py", "*.{ts,tsx}")
-        """
+        """Search file contents with regex. Use include for filter (e.g. '*.py')."""
 
         target_dir = validate_path(path if path else "", self.valves)
         search_rel = self._get_rel_path(target_dir)
@@ -778,12 +743,8 @@ class Tools:
             await client.close()
 
     @webdav_safe
-    async def write_file(
-        self,
-        path: str,
-        content: Optional[str] = None,
-    ) -> None:
-        """Write to a file, overwriting existing content"""
+    async def write_file(self, path: str, content: str | None = None) -> None:
+        """Write to a file, overwriting existing content. Creates if missing."""
 
         if content is None:
             content = ""
@@ -799,19 +760,10 @@ class Tools:
             await client.close()
 
     @webdav_safe
-    async def read(
-        self,
-        path: str,
-        offset: Optional[int] = None,
-        limit: Optional[int] = None,
+    async def read_file(
+        self, path: str, offset: int | None = None, limit: int | None = None
     ) -> str:
-        """Read a file with optional line range
-
-        Args:
-            path: File path to read
-            offset: Line number to start from (1-indexed)
-            limit: Maximum number of lines to return
-        """
+        """Read a file. Use offset (1-indexed) and limit to read a line range."""
 
         if not path:
             raise ValueError("path cannot be empty")
@@ -845,12 +797,8 @@ class Tools:
             await client.close()
 
     @webdav_safe
-    async def append_file(
-        self,
-        path: str,
-        content: Optional[str] = None,
-    ) -> None:
-        """Append content to file, creating it if it does not exist"""
+    async def append_file(self, path: str, content: str | None = None) -> None:
+        """Append content to a file. Creates if missing."""
 
         if content is None:
             content = ""
@@ -880,16 +828,7 @@ class Tools:
         new_string: str,
         replace_all: bool = False,
     ) -> dict:
-        """Perform exact string replacement in a file.
-
-        Replaces first match only by default.
-
-        Args:
-            file_path: Path to file
-            old_string: Text to find (unique or use replace_all)
-            new_string: Replacement text
-            replace_all: Replace all occurrences (default: false)
-        """
+        """Exact string replacement. Requires unique match unless replace_all=True."""
 
         if not old_string:
             raise ValueError("old_string cannot be empty")
@@ -931,7 +870,7 @@ class Tools:
 
     @webdav_safe
     async def rm(self, paths: list[str]) -> None:
-        """Deletes files/directories"""
+        """Delete files or directories. Accepts multiple paths."""
 
         for p in paths:
             full_path = validate_path(p, self.valves)
@@ -966,12 +905,8 @@ class Tools:
             )
 
     @webdav_safe
-    async def mv(
-        self,
-        src: str,
-        dst: str,
-    ) -> None:
-        """Move/rename a file or directory"""
+    async def mv(self, src: str, dst: str) -> None:
+        """Move or rename a file or directory."""
 
         src_full = validate_path(src, self.valves)
         self._check_blacklisted(self._get_rel_path(src_full))
@@ -991,12 +926,8 @@ class Tools:
             await client.close()
 
     @webdav_safe
-    async def cp(
-        self,
-        src: str,
-        dst: str,
-    ) -> None:
-        """Copy a file or directory."""
+    async def cp(self, src: str, dst: str) -> None:
+        """Copy a file or directory recursively."""
 
         src_full = validate_path(src, self.valves)
         self._check_blacklisted(self._get_rel_path(src_full))
@@ -1013,7 +944,7 @@ class Tools:
 
     @caldav_safe
     async def get_tasks(self, list_name: str | None = None) -> list[dict]:
-        """Retrieve task from specified list"""
+        """Retrieve tasks from a list. Returns nested structure with subtasks."""
 
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
@@ -1104,8 +1035,8 @@ class Tools:
         new_url: str | None = None,
         new_categories: list[str] | None = None,
         new_related_to: str | None = None,
-    ):
-        """Update task properties by summary or uid"""
+    ) -> None:
+        """Edit a task by summary or uid."""
 
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
@@ -1140,18 +1071,18 @@ class Tools:
     @caldav_safe
     async def delete_task(
         self,
-        summary: Optional[str] = None,
-        uid: Optional[str] = None,
+        summary: str | None = None,
+        uid: str | None = None,
         list_name: str | None = None,
-    ):
-        """Delete task from specified list by summary or uid"""
+    ) -> None:
+        """Delete a task by summary or uid."""
 
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
 
         if not (summary or uid):
-            raise Exception("must specify summary or uid of task to edit")
+            raise Exception("must specify summary or uid of task to delete")
         client = await self.get_caldav_client()
         try:
             principal = await client.principal()
@@ -1166,15 +1097,15 @@ class Tools:
         self,
         summary: str,
         calendar_name: str | None = None,
-        start: Optional[str] = None,
-        end: Optional[str] = None,
-        description: Optional[str] = None,
-        location: Optional[str] = None,
+        start: str | None = None,
+        end: str | None = None,
+        description: str | None = None,
+        location: str | None = None,
         alarms: list[str] = ["0min"],
-        rrule: Optional[str] = None,
+        rrule: str | None = None,
         __user__: dict = {},
-    ):
-        """Add event to specified calendar."""
+    ) -> str:
+        """Create an event. alarms: ['0min'], '15min', '1h'. rrule: RRULE string."""
 
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
@@ -1234,17 +1165,14 @@ class Tools:
         self,
         summary: str,
         list_name: str | None = None,
-        priority: Optional[int] = 0,
-        description: Optional[str] = None,
-        categories: Optional[list[str]] = None,
-        url: Optional[str] = None,
-        location: Optional[str] = None,
-        parent: Optional[str] = None,
-    ):
-        """Add a task to the specified list.
-
-        If parent is provided, create as subtask of the given parent task.
-        """
+        priority: int | None = 0,
+        description: str | None = None,
+        categories: list[str] | None = None,
+        url: str | None = None,
+        location: str | None = None,
+        parent: str | None = None,
+    ) -> str:
+        """Add a task. Use parent (summary/uid) for subtasks."""
 
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
@@ -1272,15 +1200,14 @@ class Tools:
         finally:
             await client.close()
 
-    # TODO this duplicates edit task should be a wrapper
     @caldav_safe
     async def complete_task(
         self,
-        summary: Optional[str] = None,
-        uid: Optional[str] = None,
+        summary: str | None = None,
+        uid: str | None = None,
         list_name: str | None = None,
-    ):
-        """Marks a task completed."""
+    ) -> None:
+        """Mark a task as completed by summary or uid."""
 
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
@@ -1300,18 +1227,18 @@ class Tools:
     async def edit_calendar_event(
         self,
         __user__: dict = {},
-        summary: Optional[str] = None,
-        uid: Optional[str] = None,
+        summary: str | None = None,
+        uid: str | None = None,
         calendar_name: str | None = None,
-        new_summary: Optional[str] = None,
-        new_start: Optional[str] = None,
-        new_end: Optional[str] = None,
-        new_description: Optional[str] = None,
-        new_location: Optional[str] = None,
-        new_alarms: Optional[list[str]] = None,
-        new_rrule: Optional[str] = None,
-    ):
-        """Edits events by summary/uid."""
+        new_summary: str | None = None,
+        new_start: str | None = None,
+        new_end: str | None = None,
+        new_description: str | None = None,
+        new_location: str | None = None,
+        new_alarms: list[str] | None = None,
+        new_rrule: str | None = None,
+    ) -> None:
+        """Edit an event by summary or uid. new_rrule: RRULE or None to remove."""
 
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
@@ -1364,11 +1291,9 @@ class Tools:
 
     @caldav_safe
     async def get_calendar_events(
-        self,
-        calendar_name: str | None = None,
-        __user__: dict = {},
-    ):
-        """Retrieves upcoming events on the specified calendar."""
+        self, calendar_name: str | None = None, __user__: dict = {}
+    ) -> list[dict]:
+        """Retrieve upcoming events from a calendar."""
 
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
@@ -1459,11 +1384,11 @@ class Tools:
     @caldav_safe
     async def delete_calendar_event(
         self,
-        uid: Optional[str] = None,
-        summary: Optional[str] = None,
+        uid: str | None = None,
+        summary: str | None = None,
         calendar_name: str | None = None,
-    ):
-        """Deletes an event from the specified calendar."""
+    ) -> None:
+        """Delete an event by summary or uid."""
 
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
