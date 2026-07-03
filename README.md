@@ -24,11 +24,12 @@ Connect OpenWebUI Models to Nextcloud.
 
 Pick an existing model, or create one to use. For this example, we will set up a model named `owuinc`.
 
-### 1. Add to OpenWebUI
+### 1. Add to `owuinc` Tool to OpenWebUI
+
+*   Navigate to Workspace > Tools > + New Tool > New Tool
 
 ![New Tool](docs/new-tool-button.png)
 
-*   Navigate to Workspace > Tools > + New Tool > New Tool
 *   Enter Name and description e.g. `owuinc`
 *   Paste the contents of [`owuinc.py`](./owuinc/owuinc.py)
 *   Click Save > Confirm
