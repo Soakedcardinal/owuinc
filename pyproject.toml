@@ -28,4 +28,8 @@ include = ["owuinc*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+addopts = "--import-mode=importlib -rA"
+testpaths = ["tests/unit", "tests/integration"]
+pythonpath = ["."]
+strict_config = true
+strict_markers = true
