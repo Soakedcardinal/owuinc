@@ -425,12 +425,14 @@ class Tools:
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
-            await client.mkdir(_webdav_path(full_path))
+            await client.mkdir(_webdav_path(full_path), recursive=True)
         finally:
             await client.close()
 
     def _format_size(self, size_str: str) -> str:
         """Format file size to human-readable string."""
+        if size_str is None:
+            return "n/a"
         try:
             size: float = int(size_str)
         except (ValueError, TypeError):
@@ -592,6 +594,10 @@ class Tools:
                     # Split pattern into directory prefix and name pattern
                     if "/**/" in pat:
                         dir_prefix, pattern_name = pat.split("/**/", 1)
+                    elif pat.startswith("**/"):
+                        # Pattern like "**/*.py" — recursive from target root
+                        dir_prefix = "**"
+                        pattern_name = pat[3:]
                     elif "/" in pat:
                         # Pattern like "subdir/*.py" — match only in that directory
                         parts = pat.rsplit("/", 1)
@@ -602,7 +608,7 @@ class Tools:
                         pattern_name = pat
 
                     # Enforce directory scope from pattern
-                    if dir_prefix:
+                    if dir_prefix and dir_prefix != "**":
                         if "/**" in dir_prefix:
                             # dir_prefix itself may contain ** (edge case)
                             base = dir_prefix.split("/**")[0]
@@ -827,7 +833,7 @@ class Tools:
         old_string: str,
         new_string: str,
         replace_all: bool = False,
-    ) -> dict:
+    ) -> None:
         """Exact string replacement. Requires unique match unless replace_all=True."""
 
         if not old_string:
@@ -864,7 +870,7 @@ class Tools:
                 BytesIO(modified_content.encode("utf-8"))
             )
 
-            return {"result": "True"}
+            return
         finally:
             await client.close()
 
@@ -891,12 +897,16 @@ class Tools:
         if await client.is_dir(src_path):
             await client.mkdir(dst_path, recursive=True)
             items = await client.list_files(src_path)
+            src_stripped = _strip_leading_slash(src_full)
             for item in items:
-                item_stripped = _strip_leading_slash(item)
-                if item_stripped == _strip_leading_slash(src_full):
+                item_stripped = _strip_leading_slash(item).rstrip("/")
+                if item_stripped == src_stripped:
                     continue
-                src_item = src_full.rstrip("/") + "/" + item_stripped.lstrip("/")
-                dst_item = dst_full.rstrip("/") + "/" + item_stripped.lstrip("/")
+                name = os.path.basename(item_stripped)
+                if not name:
+                    continue
+                src_item = src_full.rstrip("/") + "/" + name
+                dst_item = dst_full.rstrip("/") + "/" + name
                 await self._recursive_cp(client, src_item, dst_item)
         else:
             await client.copy(

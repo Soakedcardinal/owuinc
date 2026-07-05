@@ -469,3 +469,333 @@ class TestFileBlacklist:
         assert any("allowed" in p for p in listing["data"])
 
         webdav_tools.valves.FILE_BLACKLIST = ""
+
+
+class TestNestedWriteWithoutParent:
+    """Test write_file to deeply nested path when parent dirs don't exist."""
+
+    @pytest.mark.asyncio
+    async def test_write_nested_fails_without_parents(self, webdav_tools):
+        write_result = await webdav_tools.write_file("nested/deep/file.txt", "data")
+        read_result = await webdav_tools.read_file("nested/deep/file.txt")
+        if write_result["result"] == "True":
+            assert read_result["result"] == "True"
+            assert read_result["data"] == "data"
+        else:
+            assert read_result["result"] == "False"
+
+    @pytest.mark.asyncio
+    async def test_write_nested_succeeds_with_explicit_parents(self, webdav_tools):
+        await webdav_tools.mkdir("explicit_parent")
+        await webdav_tools.mkdir("explicit_parent/child")
+        result = await webdav_tools.write_file("explicit_parent/child/file.txt", "data")
+        assert result["result"] == "True"
+        read_result = await webdav_tools.read_file("explicit_parent/child/file.txt")
+        assert read_result["result"] == "True"
+        assert read_result["data"] == "data"
+
+
+class TestRecursiveDirOperations:
+    """Test recursive cp and mv for directories with nested content."""
+
+    @pytest.mark.asyncio
+    async def test_cp_recursive_directory(self, webdav_tools):
+        await webdav_tools.mkdir("srcdir/sub")
+        await webdav_tools.write_file("srcdir/a.txt", "content_a")
+        await webdav_tools.write_file("srcdir/sub/b.txt", "content_b")
+        result = await webdav_tools.cp("srcdir", "dstdir")
+        assert result["result"] == "True"
+        src_a = await webdav_tools.read_file("srcdir/a.txt")
+        dst_a = await webdav_tools.read_file("dstdir/a.txt")
+        assert src_a["data"] == dst_a["data"] == "content_a"
+        src_b = await webdav_tools.read_file("srcdir/sub/b.txt")
+        dst_b = await webdav_tools.read_file("dstdir/sub/b.txt")
+        assert src_b["data"] == dst_b["data"] == "content_b"
+
+    @pytest.mark.asyncio
+    async def test_mv_directory_moves_contents(self, webdav_tools):
+        await webdav_tools.mkdir("mvsrc/sub")
+        await webdav_tools.write_file("mvsrc/file.txt", "moved")
+        await webdav_tools.write_file("mvsrc/sub/nested.txt", "deep")
+        result = await webdav_tools.mv("mvsrc", "mvdst")
+        assert result["result"] == "True"
+        read_a = await webdav_tools.read_file("mvdst/file.txt")
+        assert read_a["result"] == "True"
+        assert read_a["data"] == "moved"
+        read_b = await webdav_tools.read_file("mvdst/sub/nested.txt")
+        assert read_b["result"] == "True"
+        assert read_b["data"] == "deep"
+        gone = await webdav_tools.read_file("mvsrc/file.txt")
+        assert gone["result"] == "False"
+
+    @pytest.mark.asyncio
+    async def test_cp_overwrites_existing_destination(self, webdav_tools):
+        await webdav_tools.mkdir("cpdst")
+        await webdav_tools.write_file("cpdst/file.txt", "original")
+        await webdav_tools.mkdir("cp_src_overwrite")
+        await webdav_tools.write_file("cp_src_overwrite/file.txt", "overwritten")
+        result = await webdav_tools.cp("cp_src_overwrite/file.txt", "cpdst/file.txt")
+        assert result["result"] == "True"
+        read_result = await webdav_tools.read_file("cpdst/file.txt")
+        assert read_result["data"] == "overwritten"
+
+    @pytest.mark.asyncio
+    async def test_mv_overwrites_existing_destination(self, webdav_tools):
+        await webdav_tools.write_file("mv_existing.txt", "will_be_replaced")
+        await webdav_tools.write_file("mv_new.txt", "replacement")
+        result = await webdav_tools.mv("mv_new.txt", "mv_existing.txt")
+        assert result["result"] == "True"
+        read_result = await webdav_tools.read_file("mv_existing.txt")
+        assert read_result["data"] == "replacement"
+        gone = await webdav_tools.read_file("mv_new.txt")
+        assert gone["result"] == "False"
+
+
+class TestRmMultiplePaths:
+    """Test rm with multiple paths in a single call."""
+
+    @pytest.mark.asyncio
+    async def test_rm_multiple_files(self, webdav_tools):
+        await webdav_tools.write_file("rm_multi_a.txt", "a")
+        await webdav_tools.write_file("rm_multi_b.txt", "b")
+        await webdav_tools.write_file("rm_multi_c.txt", "c")
+        result = await webdav_tools.rm(
+            ["rm_multi_a.txt", "rm_multi_b.txt", "rm_multi_c.txt"]
+        )
+        assert result["result"] == "True"
+        assert (await webdav_tools.read_file("rm_multi_a.txt"))["result"] == "False"
+        assert (await webdav_tools.read_file("rm_multi_b.txt"))["result"] == "False"
+        assert (await webdav_tools.read_file("rm_multi_c.txt"))["result"] == "False"
+
+    @pytest.mark.asyncio
+    async def test_rm_files_and_dirs_together(self, webdav_tools):
+        await webdav_tools.mkdir("rm_multi_dir")
+        await webdav_tools.write_file("rm_multi_dir/inner.txt", "inner")
+        await webdav_tools.write_file("rm_multi_file.txt", "file")
+        result = await webdav_tools.rm(["rm_multi_dir", "rm_multi_file.txt"])
+        assert result["result"] == "True"
+        assert (await webdav_tools.read_file("rm_multi_file.txt"))["result"] == "False"
+        assert (await webdav_tools.read_file("rm_multi_dir/inner.txt"))[
+            "result"
+        ] == "False"
+
+
+class TestGlobRecursive:
+    """Test glob with ** recursive patterns."""
+
+    @pytest.mark.asyncio
+    async def test_glob_recursive_doublestar(self, webdav_tools):
+        await webdav_tools.mkdir("rec/sub1")
+        await webdav_tools.mkdir("rec/sub1/deep")
+        await webdav_tools.mkdir("rec/sub2")
+        await webdav_tools.write_file("rec/root.py", "root")
+        await webdav_tools.write_file("rec/sub1/a.py", "a")
+        await webdav_tools.write_file("rec/sub1/deep/b.py", "b")
+        await webdav_tools.write_file("rec/sub2/c.py", "c")
+        await webdav_tools.write_file("rec/sub1/deep/d.txt", "not_py")
+        result = await webdav_tools.glob("**/*.py", path="rec")
+        assert result["result"] == "True"
+        files = result["data"]
+        py_files = [f for f in files if f.endswith(".py")]
+        assert len(py_files) == 4
+        assert any("root.py" in f for f in py_files)
+        assert any("a.py" in f for f in py_files)
+        assert any("b.py" in f for f in py_files)
+        assert any("c.py" in f for f in py_files)
+
+    @pytest.mark.asyncio
+    async def test_glob_doublestar_from_sandbox_root(self, webdav_tools):
+        # Clean up any leftover .py files from other tests
+        existing = await webdav_tools.glob("**/*.py")
+        if existing["result"] == "True":
+            for f in existing["data"]:
+                try:
+                    await webdav_tools.rm([f])
+                except Exception:
+                    pass
+        await webdav_tools.mkdir("grec_a")
+        await webdav_tools.mkdir("grec_b/nested")
+        await webdav_tools.write_file("grec_a/x.py", "x")
+        await webdav_tools.write_file("grec_b/y.py", "y")
+        await webdav_tools.write_file("grec_b/nested/z.py", "z")
+        await webdav_tools.write_file("top.py", "top")
+        result = await webdav_tools.glob("**/*.py")
+        assert result["result"] == "True"
+        files = result["data"]
+        assert len(files) == 4
+
+
+class TestGrepNoInclude:
+    """Test grep with include=None (default, no file filter)."""
+
+    @pytest.mark.asyncio
+    async def test_grep_no_include_finds_all(self, webdav_tools):
+        await webdav_tools.write_file("grep_no_inc.py", "def target():")
+        await webdav_tools.write_file("grep_no_inc.txt", "def target():")
+        await webdav_tools.write_file("grep_no_inc.md", "no match here")
+        result = await webdav_tools.grep("def target")
+        assert result["result"] == "True"
+        matches = result["data"]
+        assert len(matches) == 2
+        files_found = {m["file"] for m in matches}
+        assert "grep_no_inc.py" in files_found
+        assert "grep_no_inc.txt" in files_found
+
+
+class TestSpecialFilenames:
+    """Test files with spaces, unicode, and special characters."""
+
+    @pytest.mark.asyncio
+    async def test_file_with_spaces(self, webdav_tools):
+        await webdav_tools.write_file("file with spaces.txt", "spaced content")
+        result = await webdav_tools.read_file("file with spaces.txt")
+        assert result["result"] == "True"
+        assert result["data"] == "spaced content"
+
+    @pytest.mark.asyncio
+    async def test_file_with_unicode_name(self, webdav_tools):
+        await webdav_tools.write_file("unicode_fïlé.txt", "unicode data")
+        result = await webdav_tools.read_file("unicode_fïlé.txt")
+        assert result["result"] == "True"
+        assert result["data"] == "unicode data"
+
+    @pytest.mark.asyncio
+    async def test_file_with_special_chars(self, webdav_tools):
+        await webdav_tools.write_file("special!@#chars.txt", "special")
+        result = await webdav_tools.read_file("special!@#chars.txt")
+        assert result["result"] == "True"
+        assert result["data"] == "special"
+
+    @pytest.mark.asyncio
+    async def test_directory_with_spaces(self, webdav_tools):
+        await webdav_tools.mkdir("dir with spaces")
+        await webdav_tools.write_file("dir with spaces/file.txt", "in spaced dir")
+        result = await webdav_tools.read_file("dir with spaces/file.txt")
+        assert result["result"] == "True"
+        assert result["data"] == "in spaced dir"
+        listing = await webdav_tools.ls("dir with spaces")
+        assert listing["result"] == "True"
+        assert any("file.txt" in p for p in listing["data"])
+
+    @pytest.mark.asyncio
+    async def test_glob_files_with_spaces(self, webdav_tools):
+        await webdav_tools.write_file("spacestest_has_spaces.py", "x")
+        await webdav_tools.write_file("spacestest_no_spaces.py", "y")
+        result = await webdav_tools.glob("spacestest*.py")
+        assert result["result"] == "True"
+        files = result["data"]
+        assert len(files) == 2
+        assert any("has_spaces.py" in f for f in files)
+        assert any("no_spaces.py" in f for f in files)
+
+
+class TestReadEdgeCases:
+    """Test read_file edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_read_offset_beyond_file_length(self, webdav_tools):
+        await webdav_tools.write_file("short.txt", "line1\nline2")
+        result = await webdav_tools.read_file("short.txt", offset=999)
+        assert result["result"] == "True"
+        assert result["data"] == ""
+
+    @pytest.mark.asyncio
+    async def test_read_offset_at_last_line(self, webdav_tools):
+        await webdav_tools.write_file("short2.txt", "line1\nline2\nline3")
+        result = await webdav_tools.read_file("short2.txt", offset=3)
+        assert result["result"] == "True"
+        assert result["data"] == "line3"
+
+    @pytest.mark.asyncio
+    async def test_read_offset_and_limit_beyond_file(self, webdav_tools):
+        await webdav_tools.write_file("short3.txt", "a\nb\nc")
+        result = await webdav_tools.read_file("short3.txt", offset=2, limit=999)
+        assert result["result"] == "True"
+        assert result["data"] == "b\nc"
+
+    @pytest.mark.asyncio
+    async def test_read_empty_file(self, webdav_tools):
+        await webdav_tools.write_file("truly_empty.txt", "")
+        result = await webdav_tools.read_file("truly_empty.txt")
+        assert result["result"] == "True"
+        assert result["data"] == ""
+
+    @pytest.mark.asyncio
+    async def test_read_offset_zero_rejected(self, webdav_tools):
+        result = await webdav_tools.read_file("anyfile.txt", offset=0)
+        assert result["result"] == "False"
+
+    @pytest.mark.asyncio
+    async def test_read_limit_zero_rejected(self, webdav_tools):
+        result = await webdav_tools.read_file("anyfile.txt", limit=0)
+        assert result["result"] == "False"
+
+    @pytest.mark.asyncio
+    async def test_read_file_not_found(self, webdav_tools):
+        result = await webdav_tools.read_file("nonexistent_file_xyz.txt")
+        assert result["result"] == "False"
+
+
+class TestEditEdgeCases:
+    """Test edit edge cases including replacement that introduces search term."""
+
+    @pytest.mark.asyncio
+    async def test_edit_new_string_contains_old(self, webdav_tools):
+        await webdav_tools.write_file("edit_self.txt", "hello world")
+        result = await webdav_tools.edit("edit_self.txt", "hello", "say hello again")
+        assert result["result"] == "True"
+        content = await webdav_tools.read_file("edit_self.txt")
+        assert content["data"] == "say hello again world"
+
+    @pytest.mark.asyncio
+    async def test_edit_replace_all_new_contains_old(self, webdav_tools):
+        await webdav_tools.write_file("edit_self2.txt", "a a a")
+        result = await webdav_tools.edit("edit_self2.txt", "a", "ba", replace_all=True)
+        assert result["result"] == "True"
+        content = await webdav_tools.read_file("edit_self2.txt")
+        assert content["data"] == "ba ba ba"
+
+    @pytest.mark.asyncio
+    async def test_edit_empty_old_string_rejected(self, webdav_tools):
+        await webdav_tools.write_file("edit_empty.txt", "content")
+        result = await webdav_tools.edit("edit_empty.txt", "", "x")
+        assert result["result"] == "False"
+
+    @pytest.mark.asyncio
+    async def test_edit_old_equals_new_rejected(self, webdav_tools):
+        await webdav_tools.write_file("edit_same.txt", "same")
+        result = await webdav_tools.edit("edit_same.txt", "same", "same")
+        assert result["result"] == "False"
+
+    @pytest.mark.asyncio
+    async def test_edit_file_not_found(self, webdav_tools):
+        result = await webdav_tools.edit("nonexistent_edit.txt", "old", "new")
+        assert result["result"] == "False"
+
+
+class TestEmptySandbox:
+    """Test behavior with empty SANDBOX_DIR (no sandbox confinement)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_sandbox_write_and_read(self, webdav_tools):
+        original = webdav_tools.valves.SANDBOX_DIR
+        webdav_tools.valves.SANDBOX_DIR = ""
+        try:
+            result = await webdav_tools.write_file("nobox_test.txt", "no sandbox")
+            assert result["result"] == "True"
+            read_result = await webdav_tools.read_file("nobox_test.txt")
+            assert read_result["result"] == "True"
+            assert read_result["data"] == "no sandbox"
+        finally:
+            webdav_tools.valves.SANDBOX_DIR = original
+
+    @pytest.mark.asyncio
+    async def test_empty_sandbox_ls_root(self, webdav_tools):
+        original = webdav_tools.valves.SANDBOX_DIR
+        webdav_tools.valves.SANDBOX_DIR = ""
+        try:
+            await webdav_tools.write_file("nobox_file.txt", "data")
+            result = await webdav_tools.ls("")
+            assert result["result"] == "True"
+        finally:
+            webdav_tools.valves.SANDBOX_DIR = original

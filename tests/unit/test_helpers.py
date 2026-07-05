@@ -5,7 +5,13 @@ Tests sandbox security, path traversal prevention, and normalization
 
 import pytest
 
-from owuinc.owuinc import Tools, is_blacklisted, is_whitelisted, validate_path
+from owuinc.owuinc import (
+    Tools,
+    is_blacklisted,
+    is_whitelisted,
+    parse_reminders,
+    validate_path,
+)
 
 
 @pytest.fixture
@@ -336,7 +342,7 @@ class TestFormatSize:
         assert tools._format_size("abc") == "abc"
 
     def test_none_input(self, tools):
-        assert tools._format_size(None) is None  # type: ignore
+        assert tools._format_size(None) == "n/a"  # type: ignore
 
 
 class TestFormatDatetime:
@@ -363,3 +369,101 @@ class TestFormatDatetime:
     def test_invalid_format_returns_original(self, tools):
         result = tools._format_datetime("not-a-date")
         assert result == "not-a-date"
+
+
+class TestParseReminders:
+    """Test parse_reminders helper"""
+
+    def test_none_returns_empty(self):
+        assert parse_reminders(None) == []
+
+    def test_empty_list_returns_empty(self):
+        assert parse_reminders([]) == []
+
+    def test_zero_variants(self):
+        for r in ["0", "0min", "0 min"]:
+            result = parse_reminders([r])
+            assert result == [{"minutes": 0, "action": "DISPLAY"}]
+
+    def test_minutes(self):
+        result = parse_reminders(["15min"])
+        assert result == [{"minutes": 15, "action": "DISPLAY"}]
+
+    def test_minutes_variants(self):
+        for r in ["15min", "15mins", "15minutes"]:
+            result = parse_reminders([r])
+            assert result == [{"minutes": 15, "action": "DISPLAY"}]
+
+    def test_hours(self):
+        result = parse_reminders(["2h"])
+        assert result == [{"minutes": 120, "action": "DISPLAY"}]
+
+    def test_hours_variants(self):
+        for r in ["1h", "1hr", "1hour", "1hours"]:
+            result = parse_reminders([r])
+            assert result == [{"minutes": 60, "action": "DISPLAY"}]
+
+    def test_days(self):
+        result = parse_reminders(["3d"])
+        assert result == [{"minutes": 4320, "action": "DISPLAY"}]
+
+    def test_days_variants(self):
+        for r in ["1d", "1day", "1days"]:
+            result = parse_reminders([r])
+            assert result == [{"minutes": 1440, "action": "DISPLAY"}]
+
+    def test_unrecognized_defaults_to_zero(self):
+        result = parse_reminders(["now"])
+        assert result == [{"minutes": 0, "action": "DISPLAY"}]
+
+    def test_multiple_reminders(self):
+        result = parse_reminders(["0min", "15min", "1h"])
+        assert len(result) == 3
+        assert result[0] == {"minutes": 0, "action": "DISPLAY"}
+        assert result[1] == {"minutes": 15, "action": "DISPLAY"}
+        assert result[2] == {"minutes": 60, "action": "DISPLAY"}
+
+
+class TestValidatePathEmptySandbox:
+    """Test validate_path with empty SANDBOX_DIR (no sandbox confinement)."""
+
+    def test_empty_sandbox_path_returns_path(self):
+        from pydantic import BaseModel
+
+        class MockValves(BaseModel):
+            SANDBOX_DIR: str = ""
+
+        valves = MockValves()
+        result = validate_path("file.txt", valves)
+        assert result == "/file.txt"
+
+    def test_empty_sandbox_nested_path(self):
+        from pydantic import BaseModel
+
+        class MockValves(BaseModel):
+            SANDBOX_DIR: str = ""
+
+        valves = MockValves()
+        result = validate_path("a/b/c.txt", valves)
+        assert result == "/a/b/c.txt"
+
+    def test_empty_sandbox_traversal_still_blocked(self):
+        from pydantic import BaseModel
+
+        class MockValves(BaseModel):
+            SANDBOX_DIR: str = ""
+
+        valves = MockValves()
+        with pytest.raises(Exception, match="traversal not allowed"):
+            validate_path("../etc/passwd", valves)
+
+    def test_empty_sandbox_root_returns_slash(self):
+        from pydantic import BaseModel
+
+        class MockValves(BaseModel):
+            SANDBOX_DIR: str = ""
+
+        valves = MockValves()
+        assert validate_path("", valves) == "/"
+        assert validate_path(".", valves) == "/"
+        assert validate_path("/", valves) == "/"
