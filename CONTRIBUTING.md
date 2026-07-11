@@ -53,12 +53,6 @@ Coverage
 pytest --cov=owuinc
 ```
 
-Build API doc
-```bash
-rm -r docs/build
-sphinx-build -M html docs/source/ docs/build/
-```
-
 clean up
 ```bash
 rm -rf __pycache__ .mypy_cache .pytest_cache .venv htmlcov owuinc/__pycache__ owuinc.egg-info tests/__pycache__ .coverage || true

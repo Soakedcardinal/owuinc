@@ -13,12 +13,6 @@
             "type": "shell",
             "command": ".venv/bin/pytest",
             "problemMatcher": []
-        },
-        {
-            "label": "Build Documentation",
-            "type": "shell",
-            "command": "rm -r docs/build; .venv/bin/sphinx-build -M html docs/source docs/build/html",
-            "problemMatcher": []
         }
     ]
 }
