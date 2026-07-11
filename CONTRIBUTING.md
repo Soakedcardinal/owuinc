@@ -3,7 +3,7 @@
 ## Create new venv 
 Clean up if needed
 ```bash
-rm -r .venv .pytest_cache .mypy_cache __pycache__ || true
+rm -r .venv .pytest_cache .mypy_cache __pycache__ cz
 ```
 
 Create venv
@@ -57,4 +57,9 @@ Build API doc
 ```bash
 rm -r docs/build
 sphinx-build -M html docs/source/ docs/build/
+```
+
+clean up
+```bash
+rm -rf __pycache__ .mypy_cache .pytest_cache .venv htmlcov owuinc/__pycache__ owuinc.egg-info tests/__pycache__ .coverage || true
 ```
