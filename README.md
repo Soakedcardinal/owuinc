@@ -6,10 +6,10 @@ Connect OpenWebUI Models to Nextcloud.
 
 ### File Operations
 *   `mkdir`, `ls`, `glob`, `grep`, `edit`, `mv`, `cp`, `rm`
-*   `write_file`, `read`, `append_file`
+*   `write_file`, `read_file`, `append_file`
 
 ### Task Management
-*   Create, read, edit, & delete tasks
+*   Create, read, edit, delete, & complete tasks
 *   Support sub-tasks
 
 ### Calendar Events
@@ -24,7 +24,7 @@ Connect OpenWebUI Models to Nextcloud.
 
 Pick an existing model, or create one to use. For this example, we will set up a model named `owuinc`.
 
-### 1. Add to `owuinc` Tool to OpenWebUI
+### 1. Add the `owuinc` Tool to OpenWebUI
 
 *   Navigate to Workspace > Tools > + New Tool > New Tool
 
