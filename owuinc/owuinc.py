@@ -362,7 +362,7 @@ class Tools:
         """Raise ValueError if rel_path (relative to sandbox) is blacklisted."""
         rel_path = rel_path.strip("/")
         if rel_path and is_blacklisted(self.valves.FILE_BLACKLIST, rel_path):
-            raise ValueError(f"Path is blacklisted: {rel_path}")
+            raise ValueError("Access denied")
 
     def _is_result_blacklisted(self, rel_path: str) -> bool:
         """Check if a result path (relative to sandbox) should be hidden."""
