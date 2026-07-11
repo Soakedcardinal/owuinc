@@ -883,12 +883,27 @@ class Tools:
         finally:
             await client.close()
 
-    async def _recursive_cp(self, client, src_full: str, dst_full: str) -> None:
-        """Recursively copy a file or directory."""
+    async def _recursive_cp(
+        self, client, src_full: str, dst_full: str, _copied: list | None = None
+    ) -> None:
+        """Recursively copy a file or directory.
+
+        Args:
+            _copied: internal list tracking successfully copied paths.
+                     Populated on failure so the caller can see partial progress.
+        """
         src_path = _webdav_path(src_full)
         dst_path = _webdav_path(dst_full)
+        if _copied is None:
+            _copied = []
         if await client.is_dir(src_path):
-            await client.mkdir(dst_path, recursive=True)
+            try:
+                await client.mkdir(dst_path, recursive=True)
+            except Exception:
+                try:
+                    await client.is_dir(dst_path)
+                except Exception:
+                    raise
             items = await client.list_files(src_path)
             src_stripped = _strip_leading_slash(src_full)
             for item in items:
@@ -900,12 +915,21 @@ class Tools:
                     continue
                 src_item = src_full.rstrip("/") + "/" + name
                 dst_item = dst_full.rstrip("/") + "/" + name
-                await self._recursive_cp(client, src_item, dst_item)
+                await self._recursive_cp(client, src_item, dst_item, _copied)
+            _copied.append(dst_full)
         else:
             await client.copy(
                 remote_path_from=src_path,
                 remote_path_to=dst_path,
             )
+            _copied.append(dst_full)
+
+    @staticmethod
+    def _dst_inside_src(src: str, dst: str) -> bool:
+        """Return True if dst equals src or is a descendant of src."""
+        s = _strip_leading_slash(src).rstrip("/")
+        d = _strip_leading_slash(dst).rstrip("/")
+        return d == s or d.startswith(s + "/")
 
     @webdav_safe
     async def mv(self, src: str, dst: str) -> None:
@@ -916,6 +940,9 @@ class Tools:
 
         dst_full = validate_path(dst, self.valves)
         self._check_blacklisted(self._get_rel_path(dst_full))
+
+        if self._dst_inside_src(src_full, dst_full):
+            raise ValueError("destination is inside or equal to source")
 
         client = self._webdav_client()
         try:
@@ -938,10 +965,20 @@ class Tools:
         dst_full = validate_path(dst, self.valves)
         self._check_blacklisted(self._get_rel_path(dst_full))
 
+        if self._dst_inside_src(src_full, dst_full):
+            raise ValueError("destination is inside or equal to source")
+
         client = self._webdav_client()
+        copied: list[str] = []
         try:
             await self._ensure_sandbox(client)
-            await self._recursive_cp(client, src_full, dst_full)
+            await self._recursive_cp(client, src_full, dst_full, copied)
+        except Exception:
+            if copied:
+                raise ValueError(
+                    f"partial copy: {len(copied)} path(s) copied before failure"
+                )
+            raise
         finally:
             await client.close()
 

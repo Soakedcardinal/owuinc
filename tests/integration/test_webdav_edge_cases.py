@@ -325,3 +325,116 @@ class TestLargeOperations:
         readback = await webdav_tools.read_file(PFX + "unicode.txt")
         assert readback["result"] == "True"
         assert readback["data"] == content
+
+
+class TestCpMvDstInsideSrc:
+    """Verify cp/mv reject dst that equals or sits inside src."""
+
+    @pytest.mark.asyncio
+    async def test_cp_dst_equal_to_src(self, webdav_tools):
+        await webdav_tools.write_file(PFX + "same.txt", "data")
+
+        result = await webdav_tools.cp(PFX + "same.txt", PFX + "same.txt")
+        assert result["result"] == "False"
+        assert "destination is inside or equal to source" in result.get("details", "")
+
+    @pytest.mark.asyncio
+    async def test_cp_dst_inside_src_directory(self, webdav_tools):
+        await webdav_tools.mkdir(PFX + "srcdir/sub")
+        await webdav_tools.write_file(PFX + "srcdir/a.txt", "a")
+
+        result = await webdav_tools.cp(PFX + "srcdir", PFX + "srcdir/backup")
+        assert result["result"] == "False"
+        assert "destination is inside or equal to source" in result.get("details", "")
+
+    @pytest.mark.asyncio
+    async def test_cp_dst_deeply_nested_in_src(self, webdav_tools):
+        await webdav_tools.mkdir(PFX + "top/deep")
+        await webdav_tools.write_file(PFX + "top/file.txt", "x")
+
+        result = await webdav_tools.cp(PFX + "top", PFX + "top/deep/nested/copy")
+        assert result["result"] == "False"
+        assert "destination is inside or equal to source" in result.get("details", "")
+
+    @pytest.mark.asyncio
+    async def test_cp_src_not_modified_when_dst_inside_src(self, webdav_tools):
+        await webdav_tools.mkdir(PFX + "srcdir/sub")
+        await webdav_tools.write_file(PFX + "srcdir/a.txt", "a")
+
+        result = await webdav_tools.cp(PFX + "srcdir", PFX + "srcdir/backup")
+        assert result["result"] == "False"
+
+        listing = await webdav_tools.ls(PFX + "srcdir")
+        assert listing["result"] == "True"
+        assert not any("backup" in p for p in listing["data"])
+
+    @pytest.mark.asyncio
+    async def test_mv_dst_equal_to_src(self, webdav_tools):
+        await webdav_tools.write_file(PFX + "same2.txt", "data")
+
+        result = await webdav_tools.mv(PFX + "same2.txt", PFX + "same2.txt")
+        assert result["result"] == "False"
+        assert "destination is inside or equal to source" in result.get("details", "")
+
+    @pytest.mark.asyncio
+    async def test_mv_dst_inside_src_directory(self, webdav_tools):
+        await webdav_tools.mkdir(PFX + "mvsrcdir/sub")
+        await webdav_tools.write_file(PFX + "mvsrcdir/b.txt", "b")
+
+        result = await webdav_tools.mv(PFX + "mvsrcdir", PFX + "mvsrcdir/backup")
+        assert result["result"] == "False"
+        assert "destination is inside or equal to source" in result.get("details", "")
+
+
+class TestCpIdempotent:
+    """Verify cp is idempotent when destination directory already exists."""
+
+    @pytest.mark.asyncio
+    async def test_cp_directory_into_existing_destination(self, webdav_tools):
+        await webdav_tools.mkdir(PFX + "src_idem")
+        await webdav_tools.write_file(PFX + "src_idem/file.txt", "content")
+        await webdav_tools.mkdir(PFX + "dst_idem")
+
+        result = await webdav_tools.cp(PFX + "src_idem", PFX + "dst_idem")
+        assert result["result"] == "True"
+
+        readback = await webdav_tools.read_file(PFX + "dst_idem/file.txt")
+        assert readback["result"] == "True"
+        assert readback["data"] == "content"
+
+    @pytest.mark.asyncio
+    async def test_cp_retry_after_partial_success(self, webdav_tools):
+        await webdav_tools.mkdir(PFX + "src_retry")
+        await webdav_tools.write_file(PFX + "src_retry/a.txt", "a")
+        await webdav_tools.mkdir(PFX + "dst_retry")
+
+        first = await webdav_tools.cp(PFX + "src_retry", PFX + "dst_retry")
+        assert first["result"] == "True"
+
+        await webdav_tools.write_file(PFX + "src_retry/b.txt", "b")
+
+        second = await webdav_tools.cp(PFX + "src_retry", PFX + "dst_retry")
+        assert second["result"] == "True"
+
+        read_a = await webdav_tools.read_file(PFX + "dst_retry/a.txt")
+        assert read_a["result"] == "True"
+        read_b = await webdav_tools.read_file(PFX + "dst_retry/b.txt")
+        assert read_b["result"] == "True"
+
+    @pytest.mark.asyncio
+    async def test_cp_nested_directory_idempotent(self, webdav_tools):
+        await webdav_tools.mkdir(PFX + "nested_src/sub")
+        await webdav_tools.write_file(PFX + "nested_src/root.txt", "root")
+        await webdav_tools.write_file(PFX + "nested_src/sub/deep.txt", "deep")
+        await webdav_tools.mkdir(PFX + "nested_dst/sub")
+
+        result = await webdav_tools.cp(PFX + "nested_src", PFX + "nested_dst")
+        assert result["result"] == "True"
+
+        read_root = await webdav_tools.read_file(PFX + "nested_dst/root.txt")
+        assert read_root["result"] == "True"
+        assert read_root["data"] == "root"
+
+        read_deep = await webdav_tools.read_file(PFX + "nested_dst/sub/deep.txt")
+        assert read_deep["result"] == "True"
+        assert read_deep["data"] == "deep"
