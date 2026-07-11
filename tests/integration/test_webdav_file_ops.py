@@ -37,7 +37,10 @@ class TestLs:
         assert any("detail_file.txt" in entry for entry in listing["data"])
         matching = [e for e in listing["data"] if "detail_file.txt" in e]
         assert "[FILE]" in matching[0]
-        assert "2026-" in matching[0] or "2025-" in matching[0]
+        from datetime import datetime
+
+        current_year = datetime.now().strftime("%Y")
+        assert current_year in matching[0]
         assert "B" in matching[0]
 
     @pytest.mark.asyncio

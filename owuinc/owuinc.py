@@ -248,38 +248,31 @@ class Tools:
                 "from all file operations"
             ),
         )
-        pass  # required for parsing
 
     def _webdav_client(self):
         base = self.valves.NEXTCLOUD_BASE_URL
         wd_user = self.valves.WEBDAV_USERNAME
         url = f"{base}/remote.php/dav/files/{wd_user}/"
-        try:
-            from aiohttp import ClientTimeout
+        from aiohttp import ClientTimeout
 
-            return WebDAVClient(
-                url,
-                self.valves.NEXTCLOUD_USERNAME,
-                self.valves.NEXTCLOUD_APP_PASSWORD,
-                options=ClientOptions(timeout=ClientTimeout(total=10)),
-            )
-        except Exception:
-            raise
+        return WebDAVClient(
+            url,
+            self.valves.NEXTCLOUD_USERNAME,
+            self.valves.NEXTCLOUD_APP_PASSWORD,
+            options=ClientOptions(timeout=ClientTimeout(total=10)),
+        )
 
     async def get_caldav_client(self):
         base = self.valves.NEXTCLOUD_BASE_URL
         url = f"{base}/remote.php/dav"
-        try:
-            return await get_async_davclient(
-                username=self.valves.NEXTCLOUD_USERNAME,
-                password=self.valves.NEXTCLOUD_APP_PASSWORD,
-                url=url,
-                features="nextcloud",
-                enable_rfc6764=False,
-                timeout=10,
-            )
-        except Exception:
-            raise
+        return await get_async_davclient(
+            username=self.valves.NEXTCLOUD_USERNAME,
+            password=self.valves.NEXTCLOUD_APP_PASSWORD,
+            url=url,
+            features="nextcloud",
+            enable_rfc6764=False,
+            timeout=10,
+        )
 
     async def _get_calendar(self, principal, calendar_name: str):
         """Get a calendar by name, working around caldav.aio's broken calendar().
@@ -341,10 +334,10 @@ class Tools:
                 if summary.strip() in e.component["summary"]:
                     matches.append(e.component["uid"])
             if len(matches) > 1:
-                raise NotFoundError("Error: multiple matches")
+                raise NotFoundError("multiple matches")
             if len(matches) == 1:
                 return await cal.event_by_uid(matches[0])
-        raise NotFoundError("Error: event not found")
+        raise NotFoundError("event not found")
 
     async def _ensure_sandbox(self, client):
         """Ensure sandbox directory exists.
@@ -1255,7 +1248,7 @@ class Tools:
             raise Exception(f"{calendar_name!r} not in whitelist")
 
         if not (summary or uid):
-            raise Exception("Error: must provide a summary or uid")
+            raise Exception("must provide a summary or uid")
 
         tz = __user__["timezone"]
         zi = ZoneInfo(tz)

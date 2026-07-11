@@ -17,14 +17,11 @@ from owuinc.owuinc import is_whitelisted
 logger = logging.getLogger(__name__)
 
 
-async def _get_calendar(principal, calendar_name: str):
-    """Get a calendar by name, working around caldav.aio's broken calendar()."""
-    calendars = await principal.get_calendars()
-    for cal in calendars:
-        display_name = await cal.get_display_name()
-        if display_name == calendar_name:
-            return cal
-    raise Exception(f"No calendar with name {calendar_name!r} found")
+async def _get_calendar(caldav_tools, calendar_name: str):
+    """Get a calendar by name, using the Tools._get_calendar helper."""
+    client = await caldav_tools.get_caldav_client()
+    principal = await client.principal()
+    return await caldav_tools._get_calendar(principal, calendar_name)
 
 
 async def _make_calendar(principal, name: str, cal_id: str):
@@ -541,9 +538,7 @@ class TestEventOperations:
         assert edit_result["result"] == "True"
         # Verify via raw cal.events() — get_calendar_events can't be used
         # because Radicale ignores time-range filters in search()
-        client = await caldav_tools.get_caldav_client()
-        principal = await client.principal()
-        cal = await _get_calendar(principal, "Personal")
+        cal = await _get_calendar(caldav_tools, "Personal")
         events = await cal.events()
         for e in events:
             if e.component["summary"] == "Edited event":
@@ -572,8 +567,6 @@ class TestEventOperations:
         assert del_result["result"] == "True"
         # Verify via raw cal.events() — get_calendar_events can't be used
         # because Radicale ignores time-range filters in search()
-        client = await caldav_tools.get_caldav_client()
-        principal = await client.principal()
-        cal = await _get_calendar(principal, "Personal")
+        cal = await _get_calendar(caldav_tools, "Personal")
         event_summaries = [e.component["summary"] for e in await cal.events()]
         assert summary not in event_summaries
