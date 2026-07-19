@@ -29,14 +29,46 @@ from pydantic import BaseModel, Field
 _tokenizer = tiktoken.get_encoding("cl100k_base")
 
 
+# ============================================================
+# TOKEN & INJECTION HELPERS
+# ============================================================
+
+
 def _token_count(text: str) -> int:
     """Count tokens using tiktoken's cl100k_base encoder."""
     return len(_tokenizer.encode(text))
 
 
-def validate_path(path, valves):
+def _try_inject(
+    contexts: list[str],
+    injected_info: list[dict],
+    filename: str,
+    content: Optional[str],
+):
+    """Wrap downloaded content in XML tags and append to contexts.
+
+    Returns a dict with name/tokens if injected, None otherwise.
     """
-    Validate and normalize file paths for WebDAV operations.
+    if content:
+        contexts.append(f"<{filename}>\n{content}\n</{filename}>")
+        info = {"name": filename, "tokens": _token_count(content)}
+        injected_info.append(info)
+        return info
+    return None
+
+
+# ============================================================
+# PATH VALIDATION (mirrors owuinc.py — required for single-file artifact)
+# ============================================================
+
+
+def _webdav_path(p: str) -> str:
+    """Ensure path has leading / for aiowebdav2."""
+    return p if p.startswith("/") else "/" + p
+
+
+def validate_path(path, valves):
+    """Validate and normalize file paths for WebDAV operations.
 
     SECURITY MODEL:
     - All operations are confined to SANDBOX_DIR (e.g., "owuinc/")
@@ -72,6 +104,7 @@ def validate_path(path, valves):
 
     path = path.strip()
 
+    # Iteratively decode URL encoding to catch multi-layer attacks.
     prev = None
     while prev != path:
         prev = path
@@ -93,35 +126,14 @@ def validate_path(path, valves):
     raise Exception("Invalid Path: outside sandbox.")
 
 
-def _try_inject(
-    contexts: list[str],
-    injected_info: list[dict],
-    filename: str,
-    content: Optional[str],
-):
-    """Wrap downloaded content in XML tags and append to contexts.
-
-    Returns a dict with name/tokens if injected, None otherwise.
-    """
-    if content:
-        contexts.append(f"<{filename}>\n{content}\n</{filename}>")
-        info = {
-            "name": filename,
-            "tokens": _token_count(content),
-        }
-        injected_info.append(info)
-        return info
-    return None
-
-
-def _webdav_path(p: str) -> str:
-    """Ensure path has leading / for aiowebdav2."""
-    return p if p.startswith("/") else "/" + p
+# ============================================================
+# MAIN FILTER CLASS
+# ============================================================
 
 
 class Filter:
-    """
-    OWUI Filter that auto-injects system files as context before every LLM request.
+    """OWUI Filter that auto-injects system files as context before every LLM request.
+
     Prepends all as system messages in the chat body.
     """
 
@@ -145,17 +157,15 @@ class Filter:
     def __init__(self):
         self.valves = self.Valves()
 
+    # -- Internal helpers --
+
     async def _download_file(self, client: WebDAVClient, path: str) -> Optional[str]:
         """Download a single file from WebDAV."""
         try:
             buf = BytesIO()
             await client.resource(_webdav_path(path)).read_from(buf)
             return buf.getvalue().decode("utf-8")
-        except RemoteResourceNotFoundError:
-            return None
-        except WebDavError:
-            return None
-        except Exception:
+        except (RemoteResourceNotFoundError, WebDavError, Exception):
             return None
 
     def _get_today_filename(self) -> str:
@@ -166,6 +176,19 @@ class Filter:
         """Return yesterday's date as YYYY-MM-DD.md"""
         yesterday = date.today() - timedelta(days=1)
         return yesterday.strftime("%Y-%m-%d") + ".md"
+
+    async def _emit_status(self, emitter, description: str, done: bool):
+        """Emit a UI status event."""
+        if emitter:
+            await emitter(
+                {
+                    "type": "status",
+                    "data": {
+                        "description": description,
+                        "done": done,
+                    },
+                }
+            )
 
     async def _build_context(self, __event_emitter__=None) -> list[str]:
         """Download all system files and return list of context strings."""
@@ -188,62 +211,45 @@ class Filter:
             contexts: List[str] = []
             injected_info: list[dict] = []
 
+            # Inject configured files.
             for filename in files_to_inject:
                 try:
                     validated = validate_path(filename, self.valves)
                 except Exception:
                     continue
-                path = validated.rstrip("/")
-                content = await self._download_file(client, path)
+                content = await self._download_file(client, validated.rstrip("/"))
                 info = _try_inject(contexts, injected_info, filename, content)
-                if info and __event_emitter__:
-                    desc = f"{info['name']} ({info['tokens']} tokens)"
-                    await __event_emitter__(
-                        {
-                            "type": "status",
-                            "data": {
-                                "description": desc,
-                                "done": False,
-                            },
-                        }
+                if info:
+                    await self._emit_status(
+                        __event_emitter__,
+                        f"{info['name']} ({info['tokens']} tokens)",
+                        done=False,
                     )
 
+            # Inject memory logs (yesterday + today).
             memory_base = validate_path("memory", self.valves).rstrip("/")
-
-            today_file = self._get_today_filename()
-            yesterday_file = self._get_yesterday_filename()
-
-            for log_file in [yesterday_file, today_file]:
-                path = f"{memory_base}/{log_file}"
-                content = await self._download_file(client, path)
+            for log_file in [
+                self._get_yesterday_filename(),
+                self._get_today_filename(),
+            ]:
+                content = await self._download_file(client, f"{memory_base}/{log_file}")
                 info = _try_inject(
                     contexts, injected_info, f"memory/{log_file}", content
                 )
-                if info and __event_emitter__:
-                    desc = f"{info['name']} ({info['tokens']} tokens)"
-                    await __event_emitter__(
-                        {
-                            "type": "status",
-                            "data": {
-                                "description": desc,
-                                "done": False,
-                            },
-                        }
+                if info:
+                    await self._emit_status(
+                        __event_emitter__,
+                        f"{info['name']} ({info['tokens']} tokens)",
+                        done=False,
                     )
 
             # Emit final summary.
-            if injected_info and __event_emitter__:
-                total_tokens = sum(f["tokens"] for f in injected_info)
-                n_files = len(injected_info)
-                desc = f"Context injected: {total_tokens} tokens ({n_files} files)"
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": desc,
-                            "done": True,
-                        },
-                    }
+            if injected_info:
+                total = sum(f["tokens"] for f in injected_info)
+                await self._emit_status(
+                    __event_emitter__,
+                    f"Context injected: {total} tokens ({len(injected_info)} files)",
+                    done=True,
                 )
 
             return contexts
@@ -251,8 +257,7 @@ class Filter:
             await client.close()
 
     async def inlet(self, body: dict, __event_emitter__=None) -> dict:
-        """
-        Inlet filter that injects system files as context before LLM request.
+        """Inlet filter that injects system files as context before LLM request.
 
         Only runs on FIRST TURN of a new chat (when there's 1 user message total).
         Subsequent turns in an ongoing conversation skip injection to avoid redundancy.
@@ -265,52 +270,33 @@ class Filter:
             Modified body with system context prepended (first turn only)
         """
         try:
-            # Check if this is the first turn of a new chat
             messages = body.get("messages", [])
-
-            # Count user messages (assistant responses indicate ongoing conversation)
             user_messages = [m for m in messages if m.get("role") == "user"]
-            has_assistant_response = any(m.get("role") == "assistant" for m in messages)
+            has_assistant = any(m.get("role") == "assistant" for m in messages)
 
-            if has_assistant_response or len(user_messages) != 1:
+            # Skip if not first turn.
+            if has_assistant or len(user_messages) != 1:
                 return body
 
-            # This is the first turn - download and inject context
             contexts = await self._build_context(__event_emitter__)
-
             if not contexts:
                 return body
 
-            # Combine all contexts into single message
-            full_context = "\n\n".join(contexts)
-
-            # Create system message at position 0 (before user messages)
-            context_message = {"role": "system", "content": full_context}
-
-            body.setdefault("messages", []).insert(0, context_message)
-
+            body.setdefault("messages", []).insert(
+                0, {"role": "system", "content": "\n\n".join(contexts)}
+            )
             return body
 
         except (ConnectionExceptionError, NoConnectionError):
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": "Context injection failed: connection error",
-                            "done": True,
-                        },
-                    }
-                )
+            await self._emit_status(
+                __event_emitter__,
+                "Context injection failed: connection error",
+                done=True,
+            )
         except Exception:
-            if __event_emitter__:
-                await __event_emitter__(
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": "Context injection failed: error",
-                            "done": True,
-                        },
-                    }
-                )
+            await self._emit_status(
+                __event_emitter__,
+                "Context injection failed: error",
+                done=True,
+            )
         return body
