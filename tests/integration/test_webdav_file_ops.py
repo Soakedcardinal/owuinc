@@ -36,7 +36,7 @@ class TestLs:
         assert listing["result"] == "True"
         assert any("detail_file.txt" in entry for entry in listing["data"])
         matching = [e for e in listing["data"] if "detail_file.txt" in e]
-        assert "[FILE]" in matching[0]
+        assert matching[0].startswith("-rw-r--r--")
         from datetime import datetime
 
         current_year = datetime.now().strftime("%Y")
@@ -51,7 +51,8 @@ class TestLs:
         assert listing["result"] == "True"
         matching = [e for e in listing["data"] if "detail_dir" in e]
         assert matching
-        assert "[DIR]" in matching[0]
+        assert matching[0].startswith("drwxr-xr-x")
+        assert "detail_dir/" in matching[0]
 
     @pytest.mark.asyncio
     async def test_ls_detail_vs_normal(self, webdav_tools):
@@ -64,7 +65,7 @@ class TestLs:
         assert detailed["result"] == "True"
         assert any("compare.txt" in p for p in normal["data"])
         assert any("compare.txt" in p for p in detailed["data"])
-        assert any("[FILE]" in p for p in detailed["data"])
+        assert any("-rw-r--r--" in p for p in detailed["data"])
 
     @pytest.mark.asyncio
     async def test_ls_detail_hides_blacklisted(self, webdav_tools):

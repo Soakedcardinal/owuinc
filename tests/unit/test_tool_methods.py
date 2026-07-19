@@ -41,31 +41,31 @@ def tool(valves):
 class TestValidatePathAdditional:
     """Edge cases for validate_path that agents realistically trigger."""
 
-    def test_null_byte_passes_through(self, valves):
-        """Null bytes pass through validate_path (not blocked).
-        Actual WebDAV server will reject the request."""
-        result = validate_path("foo\x00bar", valves)
-        assert "foo\x00bar" in result
+    def test_null_byte_rejected(self, valves):
+        """Null bytes are rejected by validate_path."""
+        with pytest.raises(Exception, match="control characters"):
+            validate_path("foo\x00bar", valves)
 
-    def test_null_byte_only(self, valves):
-        """Null byte alone passes through."""
-        result = validate_path("\x00", valves)
-        assert result == "owuinc/\x00"
+    def test_null_byte_only_rejected(self, valves):
+        """Null byte alone is rejected."""
+        with pytest.raises(Exception, match="control characters"):
+            validate_path("\x00", valves)
 
     def test_repeated_slashes(self, valves):
         """Many slashes normalize to root prefix (os.path.normpath('') == '.')."""
         result = validate_path("/////", valves)
         assert result in ("owuinc/", "owuinc/.")
 
-    def test_path_with_control_chars_passes(self, valves):
-        """Control characters pass through validation."""
-        result = validate_path("foo\x01bar", valves)
-        assert "foo\x01bar" in result
+    def test_path_with_control_chars_rejected(self, valves):
+        """Control characters are rejected by validation."""
+        with pytest.raises(Exception, match="control characters"):
+            validate_path("foo\x01bar", valves)
 
-    def test_tab_in_path_strips(self, valves):
-        """Tab characters are stripped by path.strip()."""
-        result = validate_path("\tfoo\t", valves)
-        assert result == "owuinc/foo"
+    def test_tab_in_path_rejected(self, valves):
+        """Embedded tab characters are rejected (leading/trailing stripped
+        by .strip(), but embedded are caught as control characters)."""
+        with pytest.raises(Exception, match="control characters"):
+            validate_path("foo\tbar", valves)
 
     def test_unicode_path(self, valves):
         """Unicode filenames should pass through."""

@@ -15,7 +15,9 @@ from io import BytesIO
 from typing import List, Optional
 
 import tiktoken
+from aiohttp import ClientTimeout
 from aiowebdav2 import Client as WebDAVClient
+from aiowebdav2.client import ClientOptions
 from aiowebdav2.exceptions import (
     ConnectionExceptionError,
     NoConnectionError,
@@ -129,10 +131,10 @@ class Filter:
         NEXTCLOUD_USERNAME: str = Field("")
         NEXTCLOUD_APP_PASSWORD: str = Field("", json_schema_extra={"secret": True})
         SANDBOX_DIR: str = Field(
-            default="",
+            default="owuinc",
             description=(
                 "Directory containing system files on Nextcloud. "
-                "Leave empty to use root. Leading / will be stripped."
+                "Leading / will be stripped. Must match owuinc tool's SANDBOX_DIR."
             ),
         )
         FILES_TO_INJECT: str = Field(
@@ -175,6 +177,7 @@ class Filter:
             nc_url,
             self.valves.NEXTCLOUD_USERNAME,
             self.valves.NEXTCLOUD_APP_PASSWORD,
+            options=ClientOptions(timeout=ClientTimeout(total=10)),
         )
 
         try:
@@ -289,7 +292,25 @@ class Filter:
             return body
 
         except (ConnectionExceptionError, NoConnectionError):
-            pass
+            if __event_emitter__:
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {
+                            "description": "Context injection failed: connection error",
+                            "done": True,
+                        },
+                    }
+                )
         except Exception:
-            pass
+            if __event_emitter__:
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {
+                            "description": "Context injection failed: error",
+                            "done": True,
+                        },
+                    }
+                )
         return body

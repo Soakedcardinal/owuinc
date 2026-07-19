@@ -24,12 +24,8 @@ from aiowebdav2 import Client as WebDAVClient
 from aiowebdav2.client import ClientOptions
 from aiowebdav2.exceptions import (
     ConnectionExceptionError,
-    LocalResourceNotFoundError,
     NoConnectionError,
-    RemoteParentNotFoundError,
     RemoteResourceNotFoundError,
-    ResourceLockedError,
-    WebDavError,
 )
 from caldav.aio import get_async_davclient
 from caldav.lib.error import NotFoundError
@@ -37,11 +33,73 @@ from dateutil.rrule import rrulestr
 from icalendar import Alarm, Event
 from pydantic import BaseModel, Field
 
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_URL_RE = re.compile(r"https?://\S+")
 
-def caldav_safe(func: Callable) -> Callable:
+
+def _sanitize(msg: str) -> str:
+    """Strip URLs and UUIDs from error messages to prevent info leaks."""
+    msg = _URL_RE.sub("<url>", msg)
+    msg = _UUID_RE.sub("<uuid>", msg)
+    return msg
+
+
+def _emit_error_status(emitter, op: str, msg: str):
+    """Emit a status event for tool errors (if emitter available)."""
+    if not emitter:
+        return
+    import asyncio
+
+    async def _send():
+        await emitter(
+            {
+                "type": "status",
+                "data": {
+                    "description": f"{op}: {msg}",
+                    "done": True,
+                },
+            }
+        )
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    asyncio.create_task(_send())
+
+
+_CONNECTION_EXC = (
+    ConnectionExceptionError,
+    NoConnectionError,
+    ConnectionError,
+    TimeoutError,
+)
+
+
+def _safe(func: Callable) -> Callable:
+    """Unified decorator: catches ALL exceptions, returns dict, never raises.
+
+    - Connection/timeout errors return generic "connection error" (type in debug).
+    - All other exceptions surface sanitized str(e) for actionable diagnostics.
+    - DEBUG_MODE valve: emits status events with error details.
+    """
+
     @functools.wraps(func)
     async def wrapper(*args, **kwargs) -> dict:
         op = func.__name__
+
+        # Locate valves (first arg is usually `self`) and event emitter.
+        valves = None
+        if args:
+            first = args[0]
+            if hasattr(first, "valves"):
+                valves = first.valves
+        emitter = kwargs.get("__event_emitter__")
+
+        debug = False
+        if valves and hasattr(valves, "DEBUG_MODE"):
+            debug = bool(valves.DEBUG_MODE)
+
         try:
             result = func(*args, **kwargs)
             if inspect.isawaitable(result):
@@ -50,46 +108,66 @@ def caldav_safe(func: Callable) -> Callable:
             if result is not None:
                 response["data"] = result
             return response
-        except ConnectionError:
-            raise
-        except TimeoutError:
-            raise
-        except NotFoundError:
-            return {"result": "False", "details": f"{op}: not found"}
         except Exception as e:
-            return {"result": "False", "details": f"{op}: error ({type(e).__name__})"}
+            if isinstance(e, _CONNECTION_EXC):
+                details = "connection error"
+                if debug:
+                    details = f"connection error ({type(e).__name__})"
+            else:
+                details = _sanitize(str(e))
+                if not details:
+                    details = _sanitize(type(e).__name__)
+
+            resp = {"result": "False", "details": details}
+
+            if debug:
+                _emit_error_status(emitter, op, details)
+
+            return resp
 
     return wrapper
+
+
+def caldav_safe(func: Callable) -> Callable:
+    return _safe(func)
 
 
 def webdav_safe(func: Callable) -> Callable:
-    @functools.wraps(func)
-    async def wrapper(*args, **kwargs) -> dict:
-        op = func.__name__
-        try:
-            result = func(*args, **kwargs)
-            if inspect.isawaitable(result):
-                result = await result
-            response = {"result": "True"}
-            if result is not None:
-                response["data"] = result
-            return response
-        except (RemoteResourceNotFoundError, RemoteParentNotFoundError):
-            return {"result": "False", "details": f"{op}: not found"}
-        except LocalResourceNotFoundError:
-            return {"result": "False", "details": f"{op}: local file not found"}
-        except ResourceLockedError:
-            return {"result": "False", "details": f"{op}: resource locked"}
-        except (ConnectionExceptionError, NoConnectionError):
-            raise
-        except WebDavError:
-            return {"result": "False", "details": f"{op}: WebDAV error"}
-        except ValueError as e:
-            return {"result": "False", "details": f"{op}: {str(e)}"}
-        except Exception as e:
-            return {"result": "False", "details": f"{op}: error ({type(e).__name__})"}
+    return _safe(func)
 
-    return wrapper
+
+def _check_redos_risk(pattern: str) -> None:
+    """Raise ValueError if pattern contains nested quantifiers that can cause ReDoS."""
+
+    # Private re API — intentionally used for ReDoS detection
+    from re import _parser as re_parser  # type: ignore[attr-defined]
+    from re._constants import _NamedIntConstant  # type: ignore[attr-defined]
+
+    def _token_name(t):
+        return t.name if isinstance(t, _NamedIntConstant) else str(t)
+
+    parsed = list(re_parser.parse(pattern, re.VERBOSE))
+    _Q = {"MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT"}
+
+    def _has_nested(tokens, inside_q=False):
+        for tt, tv in tokens:
+            tn = _token_name(tt)
+            if tn in _Q:
+                if inside_q:
+                    return True
+                if _has_nested(tv[2], inside_q=True):
+                    return True
+            elif tn == "SUBPATTERN":
+                if _has_nested(tv[3], inside_q):
+                    return True
+            elif tn == "BRANCH":
+                for branch in tv[1]:
+                    if _has_nested(branch, inside_q):
+                        return True
+        return False
+
+    if _has_nested(parsed):
+        raise ValueError("nested quantifiers are not allowed")
 
 
 def _webdav_path(p: str) -> str:
@@ -148,6 +226,9 @@ def validate_path(path, valves):
     if ".." in path:
         raise Exception("Invalid Path: traversal not allowed")
 
+    if any(ord(c) < 32 for c in path):
+        raise Exception("Invalid Path: control characters not allowed")
+
     if path in ("", ".", "/"):
         return prefix
 
@@ -167,12 +248,15 @@ def parse_reminders(reminders: list | None = None) -> list:
     parsed = []
     for r in reminders:
         minutes = 0
+        matched = False
         if r in ["0", "0min", "0 min"]:
             minutes = 0
+            matched = True
         elif r.endswith("min") or r.endswith("mins") or r.endswith("minutes"):
             match = re.search(r"\d+", r)
             if match is not None:
                 minutes = int(match.group())
+                matched = True
         elif (
             r.endswith("h")
             or r.endswith("hr")
@@ -183,11 +267,15 @@ def parse_reminders(reminders: list | None = None) -> list:
             if match is not None:
                 hours = int(match.group())
                 minutes = hours * 60
+                matched = True
         elif r.endswith("d") or r.endswith("day") or r.endswith("days"):
             match = re.search(r"\d+", r)
             if match is not None:
                 days = int(match.group())
                 minutes = days * 1440
+                matched = True
+        if not matched:
+            raise ValueError(f"unrecognized reminder format: {r!r}")
         parsed.append({"minutes": minutes, "action": "DISPLAY"})
     return parsed
 
@@ -201,10 +289,15 @@ def is_whitelisted(whitelist: str, item: str) -> bool:
 
 
 def is_blacklisted(blacklist: str, path: str) -> bool:
-    """Check if path is under any blacklisted directory prefix."""
+    """Check if path is under any blacklisted directory prefix.
+
+    Blacklist entries are normalized (leading/trailing slashes stripped)
+    so "secret", "secret/", and "/secret" are all equivalent.
+    """
     if not blacklist:
         return False
-    cleaned = {s.strip() for s in blacklist.split(",") if s.strip()}
+    cleaned = {s.strip().strip("/") for s in blacklist.split(",") if s.strip()}
+    cleaned.discard("")
     for prefix in cleaned:
         if path == prefix or path.startswith(prefix + "/"):
             return True
@@ -246,6 +339,13 @@ class Tools:
             description=(
                 "Comma-separated paths (relative to sandbox root) to exclude "
                 "from all file operations"
+            ),
+        )
+        DEBUG_MODE: bool = Field(
+            default=False,
+            description=(
+                "When enabled, emits detailed error status events and "
+                "includes exception types in error details for debugging"
             ),
         )
 
@@ -291,17 +391,21 @@ class Tools:
     async def _resolve_task_uid(self, cal, identifier: str) -> str:
         """Resolve a task identifier to its UID.
 
-        If identifier is a UUID, return it directly.
+        If identifier is a UUID, verify it exists before returning.
         Otherwise, look up the task by summary and return its UID.
         """
+        todos = await cal.todos()
+        todo_map = {str(t.component["uid"]): t for t in todos}
         try:
             uuid.UUID(identifier)
-            return identifier
         except (ValueError, AttributeError):
             pass
-        todos = await cal.todos()
+        else:
+            if identifier not in todo_map:
+                raise Exception(f"task with uid {identifier!r} not found")
+            return identifier
         for todo in todos:
-            if identifier.strip() in todo.component["summary"]:
+            if identifier.strip() == str(todo.component["summary"]).strip():
                 return todo.component["uid"]
         raise Exception(f"Parent task with summary {identifier!r} not found")
 
@@ -313,8 +417,9 @@ class Tools:
             return await cal.todo_by_uid(uid)
         if summary is not None:
             matches = []
+            norm_summary = summary.strip().lower()
             for todo in await cal.todos():
-                if summary.strip() in todo.component["summary"]:
+                if norm_summary == str(todo.component["summary"]).strip().lower():
                     matches.append(todo.component["uid"])
             if len(matches) > 1:
                 raise Exception(f"Multiple matches for {summary!r}: {matches}")
@@ -330,8 +435,9 @@ class Tools:
             return await cal.event_by_uid(uid)
         if summary is not None:
             matches = []
+            norm_summary = summary.strip().lower()
             for e in await cal.events():
-                if summary.strip() in e.component["summary"]:
+                if norm_summary == str(e.component["summary"]).strip().lower():
                     matches.append(e.component["uid"])
             if len(matches) > 1:
                 raise NotFoundError("multiple matches")
@@ -356,6 +462,32 @@ class Tools:
         rel_path = rel_path.strip("/")
         if rel_path and is_blacklisted(self.valves.FILE_BLACKLIST, rel_path):
             raise ValueError("Access denied")
+
+    async def _check_blacklisted_recursive(self, client, full_path: str) -> None:
+        """Raise ValueError if full_path or any descendant is blacklisted."""
+        rel_path = self._get_rel_path(full_path).strip("/")
+        self._check_blacklisted(rel_path)
+        if not self.valves.FILE_BLACKLIST:
+            return
+        try:
+            is_dir = await client.is_dir(_webdav_path(full_path))
+        except Exception:
+            return
+        if not is_dir:
+            return
+        items = await client.list_files(_webdav_path(full_path))
+        for item in items:
+            item_stripped = _strip_leading_slash(item).rstrip("/")
+            if item_stripped == _strip_leading_slash(full_path):
+                continue
+            item_rel = self._get_rel_path(item_stripped).strip("/")
+            self._check_blacklisted(item_rel)
+            try:
+                if not await client.is_dir(_webdav_path(item_stripped)):
+                    return
+            except Exception:
+                return
+            await self._check_blacklisted_recursive(client, item_stripped)
 
     def _is_result_blacklisted(self, rel_path: str) -> bool:
         """Check if a result path (relative to sandbox) should be hidden."""
@@ -485,13 +617,25 @@ class Tools:
                     if self._is_result_blacklisted(rel_item):
                         continue
                     is_dir = str(item.get("isdir", "False")).lower() == "true"
-                    type_str = "DIR" if is_dir else "FILE"
+                    name = item.get("name") or os.path.basename(full_item_path)
+                    content_type = item.get("content_type") or "-"
                     size_str = self._format_size(item.get("size", "0"))
                     modified = self._format_datetime(item.get("modified", ""))
-                    name = item.get("name", os.path.basename(full_item_path))
+                    created = self._format_datetime(item.get("created", ""))
+                    if is_dir:
+                        perms = "drwxr-xr-x"
+                        size_str = "       -"
+                        content_type = "-"
+                        display = f"{name}/"
+                    else:
+                        perms = "-rw-r--r--"
+                        display = name
                     result_list.append(
-                        f"[{type_str}] {size_str:>10}  {modified}  {name}"
+                        f"{perms} {size_str:>10} {content_type:<18} {modified}  "
+                        f"{display}"
                     )
+                    if created != "n/a":
+                        result_list[-1] += f" (created: {created})"
                 return result_list
 
             raw_paths = await client.list_files(_webdav_path(full_path))
@@ -691,6 +835,7 @@ class Tools:
                 compiled_regex = re.compile(pattern)
             except re.error as e:
                 raise ValueError(f"Invalid regex pattern: {e}")
+            _check_redos_risk(pattern)
 
             results = []
             for full_path in file_list:
@@ -871,15 +1016,21 @@ class Tools:
     async def rm(self, paths: list[str]) -> None:
         """Delete files or directories. Accepts multiple paths."""
 
-        for p in paths:
-            full_path = validate_path(p, self.valves)
-            self._check_blacklisted(self._get_rel_path(full_path))
-
         client = self._webdav_client()
+        deleted: list[str] = []
         try:
             await self._ensure_sandbox(client)
             for p in paths:
-                await client.clean(_webdav_path(validate_path(p, self.valves)))
+                full_path = validate_path(p, self.valves)
+                await self._check_blacklisted_recursive(client, full_path)
+                await client.clean(_webdav_path(full_path))
+                deleted.append(p)
+        except Exception:
+            if deleted:
+                raise ValueError(
+                    f"partial delete: {len(deleted)} path(s) deleted: {deleted}"
+                )
+            raise
         finally:
             await client.close()
 
@@ -936,10 +1087,8 @@ class Tools:
         """Move or rename a file or directory."""
 
         src_full = validate_path(src, self.valves)
-        self._check_blacklisted(self._get_rel_path(src_full))
 
         dst_full = validate_path(dst, self.valves)
-        self._check_blacklisted(self._get_rel_path(dst_full))
 
         if self._dst_inside_src(src_full, dst_full):
             raise ValueError("destination is inside or equal to source")
@@ -947,6 +1096,8 @@ class Tools:
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
+            await self._check_blacklisted_recursive(client, src_full)
+            self._check_blacklisted(self._get_rel_path(dst_full))
             await client.move(
                 remote_path_from=_webdav_path(src_full),
                 remote_path_to=_webdav_path(dst_full),
@@ -960,10 +1111,8 @@ class Tools:
         """Copy a file or directory recursively."""
 
         src_full = validate_path(src, self.valves)
-        self._check_blacklisted(self._get_rel_path(src_full))
 
         dst_full = validate_path(dst, self.valves)
-        self._check_blacklisted(self._get_rel_path(dst_full))
 
         if self._dst_inside_src(src_full, dst_full):
             raise ValueError("destination is inside or equal to source")
@@ -972,6 +1121,8 @@ class Tools:
         copied: list[str] = []
         try:
             await self._ensure_sandbox(client)
+            await self._check_blacklisted_recursive(client, src_full)
+            self._check_blacklisted(self._get_rel_path(dst_full))
             await self._recursive_cp(client, src_full, dst_full, copied)
         except Exception:
             if copied:
@@ -1039,14 +1190,20 @@ class Tools:
                         subtasks_map[parent_id] = []
                     subtasks_map[parent_id].append(uid)
 
-            def build_subtree(task_id):
+            def build_subtree(task_id, _visited: set | None = None):
+                if _visited is None:
+                    _visited = set()
+                if task_id in _visited:
+                    return {"cyclic": True}
+                _visited = _visited | {task_id}
                 task_data = task_map.get(task_id)
                 if not task_data:
                     return []
                 node = {k: v for k, v in task_data.items() if k != "related-to"}
                 if task_id in subtasks_map:
                     node["subtasks"] = [
-                        build_subtree(child_id) for child_id in subtasks_map[task_id]
+                        build_subtree(child_id, _visited)
+                        for child_id in subtasks_map[task_id]
                     ]
 
                 return node
@@ -1089,20 +1246,41 @@ class Tools:
             principal = await client.principal()
             cal = await self._get_calendar(principal, list_name)
             todo = await self._find_task_by_uid_or_summary(cal, uid, summary)
-            if new_summary:
+            if new_summary is not None:
                 todo.component["summary"] = new_summary.strip()
-            if new_location:
+            if new_location is not None:
                 todo.component["location"] = new_location
-            if new_description:
+            if new_description is not None:
                 todo.component["description"] = new_description
-            if new_categories:
+            if new_categories is not None:
                 todo.component["categories"] = new_categories
-            if new_priority:
+            if new_priority is not None:
                 todo.component["priority"] = max(0, min(9, new_priority))
-            if new_url:
+            if new_url is not None:
                 todo.component["url"] = new_url
             if new_related_to:
+                my_uid = str(todo.component["uid"])
                 parent_uid = await self._resolve_task_uid(cal, new_related_to)
+                if parent_uid == my_uid:
+                    raise ValueError("task cannot be its own parent")
+                # Build ancestor chain to detect cycles.
+                todos = await cal.todos()
+                parent_map: dict[str, str] = {}
+                for t in todos:
+                    tid = str(t.component["uid"])
+                    rel = t.component.get("related-to")
+                    if rel is not None:
+                        parent_map[tid] = str(rel)
+                # Check if parent is a descendant of my_uid (would create cycle).
+                visited = {my_uid}
+                cur = parent_uid
+                while cur in parent_map and cur not in visited:
+                    visited.add(cur)
+                    cur = parent_map[cur]
+                if cur in visited:
+                    raise ValueError(
+                        "setting this parent would create a circular reference"
+                    )
                 todo.component["related-to"] = parent_uid
             await todo.save()
         finally:
@@ -1246,6 +1424,7 @@ class Tools:
         summary: str | None = None,
         uid: str | None = None,
         list_name: str | None = None,
+        __user__: dict = {},
     ) -> None:
         """Mark a task as completed by summary or uid."""
 
@@ -1258,7 +1437,11 @@ class Tools:
             principal = await client.principal()
             cal = await self._get_calendar(principal, list_name)
             todo = await self._find_task_by_uid_or_summary(cal, uid, summary)
-            todo.component["status"] = "COMPLETED"
+            zi = ZoneInfo(__user__["timezone"])
+            if todo.component.get("status") == "NEEDS-ACTION":
+                todo.component["status"] = "COMPLETED"
+                todo.component["completed"] = datetime.now(zi)
+                todo.component["percent-complete"] = 100
             await todo.save()
         finally:
             await client.close()
@@ -1299,21 +1482,25 @@ class Tools:
                 dtstart = datetime.fromisoformat(new_start)
                 if dtstart.tzinfo is None:
                     dtstart = dtstart.replace(tzinfo=zi)
-                e.component["dtstart"].dt = dtstart
+                del e.component["dtstart"]
+                e.component.add("dtstart", dtstart)
             if new_end:
                 dtend = datetime.fromisoformat(new_end)
                 if dtend.tzinfo is None:
                     dtend = dtend.replace(tzinfo=zi)
-                e.component["dtend"].dt = dtend
-            if new_summary:
+                del e.component["dtend"]
+                e.component.add("dtend", dtend)
+            if new_summary is not None:
                 e.component["summary"] = new_summary.strip()
-            if new_location:
+            if new_location is not None:
                 e.component["location"] = new_location
-            if new_description:
+            if new_description is not None:
                 e.component["description"] = new_description
-            if new_rrule:
+            if new_rrule is not None:
                 e.component["rrule"] = new_rrule
-            if new_alarms:
+            elif "rrule" in e.component:
+                e.component.pop("rrule")
+            if new_alarms is not None:
                 valarm_subs = [
                     sub for sub in e.component.subcomponents if sub.name == "VALARM"
                 ]
@@ -1344,25 +1531,29 @@ class Tools:
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, calendar_name)
+            tz = ZoneInfo(__user__["timezone"])
             events = await cal.search(
-                start=datetime.now(ZoneInfo(__user__["timezone"])),
+                start=datetime.now(tz),
+                end=datetime.now(tz) + timedelta(days=30),
                 expand=False,
                 event=True,
             )
 
             for e in events:
-                event_dict = {}
+                event_dict: dict[str, str | list[str]] = {}
 
                 for field in [
                     "summary",
                     "description",
                     "location",
-                    "categories",
                     "organizer",
                     "url",
                 ]:
                     if val := e.component.get(field):
-                        event_dict[field] = val
+                        event_dict[field] = str(val)
+
+                if cats := e.component.get("categories"):
+                    event_dict["categories"] = [str(c) for c in cats.cats]
 
                 dtstart_val = e.component.get("dtstart")
                 dtend_val = e.component.get("dtend")
@@ -1372,7 +1563,8 @@ class Tools:
                     event_dict["dtend"] = dtend_val.dt.isoformat()
 
                 if e.component.get("rrule"):
-                    event_dict["rrule"] = e.component["rrule"].to_ical().decode("utf-8")
+                    rrule_str = e.component["rrule"].to_ical().decode("utf-8")
+                    event_dict["rrule"] = rrule_str
                     try:
                         duration = (
                             (dtend_val.dt - dtstart_val.dt)
@@ -1398,7 +1590,7 @@ class Tools:
                                 ZoneInfo(__user__["timezone"])
                             )
 
-                        rrule_obj = rrulestr(event_dict["rrule"], dtstart=dtstart_dt)
+                        rrule_obj = rrulestr(rrule_str, dtstart=dtstart_dt)
                         now = datetime.now(ZoneInfo(__user__["timezone"]))
                         next_occurrence = rrule_obj.after(now, inc=False)
 

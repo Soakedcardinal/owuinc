@@ -412,9 +412,11 @@ class TestParseReminders:
             result = parse_reminders([r])
             assert result == [{"minutes": 1440, "action": "DISPLAY"}]
 
-    def test_unrecognized_defaults_to_zero(self):
-        result = parse_reminders(["now"])
-        assert result == [{"minutes": 0, "action": "DISPLAY"}]
+    def test_unrecognized_raises_error(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="unrecognized reminder format"):
+            parse_reminders(["now"])
 
     def test_multiple_reminders(self):
         result = parse_reminders(["0min", "15min", "1h"])
