@@ -1,0 +1,1267 @@
+Tool Development
+⚠️ Critical Security Warning
+
+Workspace Tools execute arbitrary Python code on your server. Only install from trusted sources, review code before importing, and restrict Workspace access to trusted administrators only. Granting a user the ability to create or import Tools is equivalent to giving them shell access to the server. For full details, see the Plugin Security Warning.
+Writing A Custom Toolkit
+
+Toolkits are defined in a single Python file, with a top level docstring with metadata and a Tools class.
+Use Async Functions for Future Compatibility
+
+Tool methods should generally be defined as async to ensure compatibility with future Open WebUI versions. The backend is progressively moving toward fully async execution, and synchronous functions may block execution or cause issues in future releases.
+Example Top-Level Docstring
+
+"""
+title: String Inverse
+author: Your Name
+author_url: https://website.com
+git_url: https://github.com/username/string-reverse.git
+description: This tool calculates the inverse of a string
+required_open_webui_version: 0.4.0
+requirements: langchain-openai, langgraph, ollama, langchain_ollama
+version: 0.4.0
+licence: MIT
+"""
+
+Metadata auto-fill (v0.9.6+)
+
+When you create a new tool (also applies to functions and skills), the editor reads the frontmatter as you paste or type code and auto-fills the Name, ID, and Description fields from title and description if you haven't already filled them in. It never overwrites a value you've entered, and it does not re-derive fields when editing an existing item, so you no longer need to retype metadata that's already declared in the source.
+Tools Class
+
+Tools have to be defined as methods within a class called Tools, with optional subclasses called Valves and UserValves, for example:
+
+class Tools:
+    def __init__(self):
+        """Initialize the Tool."""
+        self.valves = self.Valves()
+
+    class Valves(BaseModel):
+        api_key: str = Field("", description="Your API key here")
+
+    async def reverse_string(self, string: str) -> str:
+        """
+        Reverses the input string.
+        :param string: The string to reverse
+        """
+        # example usage of valves
+        if self.valves.api_key != "42":
+            return "Wrong API key"
+        return string[::-1]
+
+Type Hints
+
+Each tool must have type hints for arguments. The types may also be nested, such as queries_and_docs: list[tuple[str, int]]. Those type hints are used to generate the JSON schema that is sent to the model. Tools without type hints will work with a lot less consistency.
+Valves and UserValves (optional, but HIGHLY encouraged)
+
+Valves and UserValves are used for specifying customizable settings of the Tool, you can read more on the dedicated Valves & UserValves page. Secrets stored in Valves (such as API keys) can be encrypted at rest.
+Optional Arguments
+
+Below is a list of optional arguments your tools can depend on:
+
+    __event_emitter__: Emit events (see following section)
+    __event_call__: Same as event emitter but can be used for user interactions. The server-side timeout for event calls is configurable via WEBSOCKET_EVENT_CALLER_TIMEOUT (default: 300s).
+    __user__: A dictionary with user information. It also contains the UserValves object in __user__["valves"].
+    __metadata__: Dictionary with chat metadata
+    __messages__: List of previous messages
+    __files__: Attached files
+    __model__: A dictionary with model information
+    __oauth_token__: A dictionary containing the user's valid, automatically refreshed OAuth token payload. This is the new, recommended, and secure way to access user tokens for making authenticated API calls. The dictionary typically contains access_token, id_token, and other provider-specific data.
+
+For more information about __oauth_token__ and how to configure this token to be sent to tools, check out the OAuth section in the environment variable docs page and the SSO documentation.
+
+Just add them as argument to any method of your Tool class just like __user__ in the example above.
+Using the OAuth Token in a Tool
+
+When building tools that need to interact with external APIs on the user's behalf, you can now directly access their OAuth token. This removes the need for fragile cookie scraping and ensures the token is always valid.
+
+Example: A tool that calls an external API using the user's access token.
+
+import httpx
+from typing import Optional
+
+class Tools:
+    # ... other class setup ...
+
+    async def get_user_profile_from_external_api(self, __oauth_token__: Optional[dict] = None) -> str:
+        """
+        Fetches user profile data from a secure external API using their OAuth access token.
+
+        :param __oauth_token__: Injected by Open WebUI, contains the user's token data.
+        """
+        if not __oauth_token__ or "access_token" not in __oauth_token__:
+            return "Error: User is not authenticated via OAuth or token is unavailable."
+
+        access_token = __oauth_token__["access_token"]
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get("https://api.my-service.com/v1/profile", headers=headers)
+                response.raise_for_status() # Raise an exception for bad status codes
+                return f"API Response: {response.json()}"
+        except httpx.HTTPStatusError as e:
+            return f"Error: Failed to fetch data from API. Status: {e.response.status_code}"
+        except Exception as e:
+            return f"An unexpected error occurred: {e}"
+
+Event Emitters
+
+Event Emitters are used to add additional information to the chat interface. Similarly to Filter Outlets, Event Emitters are capable of appending content to the chat. Unlike Filter Outlets, they are not capable of stripping information. Additionally, emitters can be activated at any stage during the Tool.
+Author tools for Native Mode
+
+Legacy Mode is legacy and no longer supported. See the Tool Calling Modes guide for the full policy. Write your tools to work correctly under Native (Agentic) Mode, which is the only supported mode going forward. The event-emitter compatibility matrix below still documents Legacy Mode behavior for historical reference and for maintainers of pre-existing tools that haven't been migrated yet, but new tools should not depend on Legacy-Mode-only event types. If your tool's UX fundamentally requires an event type that only works in Legacy Mode (message, chat:message:delta, chat:message, replace mid-stream), redesign the UX around Native-compatible events (status, notification, citation, chat:message:files, confirmation, chat:message:follow_ups) rather than requiring users to switch their model to legacy mode.
+
+Event Emitter behavior differs between the two function calling modes. The function calling mode is controlled by the function_calling parameter:
+
+    Native Mode (Agentic Mode) (function_calling = "native"): the only supported mode. Uses the model's structured tool-call API. Limited event-emitter surface: see the matrix below for exactly which event types are supported.
+    Legacy Mode (function_calling = "legacy"): the prompt-injection mode. Full event-emitter surface, but the mode itself is unsupported and should not be selected for new deployments.
+
+For the full mode policy, model requirements, and configuration, see the Tool Calling Modes guide. In short: use Native Mode; the matrix below tells you which event types work there.
+Function Calling Mode Configuration
+
+You can configure the function calling mode in two places:
+
+    Administrator Level: Go to Admin Panel > Settings > Models > Model Specific Settings > Advanced Parameters > Function Calling (set to "Native" or "Legacy").
+    Per-request basis: Set params.function_calling = "native" or "legacy" in Chat Controls > Advanced Params.
+
+If the model seems to be unable to call the tool, make sure it is enabled (either via the Model page or via the + sign next to the chat input field).
+Native Mode & Built-in Tools
+
+When writing custom tools, be aware that Open WebUI also provides built-in system tools when Native Mode is enabled. For details on built-in tools, function calling modes, and model requirements, see the Tool Calling Modes Guide.
+Detecting the Mode in Your Tool
+
+Most tools never need to branch on the mode. If yours does, read it from __metadata__. Native is the default, so test for Legacy explicitly. Anything that is not "legacy" (an unset value included) runs Native:
+
+def is_legacy_mode(__metadata__) -> bool:
+    # Native is the default; only an explicit "legacy" opts out of it.
+    return (__metadata__ or {}).get("params", {}).get("function_calling") == "legacy"
+
+Define this once and call it wherever you branch, rather than re-deriving the mode in each method:
+
+if is_legacy_mode(__metadata__):
+    # Legacy: the full event-emitter surface is available (message, replace, deltas)
+    ...
+else:
+    # Native (the default): use the compatible events and return the final content
+    ...
+
+Do not check for "native" or "default"
+
+Before v0.10.0 an unset model carried "default", and tools detected Native with function_calling == "native". That is now wrong. An unset model runs Native but does not carry the string "native", so a == "native" test (or treating a "default" fallback as non-native) misclassifies the now-default case as Legacy and feeds it Legacy-only events that silently break. Test for == "legacy" and treat everything else as Native.
+Complete Event Type Compatibility Matrix
+
+Here's the comprehensive breakdown of how each event type behaves across function calling modes:
+Event Type	Legacy Mode Functionality	Native Mode Functionality	Status
+status	✅ Full support: Updates status history during tool execution	✅ Identical: Tracks function execution status	COMPATIBLE
+message	✅ Full support: Appends incremental content during streaming	❌ BROKEN: Gets overwritten by native completion snapshots	INCOMPATIBLE
+chat:completion	✅ Full support: Handles streaming responses and completion data	⚠️ LIMITED: Carries function results but may overwrite tool updates	PARTIALLY COMPATIBLE
+chat:message:delta	✅ Full support: Streams delta content during execution	❌ BROKEN: Content gets replaced by native function snapshots	INCOMPATIBLE
+chat:message	✅ Full support: Replaces entire message content cleanly	❌ BROKEN: Gets overwritten by subsequent native completions	INCOMPATIBLE
+replace	✅ Full support: Replaces content with precise control	❌ BROKEN: Replaced content gets overwritten immediately	INCOMPATIBLE
+chat:message:files / files	✅ Full support: Handles file attachments in messages	✅ Identical: Processes files from function outputs	COMPATIBLE
+chat:message:error	✅ Full support: Displays error notifications	✅ Identical: Shows function call errors	COMPATIBLE
+chat:message:follow_ups	✅ Full support: Shows follow-up suggestions	✅ Identical: Displays function-generated follow-ups	COMPATIBLE
+chat:title	✅ Full support: Updates chat title dynamically	✅ Identical: Updates title based on function interactions	COMPATIBLE
+chat:tags	✅ Full support: Modifies chat tags	✅ Identical: Manages tags from function outputs	COMPATIBLE
+chat:tasks:cancel	✅ Full support: Cancels ongoing tasks	✅ Identical: Cancels native function executions	COMPATIBLE
+citation / source	✅ Full support: Handles citations with full metadata	✅ Identical: Processes function-generated citations	COMPATIBLE
+notification	✅ Full support: Shows toast notifications	✅ Identical: Displays function execution notifications	COMPATIBLE
+confirmation	✅ Full support: Requests user confirmations	✅ Identical: Confirms function executions	COMPATIBLE
+execute	✅ Full support: Executes code dynamically	✅ Identical: Runs function-generated code	COMPATIBLE
+input	✅ Full support: Requests user input with full UI	✅ Identical: Collects input for functions	COMPATIBLE
+Why Native Mode Breaks Certain Event Types
+
+In Native Mode, the server constructs content blocks from streaming model output and repeatedly emits "chat:completion" events with full serialized content snapshots. The client treats these snapshots as authoritative and completely replaces message content, effectively overwriting any prior tool-emitted updates like message, chat:message, or replace events.
+
+Technical Details:
+
+    middleware.py adds tools directly to form data for native model handling
+    Streaming handler emits repeated content snapshots via chat:completion events
+    Client's chatCompletionEventHandler treats snapshots as complete replacements: message.content = content
+    This causes tool-emitted content updates to flicker and disappear
+
+Best Practices and Recommendations
+
+For Tools Requiring Real-time UI Updates:
+
+class Tools:
+    def __init__(self):
+        # Add a note about function calling mode requirements
+        self.description = "This tool requires Legacy Mode for full functionality"
+
+    async def interactive_tool(self, prompt: str, __event_emitter__=None) -> str:
+        """
+        ⚠️ This tool requires function_calling = "legacy" for proper event emission
+        """
+        if not __event_emitter__:
+            return "Event emitter not available - ensure Legacy Mode is enabled"
+
+        # Safe to use message events in Legacy Mode
+        await __event_emitter__({
+            "type": "message",
+            "data": {"content": "Processing step 1..."}
+        })
+        # ... rest of tool logic
+
+For Tools That Must Work in Both Modes:
+
+Branch on is_legacy_mode(): take the Legacy path for message / replace streaming, and on the Native path emit status updates and return the assembled content from the tool. The helper and the full branch pattern are in Detecting the Mode above. Do not re-derive the mode in every method.
+Troubleshooting Event Emitter Issues
+
+Symptoms of Native Mode Conflicts:
+
+    Tool-emitted messages appear briefly then disappear
+    Content flickers during tool execution
+    message or replace events seem to be ignored
+    Status updates work but content updates don't persist
+
+Solutions:
+
+    Switch to Legacy Mode: Change function_calling from "native" to "legacy" in model settings
+    Use Compatible Event Types: Stick to status, citation, notification, and other compatible event types in native mode
+    Implement Mode Detection: Add logic to detect function calling mode and adjust event usage accordingly
+    Consider Hybrid Approaches: Use compatible events for core functionality and degrade gracefully
+
+Debugging Your Event Emitters:
+
+async def debug_events_tool(self, __event_emitter__=None, __metadata__=None) -> str:
+    """Debug tool to test event emitter functionality"""
+
+    if not __event_emitter__:
+        return "No event emitter available"
+
+    # Test various event types
+    test_events = [
+        {"type": "status", "data": {"description": "Testing status events", "done": False}},
+        {"type": "message", "data": {"content": "Testing message events (may not work in native mode)"}},
+        {"type": "notification", "data": {"content": "Testing notification events"}},
+    ]
+
+    mode_info = "Unknown"
+    if __metadata__:
+        mode_info = __metadata__.get("params", {}).get("function_calling") or "native (default)"
+
+    await __event_emitter__({
+        "type": "status",
+        "data": {"description": f"Function calling mode: {mode_info}", "done": False}
+    })
+
+    for i, event in enumerate(test_events):
+        await asyncio.sleep(1)  # Space out events
+        await __event_emitter__(event)
+        await __event_emitter__({
+            "type": "status",
+            "data": {"description": f"Sent event {i+1}/{len(test_events)}", "done": False}
+        })
+
+    await __event_emitter__({
+        "type": "status",
+        "data": {"description": "Event testing complete", "done": True}
+    })
+
+    return f"Event testing completed in {mode_info} mode. Check for missing or flickering content."
+
+There are several specific event types with different behaviors:
+Status Events ✅ FULLY COMPATIBLE
+
+Status events work identically in both Legacy and Native function calling modes. This is the most reliable event type for providing real-time feedback during tool execution.
+
+Status events add live status updates to a message while it's performing steps. These can be emitted at any stage during tool execution. Status messages appear right above the message content and are essential for tools that delay the LLM response or process large amounts of information.
+
+Basic Status Event Structure:
+
+await __event_emitter__({
+    "type": "status",
+    "data": {
+        "description": "Message that shows up in the chat",
+        "done": False,        # False = still processing, True = completed
+        "hidden": False       # False = visible, True = auto-hide when done
+    }
+})
+
+Status Event Parameters:
+
+    description: The status message text shown to users
+    done: Boolean indicating if this status represents completion
+    hidden: Boolean to auto-hide the status once done: True is set
+
+Basic Status Example
+
+async def data_processing_tool(
+        self, data_file: str, __user__: dict, __event_emitter__=None
+    ) -> str:
+        """
+        Processes a large data file with status updates
+        ✅ Works in both Legacy and Native function calling modes
+        """
+
+        if not __event_emitter__:
+            return "Processing completed (no status updates available)"
+
+        # Step 1: Loading
+        await __event_emitter__({
+            "type": "status",
+            "data": {"description": "Loading data file...", "done": False}
+        })
+
+        # Simulate loading time
+        await asyncio.sleep(2)
+
+        # Step 2: Processing
+        await __event_emitter__({
+            "type": "status",
+            "data": {"description": "Analyzing 10,000 records...", "done": False}
+        })
+
+        # Simulate processing time
+        await asyncio.sleep(3)
+
+        # Step 3: Completion
+        await __event_emitter__({
+            "type": "status",
+            "data": {"description": "Analysis complete!", "done": True, "hidden": False}
+        })
+
+        return "Data analysis completed successfully. Found 23 anomalies."
+
+Advanced Status with Error Handling
+
+async def api_integration_tool(
+        self, endpoint: str, __event_emitter__=None
+    ) -> str:
+        """
+        Integrates with external API with comprehensive status tracking
+        ✅ Compatible with both function calling modes
+        """
+
+        if not __event_emitter__:
+            return "API integration completed (no status available)"
+
+        try:
+            await __event_emitter__({
+                "type": "status",
+                "data": {"description": "Connecting to API...", "done": False}
+            })
+
+            # Simulate API connection
+            await asyncio.sleep(1.5)
+
+            await __event_emitter__({
+                "type": "status",
+                "data": {"description": "Authenticating...", "done": False}
+            })
+
+            # Simulate authentication
+            await asyncio.sleep(1)
+
+            await __event_emitter__({
+                "type": "status",
+                "data": {"description": "Fetching data...", "done": False}
+            })
+
+            # Simulate data fetching
+            await asyncio.sleep(2)
+
+            # Success status
+            await __event_emitter__({
+                "type": "status",
+                "data": {"description": "API integration successful", "done": True}
+            })
+
+            return "Successfully retrieved 150 records from the API"
+
+        except Exception as e:
+            # Error status - always visible for debugging
+            await __event_emitter__({
+                "type": "status",
+                "data": {"description": f"Error: {str(e)}", "done": True, "hidden": False}
+            })
+
+            return f"API integration failed: {str(e)}"
+
+Multi-Step Progress Status
+
+async def batch_processor_tool(
+        self, items: list, __event_emitter__=None
+    ) -> str:
+        """
+        Processes items in batches with detailed progress tracking
+        ✅ Works perfectly in both function calling modes
+        """
+
+        if not __event_emitter__ or not items:
+            return "Batch processing completed"
+
+        total_items = len(items)
+        batch_size = 10
+        completed = 0
+
+        for i in range(0, total_items, batch_size):
+            batch = items[i:i + batch_size]
+            batch_num = (i // batch_size) + 1
+            total_batches = (total_items + batch_size - 1) // batch_size
+
+            # Update status for current batch
+            await __event_emitter__({
+                "type": "status",
+                "data": {
+                    "description": f"Processing batch {batch_num}/{total_batches} ({len(batch)} items)...",
+                    "done": False
+                }
+            })
+
+            # Simulate batch processing
+            await asyncio.sleep(1)
+
+            completed += len(batch)
+
+            # Progress update
+            progress_pct = int((completed / total_items) * 100)
+            await __event_emitter__({
+                "type": "status",
+                "data": {
+                    "description": f"Progress: {completed}/{total_items} items ({progress_pct}%)",
+                    "done": False
+                }
+            })
+
+        # Final completion status
+        await __event_emitter__({
+            "type": "status",
+            "data": {
+                "description": f"Batch processing complete! Processed {total_items} items",
+                "done": True
+            }
+        })
+
+        return f"Successfully processed {total_items} items in {total_batches} batches"
+
+Message Events ⚠️ DEFAULT MODE ONLY
+warning
+
+🚨 CRITICAL WARNING: Message events are INCOMPATIBLE with Native function calling mode!
+
+Message events (message, chat:message, chat:message:delta, replace) allow you to append or modify message content at any stage during tool execution. This enables embedding images, rendering web pages, streaming content updates, and creating rich interactive experiences.
+
+However, these event types have major compatibility issues:
+
+    ✅ Legacy Mode: Full functionality, content persists and displays properly
+    ❌ Native Mode: BROKEN, content gets overwritten by completion snapshots and disappears
+
+Why Message Events Break in Native Mode: Native function calling emits repeated chat:completion events with full content snapshots that completely replace message content, causing any tool-emitted message updates to flicker and disappear.
+
+Safe Message Event Structure (Legacy Mode Only):
+
+await __event_emitter__({
+    "type": "message",  # Also: "chat:message", "chat:message:delta", "replace"
+    "data": {"content": "This content will be appended/replaced in the chat"},
+    # Note: message types do NOT require a "done" condition
+})
+
+Message Event Types:
+
+    message / chat:message:delta: Appends content to existing message
+    chat:message / replace: Replaces entire message content
+    Both types will be overwritten in Native mode
+
+Safe Message Streaming (Legacy Mode)
+
+async def streaming_content_tool(
+        self, query: str, __event_emitter__=None, __metadata__=None
+    ) -> str:
+        """
+        Streams content updates during processing
+        ⚠️ REQUIRES function_calling = "legacy" - Will not work in Native mode!
+        """
+
+        # Legacy Mode only; see "Detecting the Mode in Your Tool" above.
+        if not is_legacy_mode(__metadata__):
+            return "❌ This tool requires Legacy Mode. Message streaming is overwritten in Native mode, which is the default."
+
+        if not __event_emitter__:
+            return "Event emitter not available"
+
+        # Stream progressive content updates
+        content_chunks = [
+            "🔍 **Phase 1: Research**\nGathering information about your query...\n\n",
+            "📊 **Phase 2: Analysis**\nAnalyzing gathered data patterns...\n\n",
+            "✨ **Phase 3: Synthesis**\nGenerating insights and recommendations...\n\n",
+            "📝 **Phase 4: Final Report**\nCompiling comprehensive results...\n\n"
+        ]
+
+        accumulated_content = ""
+
+        for i, chunk in enumerate(content_chunks):
+            accumulated_content += chunk
+
+            # Append this chunk to the message
+            await __event_emitter__({
+                "type": "message",
+                "data": {"content": chunk}
+            })
+
+            # Show progress status
+            await __event_emitter__({
+                "type": "status",
+                "data": {
+                    "description": f"Processing phase {i+1}/{len(content_chunks)}...",
+                    "done": False
+                }
+            })
+
+            # Simulate processing time
+            await asyncio.sleep(2)
+
+        # Final completion
+        await __event_emitter__({
+            "type": "status",
+            "data": {"description": "Content streaming complete!", "done": True}
+        })
+
+        return "Content streaming completed successfully. All phases processed."
+
+Dynamic Content Replacement (Legacy Mode)
+
+async def live_dashboard_tool(
+        self, __event_emitter__=None, __metadata__=None
+    ) -> str:
+        """
+        Creates a live-updating dashboard using content replacement
+        ⚠️ ONLY WORKS in Legacy Mode
+        """
+
+        # Legacy Mode only; see "Detecting the Mode in Your Tool" above.
+        if not is_legacy_mode(__metadata__):
+            return """
+❌ **Native Mode Incompatibility**
+
+This dashboard tool cannot function in Native mode (the default) because:
+- Content replacement events get overwritten by completion snapshots
+- Live updates will flicker and disappear
+- Real-time data will not persist in the interface
+
+**Solution:** Set Function Calling to "Legacy" in Model Settings → Advanced Params. Legacy Mode is unsupported, so prefer redesigning around Native-compatible events.
+"""
+
+        if not __event_emitter__:
+            return "Dashboard created (static mode - no live updates)"
+
+        # Create initial dashboard
+        initial_dashboard = """
+
+# 📊 Live System Dashboard
+
+## System Status: 🟡 Initializing...
+
+### Current Metrics:
+- **CPU Usage**: Loading...
+- **Memory**: Loading...
+- **Active Users**: Loading...
+- **Response Time**: Loading...
+
+---
+*Last Updated: Initializing...*
+"""
+
+        await __event_emitter__({
+            "type": "replace",
+            "data": {"content": initial_dashboard}
+        })
+
+        # Simulate live data updates
+        updates = [
+            {
+                "status": "🟢 Online",
+                "cpu": "23%",
+                "memory": "64%",
+                "users": "1,247",
+                "response": "145ms"
+            },
+            {
+                "status": "🟢 Optimal",
+                "cpu": "18%",
+                "memory": "61%",
+                "users": "1,352",
+                "response": "132ms"
+            },
+            {
+                "status": "🟡 Busy",
+                "cpu": "67%",
+                "memory": "78%",
+                "users": "1,891",
+                "response": "234ms"
+            }
+        ]
+
+        for i, data in enumerate(updates):
+            await asyncio.sleep(3)  # Simulate data collection delay
+
+            updated_dashboard = f"""
+
+# 📊 Live System Dashboard
+
+## System Status: {data['status']}
+
+### Current Metrics:
+- **CPU Usage**: {data['cpu']}
+- **Memory**: {data['memory']}
+- **Active Users**: {data['users']}
+- **Response Time**: {data['response']}
+
+---
+*Last Updated: {datetime.now().strftime('%H:%M:%S')}*
+*Update {i+1}/{len(updates)}*
+"""
+
+            # Replace entire dashboard content
+            await __event_emitter__({
+                "type": "replace",
+                "data": {"content": updated_dashboard}
+            })
+
+            # Status update
+            await __event_emitter__({
+                "type": "status",
+                "data": {"description": f"Dashboard updated ({i+1}/{len(updates)})", "done": False}
+            })
+
+        await __event_emitter__({
+            "type": "status",
+            "data": {"description": "Live dashboard monitoring complete", "done": True}
+        })
+
+        return "Dashboard monitoring session completed."
+
+Mode-Safe Message Tool
+
+A tool that adapts to the mode branches on is_legacy_mode(): on the Legacy path it streams progressive message events, and on the Native path (the default) it emits status updates and returns the assembled content as the tool result. See Detecting the Mode for the helper and the branch skeleton.
+Citations ✅ FULLY COMPATIBLE
+
+Citation events work identically in both Legacy and Native function calling modes. This event type provides source references and citations in the chat interface, allowing users to click and view source materials.
+
+Citations are essential for tools that retrieve information from external sources, databases, or documents. They provide transparency and allow users to verify information sources.
+
+Citation Event Structure:
+
+await __event_emitter__({
+    "type": "citation",
+    "data": {
+        "document": [content],                    # Array of content strings
+        "metadata": [                             # Array of metadata objects
+            {
+                "date_accessed": datetime.now().isoformat(),
+                "source": title,
+                "author": "Author Name",          # Optional
+                "publication_date": "2024-01-01", # Optional
+                "url": "https://source-url.com"   # Optional
+            }
+        ],
+        "source": {"name": title, "url": url}    # Primary source info
+    }
+})
+
+Important Citation Setup: When implementing custom citations, you must disable automatic citations in your Tools class:
+
+def __init__(self):
+    self.citation = False  # REQUIRED - prevents automatic citations from overriding custom ones
+
+warning
+
+⚠️ Critical Citation Warning: If you set self.citation = True (or don't set it to False), automatic citations will replace any custom citations you send. Always disable automatic citations when using custom citation events.
+Basic Citation Example
+
+class Tools:
+    def __init__(self):
+        self.citation = False  # Disable automatic citations
+
+    async def research_tool(
+            self, topic: str, __event_emitter__=None
+        ) -> str:
+        """
+        Researches a topic and provides proper citations
+        ✅ Works identically in both Legacy and Native modes
+        """
+
+        if not __event_emitter__:
+            return "Research completed (citations not available)"
+
+        # Simulate research findings
+        sources = [
+            {
+                "title": "Advanced AI Systems",
+                "url": "https://example.com/ai-systems",
+                "content": "Artificial intelligence systems have evolved significantly...",
+                "author": "Dr. Jane Smith",
+                "date": "2024-03-15"
+            },
+            {
+                "title": "Machine Learning Fundamentals",
+                "url": "https://example.com/ml-fundamentals",
+                "content": "The core principles of machine learning include...",
+                "author": "Prof. John Doe",
+                "date": "2024-02-20"
+            }
+        ]
+
+        # Emit citations for each source
+        for source in sources:
+            await __event_emitter__({
+                "type": "citation",
+                "data": {
+                    "document": [source["content"]],
+                    "metadata": [
+                        {
+                            "date_accessed": datetime.now().isoformat(),
+                            "source": source["title"],
+                            "author": source["author"],
+                            "publication_date": source["date"],
+                            "url": source["url"]
+                        }
+                    ],
+                    "source": {
+                        "name": source["title"],
+                        "url": source["url"]
+                    }
+                }
+            })
+
+        return f"Research on '{topic}' completed. Found {len(sources)} relevant sources with detailed citations."
+
+Advanced Multi-Source Citations
+
+async def comprehensive_analysis_tool(
+        self, query: str, __event_emitter__=None
+    ) -> str:
+        """
+        Performs comprehensive analysis with multiple source types
+        ✅ Full compatibility across all function calling modes
+        """
+
+        if not __event_emitter__:
+            return "Analysis completed"
+
+        # Multiple source types with rich metadata
+        research_sources = {
+            "academic": [
+                {
+                    "title": "Neural Network Architecture in Modern AI",
+                    "authors": ["Dr. Sarah Chen", "Prof. Michael Rodriguez"],
+                    "journal": "Journal of AI Research",
+                    "volume": "Vol. 45, Issue 2",
+                    "pages": "123-145",
+                    "doi": "10.1000/182",
+                    "date": "2024-01-15",
+                    "content": "This comprehensive study examines the evolution of neural network architectures..."
+                }
+            ],
+            "web_sources": [
+                {
+                    "title": "Industry AI Implementation Trends",
+                    "url": "https://tech-insights.com/ai-trends-2024",
+                    "site_name": "TechInsights",
+                    "published": "2024-03-01",
+                    "content": "Recent industry surveys show that 78% of companies are implementing AI solutions..."
+                }
+            ],
+            "reports": [
+                {
+                    "title": "Global AI Market Report 2024",
+                    "organization": "International Tech Research Institute",
+                    "report_number": "ITRI-2024-AI-001",
+                    "date": "2024-02-28",
+                    "content": "The global artificial intelligence market is projected to reach $1.8 trillion by 2030..."
+                }
+            ]
+        }
+
+        citation_count = 0
+
+        # Process academic sources
+        for source in research_sources["academic"]:
+            citation_count += 1
+            await __event_emitter__({
+                "type": "citation",
+                "data": {
+                    "document": [source["content"]],
+                    "metadata": [
+                        {
+                            "date_accessed": datetime.now().isoformat(),
+                            "source": source["title"],
+                            "authors": source["authors"],
+                            "journal": source["journal"],
+                            "volume": source["volume"],
+                            "pages": source["pages"],
+                            "doi": source["doi"],
+                            "publication_date": source["date"],
+                            "type": "academic_journal"
+                        }
+                    ],
+                    "source": {
+                        "name": f"{source['title']} - {source['journal']}",
+                        "url": f"https://doi.org/{source['doi']}"
+                    }
+                }
+            })
+
+        # Process web sources
+        for source in research_sources["web_sources"]:
+            citation_count += 1
+            await __event_emitter__({
+                "type": "citation",
+                "data": {
+                    "document": [source["content"]],
+                    "metadata": [
+                        {
+                            "date_accessed": datetime.now().isoformat(),
+                            "source": source["title"],
+                            "site_name": source["site_name"],
+                            "publication_date": source["published"],
+                            "url": source["url"],
+                            "type": "web_article"
+                        }
+                    ],
+                    "source": {
+                        "name": source["title"],
+                        "url": source["url"]
+                    }
+                }
+            })
+
+        # Process reports
+        for source in research_sources["reports"]:
+            citation_count += 1
+            await __event_emitter__({
+                "type": "citation",
+                "data": {
+                    "document": [source["content"]],
+                    "metadata": [
+                        {
+                            "date_accessed": datetime.now().isoformat(),
+                            "source": source["title"],
+                            "organization": source["organization"],
+                            "report_number": source["report_number"],
+                            "publication_date": source["date"],
+                            "type": "research_report"
+                        }
+                    ],
+                    "source": {
+                        "name": f"{source['title']} - {source['organization']}",
+                        "url": f"https://reports.example.com/{source['report_number']}"
+                    }
+                }
+            })
+
+        return f"""
+
+# Analysis Complete
+
+Comprehensive analysis of '{query}' has been completed using {citation_count} authoritative sources:
+
+- **{len(research_sources['academic'])}** Academic journal articles
+- **{len(research_sources['web_sources'])}** Industry web sources
+- **{len(research_sources['reports'])}** Research reports
+
+All sources have been properly cited and are available for review by clicking the citation links above.
+"""
+
+Database Citation Tool
+
+async def database_query_tool(
+        self, sql_query: str, __event_emitter__=None
+    ) -> str:
+        """
+        Queries database and provides data citations
+        ✅ Works perfectly in both function calling modes
+        """
+
+        if not __event_emitter__:
+            return "Database query executed"
+
+        # Simulate database results with citation metadata
+        query_results = [
+            {
+                "record_id": "USR_001247",
+                "data": "John Smith, Software Engineer, joined 2023-01-15",
+                "table": "employees",
+                "last_updated": "2024-03-10T14:30:00Z",
+                "updated_by": "admin_user"
+            },
+            {
+                "record_id": "USR_001248",
+                "data": "Jane Wilson, Product Manager, joined 2023-02-20",
+                "table": "employees",
+                "last_updated": "2024-03-08T09:15:00Z",
+                "updated_by": "hr_system"
+            }
+        ]
+
+        # Create citations for each database record
+        for i, record in enumerate(query_results):
+            await __event_emitter__({
+                "type": "citation",
+                "data": {
+                    "document": [f"Database Record: {record['data']}"],
+                    "metadata": [
+                        {
+                            "date_accessed": datetime.now().isoformat(),
+                            "source": f"Database Table: {record['table']}",
+                            "record_id": record['record_id'],
+                            "last_updated": record['last_updated'],
+                            "updated_by": record['updated_by'],
+                            "query": sql_query,
+                            "type": "database_record"
+                        }
+                    ],
+                    "source": {
+                        "name": f"Record {record['record_id']} - {record['table']}",
+                        "url": f"database://internal/tables/{record['table']}/{record['record_id']}"
+                    }
+                }
+            })
+
+        return f"""
+
+# Database Query Results
+
+Executed query: `{sql_query}`
+
+Retrieved **{len(query_results)}** records with complete citation metadata. Each record includes:
+- Record ID and source table
+- Last modification timestamp
+- Update attribution
+- Full audit trail
+
+All data sources have been properly cited for transparency and verification.
+"""
+
+Additional Compatible Event Types ✅
+
+The following event types work identically in both Legacy and Native function calling modes:
+
+Notification Events
+
+await __event_emitter__({
+    "type": "notification",
+    "data": {"content": "Toast notification message"}
+})
+
+File Events
+
+await __event_emitter__({
+    "type": "files", # or "chat:message:files"
+    "data": {"files": [{"name": "report.pdf", "url": "/files/report.pdf"}]}
+})
+
+Follow-up Events
+
+await __event_emitter__({
+    "type": "chat:message:follow_ups",
+    "data": {"follow_ups": ["What about X?", "Tell me more about Y"]}
+})
+
+Title Update Events
+
+await __event_emitter__({
+    "type": "chat:title",
+    "data": {"title": "New Chat Title"}
+})
+
+Tag Events
+
+await __event_emitter__({
+    "type": "chat:tags",
+    "data": {"tags": ["research", "analysis", "completed"]}
+})
+
+Error Events
+
+await __event_emitter__({
+    "type": "chat:message:error",
+    "data": {
+        "error": {
+            "content": "Error message to display"
+        }
+    }
+})
+
+Confirmation Events
+
+await __event_emitter__({
+    "type": "confirmation",
+    "data": {"message": "Are you sure you want to continue?"}
+})
+
+Input Request Events
+
+await __event_emitter__({
+    "type": "input",
+    "data": {"prompt": "Please enter additional information:"}
+})
+
+Code Execution Events
+
+await __event_emitter__({
+    "type": "execute",
+    "data": {"code": "print('Hello from tool-generated code!')"}
+})
+
+Comprehensive Function Calling Mode Guide
+Write tools for Native Mode, Legacy Mode is unsupported
+
+Legacy Mode is legacy and no longer supported. New tools should be written to work under Native Mode. The mode-comparison details below are retained so that maintainers of pre-existing Legacy-Mode tools understand the gap they need to close when migrating. They are not a recommendation to choose Legacy Mode for new work.
+
+If your tool design depends on a Legacy-Mode-only event type, redesign the UX around the Native-compatible surface (status, notification, citation, chat:message:files, confirmation, chat:message:follow_ups, plus returning a final content block from the tool method). Requiring users to switch their model to legacy mode to run your tool is not acceptable going forward.
+
+Mode Comparison Overview (for migration reference only; Native is the only supported target):
+Aspect	Legacy Mode (Legacy / Unsupported)	Native Mode (Supported)
+Status	❌ Legacy, no longer supported	✅ Required for new tools
+Latency	Higher (full prompt-injection pipeline)	Lower (direct tool-call API)
+KV Cache	❌ Broken every turn	✅ Preserved
+Event Support	Full event-type surface	Limited surface (see matrix above)
+Streaming	Mid-stream content rewrites work	Mid-stream rewrites are overwritten by completion snapshots
+Status / Notifications / Citations	✅	✅
+Message content events (message, chat:message, replace)	✅	❌ Overwritten
+Built-in system tools (Memory, Notes, Knowledge, Web Search, Image Gen, Code Interpreter)	❌	✅
+
+How to design for Native Mode:
+
+    Deliver your tool's primary output as the return value of the tool method. That content is emitted by the model as part of its response and is not subject to the event-overwrite issue.
+    Use status and notification for progress and user-facing alerts; they are fully supported in Native Mode.
+    Use citation / source events for references; fully supported in Native Mode.
+    Use confirmation / input via __event_call__ for interactive flows; fully supported in Native Mode.
+    Attach files via the chat:message:files event; fully supported in Native Mode.
+    Avoid depending on message, chat:message:delta, chat:message, or replace mid-stream; these are the four events that break under Native Mode. If you need progressive output, emit a series of status updates and return the final content from the tool.
+
+Migrating a Legacy-Mode tool to Native Mode
+
+Common rewrites when moving a Legacy-Mode tool to Native:
+
+    Replace mid-stream message events that append content with a single final return value containing the assembled content.
+    Replace replace-based progress bars with a sequence of status events ("description": "Step 3 of 5 — fetching...").
+    Replace chat:message-based dashboards with a return value containing the rendered dashboard (Markdown / HTML is fine).
+    Keep citation, notification, confirmation, and file attachments as-is; they work identically in both modes.
+
+Universal Compatibility Pattern: branch on is_legacy_mode(). On the Legacy path send message events for progressive output; on the Native path (the default) emit status updates and return the result from the tool. The helper and the branch skeleton are in Detecting the Mode.
+🔧 Debugging Event Emitter Issues
+
+Common Issues and Solutions:
+
+Issue: Content appears then disappears
+
+    Cause: Using message / chat:message / replace events in Native Mode; completion snapshots overwrite them.
+    Solution: Return the content from the tool method and use status events for progress instead. Do not switch to Legacy Mode. Legacy Mode is no longer supported.
+
+Issue: Tool seems unresponsive
+
+    Cause: Function calling not enabled for model
+    Solution: Enable tools in Model settings or via + button
+
+Issue: Events not firing at all
+
+    Cause: __event_emitter__ parameter missing or None
+    Solution: Ensure parameter is included in tool method signature
+
+Issue: Citations being overwritten
+
+    Cause: self.citation = True (or not set to False)
+    Solution: Set self.citation = False in __init__ method
+
+Diagnostic Tool:
+
+async def event_diagnostics_tool(
+        self, __event_emitter__=None, __metadata__=None, __user__=None
+    ) -> str:
+        """
+        Comprehensive diagnostic tool for event emitter debugging
+        """
+
+        report = ["# 🔍 Event Emitter Diagnostic Report\n"]
+
+        # Check event emitter availability
+        if __event_emitter__:
+            report.append("✅ Event emitter is available\n")
+        else:
+            report.append("❌ Event emitter is NOT available\n")
+            return "".join(report)
+
+        # Check metadata availability
+        if __metadata__:
+            mode = __metadata__.get("params", {}).get("function_calling") or "native"
+            report.append(f"✅ Function calling mode: **{mode}**\n")
+        else:
+            report.append("⚠️ Metadata not available; assuming Native (the default)\n")
+            mode = "native"
+
+        # Check user context
+        if __user__:
+            report.append("✅ User context available\n")
+        else:
+            report.append("⚠️ User context not available\n")
+
+        # Test compatible events (work in both modes)
+        report.append("\n## Testing Compatible Events:\n")
+
+        try:
+            await __event_emitter__({
+                "type": "status",
+                "data": {"description": "Testing status events...", "done": False}
+            })
+            report.append("✅ Status events: WORKING\n")
+        except Exception as e:
+            report.append(f"❌ Status events: FAILED - {str(e)}\n")
+
+        try:
+            await __event_emitter__({
+                "type": "notification",
+                "data": {"content": "Test notification"}
+            })
+            report.append("✅ Notification events: WORKING\n")
+        except Exception as e:
+            report.append(f"❌ Notification events: FAILED - {str(e)}\n")
+
+        # Test problematic events (broken in Native mode)
+        report.append("\n## Testing Mode-Dependent Events:\n")
+
+        try:
+            await __event_emitter__({
+                "type": "message",
+                "data": {"content": "**Test message event** - This should appear in Legacy Mode only\n"}
+            })
+            report.append("✅ Message events: SENT (may disappear in Native mode)\n")
+        except Exception as e:
+            report.append(f"❌ Message events: FAILED - {str(e)}\n")
+
+        # Final status
+        await __event_emitter__({
+            "type": "status",
+            "data": {"description": "Diagnostic complete", "done": True}
+        })
+
+        # Mode-specific recommendations
+        report.append("\n## Recommendations:\n")
+
+        if mode == "legacy":
+            report.append("""
+⚠️ **Legacy Mode Detected**: full event support, but Legacy Mode is unsupported
+- All event types work, but new tools should not depend on Legacy-only events
+- Migrate to Native Mode (the default): return your final content and use status / citation / notification
+""")
+        else:
+            report.append("""
+✅ **Native Mode** (the default): limited event support
+- ✅ Use: status, citation, notification, files events
+- ❌ Avoid: message, replace, chat:message events (overwritten by completion snapshots)
+- 💡 Return your primary output as the tool's return value
+""")
+
+        return "".join(report)
+
+📚 Event Emitter Quick Reference
+
+Always Compatible (Both Modes):
+
+
+# Status updates - perfect for progress tracking
+await __event_emitter__({
+    "type": "status",
+    "data": {"description": "Processing...", "done": False}
+})
+
+# Citations - essential for source attribution
+await __event_emitter__({
+    "type": "citation",
+    "data": {
+        "document": ["Content"],
+        "source": {"name": "Source", "url": "https://example.com"}
+    }
+})
+
+# Notifications - user alerts
+await __event_emitter__({
+    "type": "notification",
+    "data": {"content": "Task completed!"}
+})
+
+Legacy Mode Only (Broken in Native):
+
+
+# ⚠️ These will flicker/disappear in Native mode
+
+# Progressive content streaming
+await __event_emitter__({
+    "type": "message",
+    "data": {"content": "Streaming content..."}
+})
+
+# Content replacement
+await __event_emitter__({
+    "type": "replace",
+    "data": {"content": "New complete content"}
+})
+
+# Delta updates
+await __event_emitter__({
+    "type": "chat:message:delta",
+    "data": {"content": "Additional content"}
+})
+
+Mode Detection Pattern: see Detecting the Mode in Your Tool for the helper and the caveat.
+
+# Native is the default; only an explicit "legacy" opts out.
+is_legacy = is_legacy_mode(__metadata__)
+can_stream_messages = is_legacy   # message / replace work in Legacy only
+
+Essential Imports:
+
+import asyncio
+from datetime import datetime
+from typing import Optional, Callable, Awaitable
+
+Rich UI Element Embedding
+
+Tools and Actions can return HTML content that renders as interactive iframes directly in the chat. For full documentation, examples, security considerations, and CORS configuration, see the dedicated Rich UI Embedding guide.
+External packages
+
+In the Tools definition metadata you can specify custom packages. When you click Save the line will be parsed and pip install will be run on all requirements at once.
+warning
+
+🚨 CRITICAL WARNING: Potential for Package Version Conflicts
+
+When multiple tools define different versions of the same package (e.g., Tool A requires pandas==1.5.0 and Tool B requires pandas==2.0.0), Open WebUI installs them in a non-deterministic order. This can lead to unpredictable behavior and break one or more of your tools.
+
+The only robust solution to this problem is to use an OpenAPI tool server.
+
+We strongly recommend using an OpenAPI tool server to avoid these dependency conflicts.
+Production / Multi-Worker Deployments
+
+Do not rely on runtime pip installation in production environments. When running with UVICORN_WORKERS > 1 or multiple replicas, each worker/replica attempts to install packages independently on startup. This causes race conditions where concurrent pip processes crash with AssertionError because pip's internal locking detects the simultaneous installs.
+
+Set ENABLE_PIP_INSTALL_FRONTMATTER_REQUIREMENTS=False in production to disable runtime pip installs entirely. Then pre-install all required packages at image build time using a custom Dockerfile:
+
+FROM ghcr.io/open-webui/open-webui:main
+
+RUN pip install --no-cache-dir python-docx requests beautifulsoup4
+
+Runtime installation is only suitable for single-worker development or homelab environments where you're experimenting with new functions and tools. For any deployment serving multiple users, bake your dependencies into the container image.
+note
+
+Keep in mind that pip runs in the same process as Open WebUI, so the UI will be completely unresponsive during installation.
+
+No measures are taken to handle package conflicts with Open WebUI's own dependencies. Specifying requirements can break Open WebUI if you're not careful. You might be able to work around this by specifying open-webui itself as a requirement.
+Example
+
+"""
+title: myToolName
+author: myName
+funding_url: [any link here will be shown behind a `Heart` button for users to show their support to you]
+version: 1.0.0
+
+# the version is displayed in the UI to help users keep track of updates.
+license: GPLv3
+description: [recommended]
+requirements: package1>=2.7.0,package2,package3
+"""
+

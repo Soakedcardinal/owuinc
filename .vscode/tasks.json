@@ -1,0 +1,16 @@
+{
+    "tasks": [
+        {
+            "label": "Run Pre-Commit Hooks",
+            "type": "shell",
+            "command": "uv pre-commit run --all-files",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Tests",
+            "type": "shell",
+            "command": "uv pytest",
+            "problemMatcher": []
+        }
+    ]
+}
