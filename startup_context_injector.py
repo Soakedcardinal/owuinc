@@ -4,12 +4,13 @@ author: Soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Injects files from nextcloud as system instructions on every request.
 requirements: aiowebdav2,tiktoken
-version: 1.5.0
+version: 1.6.0
 license: MIT
 """
 
 import asyncio
 import os
+import re
 import urllib.parse
 from datetime import date, datetime, timedelta
 from io import BytesIO
@@ -31,6 +32,13 @@ _tokenizer = tiktoken.get_encoding("cl100k_base")
 def _token_count(text: str) -> int:
     """Count tokens using tiktoken's cl100k_base encoder."""
     return len(_tokenizer.encode(text))
+
+
+_CTX_BEGIN = "<!-- owuinc:context:begin -->"
+_CTX_END = "<!-- owuinc:context:end -->"
+_CTX_BLOCK_RE = re.compile(
+    re.escape(_CTX_BEGIN) + r".*?" + re.escape(_CTX_END), re.DOTALL
+)
 
 
 def _try_inject(
@@ -172,6 +180,13 @@ class Filter:
                 "tool remains available for live time."
             ),
         )
+        INJECT_POSITION: str = Field(
+            default="after",
+            json_schema_extra={"enum": ["before", "after"]},
+            description=(
+                "Place the injected context after (default) or before the model's own system prompt. The existing system prompt is never discarded either way."
+            ),
+        )
         REQUEST_TIMEOUT: int = Field(
             default=10,
             ge=1,
@@ -286,7 +301,27 @@ class Filter:
         finally:
             await client.close()
 
+    def _merge_system(self, existing: str, injected: str) -> str:
+        """Merge injected context into an existing system prompt.
+
+        Never discards the operator's system prompt, and is idempotent: a block
+        left by a previous call is replaced rather than stacked, since `request`
+        runs once per provider call (several times in a tool-calling turn).
+        """
+        block = f"{_CTX_BEGIN}\n{injected}\n{_CTX_END}"
+        existing = _CTX_BLOCK_RE.sub("", existing or "").strip()
+        if not existing:
+            return block
+        if self.valves.INJECT_POSITION == "before":
+            return f"{block}\n\n{existing}"
+        return f"{existing}\n\n{block}"
+
     async def request(self, body: dict, __event_emitter__=None) -> dict:
+        # Background jobs (title, tag, autocomplete generation) go through this
+        # hook too and don't need the memory context — skip the fetch entirely.
+        if (body.get("metadata") or {}).get("task"):
+            return body
+
         try:
             contexts, injected_info = await self._build_context()
             if not contexts:
@@ -309,9 +344,13 @@ class Filter:
 
             messages = body.setdefault("messages", [])
             if messages and messages[0].get("role") == "system":
-                messages[0]["content"] = content
+                messages[0]["content"] = self._merge_system(
+                    messages[0].get("content") or "", content
+                )
             else:
-                messages.insert(0, {"role": "system", "content": content})
+                messages.insert(
+                    0, {"role": "system", "content": self._merge_system("", content)}
+                )
 
             return body
 

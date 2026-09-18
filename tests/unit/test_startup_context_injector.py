@@ -144,3 +144,80 @@ class TestRequestTimeoutValveDefaults:
         for val in [1, 30, 120]:
             f.valves.REQUEST_TIMEOUT = val
             assert f.valves.REQUEST_TIMEOUT == val
+
+
+class TestMergeSystem:
+    """Test _merge_system: never discards the existing prompt, idempotent."""
+
+    def test_no_existing_prompt(self):
+        f = startup_context_injector.Filter()
+        out = f._merge_system("", "INJECTED")
+        assert out == (
+            "<!-- owuinc:context:begin -->\n" "INJECTED\n" "<!-- owuinc:context:end -->"
+        )
+
+    def test_preserves_existing_prompt_after(self):
+        f = startup_context_injector.Filter()
+        out = f._merge_system("You are helpful.", "INJECTED")
+        assert out.startswith("You are helpful.")
+        assert "INJECTED" in out
+
+    def test_preserves_existing_prompt_before(self):
+        f = startup_context_injector.Filter()
+        f.valves.INJECT_POSITION = "before"
+        out = f._merge_system("You are helpful.", "INJECTED")
+        assert out.index("INJECTED") < out.index("You are helpful.")
+
+    def test_idempotent_second_call(self):
+        """A block left by a previous call is replaced, not stacked."""
+        f = startup_context_injector.Filter()
+        once = f._merge_system("You are helpful.", "INJECTED")
+        twice = f._merge_system(once, "INJECTED")
+        assert twice == once
+
+    def test_stale_block_replaced(self):
+        f = startup_context_injector.Filter()
+        once = f._merge_system("You are helpful.", "OLD")
+        updated = f._merge_system(once, "NEW")
+        assert "OLD" not in updated
+        assert "NEW" in updated
+        assert updated.count("owuinc:context:begin") == 1
+
+
+class TestRequestMerge:
+    """Test request() merging behavior and the background-task guard."""
+
+    async def test_task_body_skips_injection(self):
+        f = startup_context_injector.Filter()
+        body = {
+            "messages": [{"role": "user", "content": "hi"}],
+            "metadata": {"task": "title"},
+        }
+        out = await f.request(body)
+        assert out is body
+        assert len(body["messages"]) == 1
+
+    async def test_request_merges_into_existing_system(self, monkeypatch):
+        f = startup_context_injector.Filter()
+
+        async def fake_build():
+            return ["INJECTED"], [{"name": "x", "tokens": 1}]
+
+        monkeypatch.setattr(f, "_build_context", fake_build)
+        body = {"messages": [{"role": "system", "content": "You are helpful."}]}
+        out = await f.request(body)
+        content = out["messages"][0]["content"]
+        assert "You are helpful." in content
+        assert "INJECTED" in content
+
+    async def test_request_inserts_system_when_absent(self, monkeypatch):
+        f = startup_context_injector.Filter()
+
+        async def fake_build():
+            return ["INJECTED"], [{"name": "x", "tokens": 1}]
+
+        monkeypatch.setattr(f, "_build_context", fake_build)
+        body = {"messages": [{"role": "user", "content": "hi"}]}
+        out = await f.request(body)
+        assert out["messages"][0]["role"] == "system"
+        assert "INJECTED" in out["messages"][0]["content"]
