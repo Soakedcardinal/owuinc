@@ -136,11 +136,11 @@ class TestCompleteTaskSetsAllFields:
 # edit_calendar_event: dtstart/dtend mutation safety
 # ============================================================
 class TestDatetimePropertyMutationSafety:
-    """edit_calendar_event uses del+add for dtstart/dtend
+    """edit_calendar_event removes then re-adds dtstart/dtend
     to avoid VALUE parameter mismatch with icalendar."""
 
-    def test_uses_del_and_add_not_dot_dt(self):
-        """Verify the fix: del + add instead of .dt = mutation."""
+    def test_uses_remove_and_add_not_dot_dt(self):
+        """Verify the fix: pop/del + add instead of .dt = mutation."""
         import inspect
 
         from owuinc.owuinc import Tools
@@ -149,11 +149,9 @@ class TestDatetimePropertyMutationSafety:
         # The old buggy pattern: e.component["dtstart"].dt = ...
         assert ".dt = dtstart" not in src
         assert ".dt = dtend" not in src
-        # The fixed pattern: del + add
-        assert (
-            'del e.component["dtstart"]' in src or "del e.component['dtstart']" in src
-        )
-        assert 'del e.component["dtend"]' in src or "del e.component['dtend']" in src
+        # The fixed pattern: remove (pop or del) + add
+        assert 'e.component.pop("dtstart"' in src or 'del e.component["dtstart"]' in src
+        assert 'e.component.pop("dtend"' in src or 'del e.component["dtend"]' in src
         assert 'e.component.add("dtstart"' in src or "e.component.add('dtstart'" in src
         assert 'e.component.add("dtend"' in src or "e.component.add('dtend'" in src
 
@@ -277,7 +275,8 @@ class TestEditTaskUsesIsNotNone:
 # edit_calendar_event: truthy checks and rrule removal
 # ============================================================
 class TestEditCalendarEventUsesIsNotNone:
-    """edit_calendar_event uses `is not None` checks; new_rrule=None removes RRULE."""
+    """edit_calendar_event uses `is not None` checks; recurrence is kept
+    unless new_rrule (replace) or remove_rrule=True (drop) is passed."""
 
     def test_new_summary_is_not_none(self):
         import inspect
@@ -311,14 +310,14 @@ class TestEditCalendarEventUsesIsNotNone:
         src = inspect.getsource(Tools.edit_calendar_event)
         assert "if new_alarms is not None:" in src
 
-    def test_new_rrule_none_removes(self):
-        """new_rrule=None now actually removes the RRULE property."""
+    def test_rrule_removed_only_on_explicit_request(self):
+        """RRULE is popped only via remove_rrule or when replacing with new_rrule."""
         import inspect
 
         from owuinc.owuinc import Tools
 
         src = inspect.getsource(Tools.edit_calendar_event)
-        assert "if new_rrule is not None:" in src
+        assert "remove_rrule: bool = False" in src
         lines = src.split("\n")
         in_docstring = False
         found_removal = False

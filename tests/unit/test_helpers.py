@@ -426,6 +426,58 @@ class TestParseReminders:
         assert result[2] == {"minutes": 60, "action": "DISPLAY"}
 
 
+class TestParseRrule:
+    """Test _parse_rrule validation and round-trip serialization"""
+
+    def test_valid_weekly_rule(self):
+        from owuinc.owuinc import _parse_rrule
+
+        parsed = _parse_rrule("FREQ=WEEKLY;BYDAY=MO")
+        assert parsed["FREQ"] in ("WEEKLY", ["WEEKLY"])
+
+    def test_strips_rrule_prefix(self):
+        from owuinc.owuinc import _parse_rrule
+
+        parsed = _parse_rrule("RRULE:FREQ=DAILY;COUNT=3")
+        assert parsed["FREQ"] in ("DAILY", ["DAILY"])
+
+    def test_missing_freq_raises(self):
+        import pytest
+
+        from owuinc.owuinc import _parse_rrule
+
+        with pytest.raises(ValueError, match="FREQ"):
+            _parse_rrule("BYDAY=MO")
+
+    def test_garbage_freq_raises(self):
+        import pytest
+
+        from owuinc.owuinc import _parse_rrule
+
+        with pytest.raises(ValueError):
+            _parse_rrule("FREQ=WEEKLYLY")
+
+    def test_empty_raises(self):
+        import pytest
+
+        from owuinc.owuinc import _parse_rrule
+
+        with pytest.raises(ValueError, match="empty RRULE"):
+            _parse_rrule("   ")
+
+    def test_round_trip_serializes_unescaped(self):
+        """Parsed vRecur serializes via add() without escaped separators."""
+        from icalendar import Event
+
+        from owuinc.owuinc import _parse_rrule
+
+        e = Event()
+        e.add("rrule", _parse_rrule("FREQ=WEEKLY;BYDAY=MO"))
+        ical = e.to_ical().decode()
+        assert "RRULE:FREQ=WEEKLY;BYDAY=MO" in ical
+        assert "\\;" not in ical
+
+
 class TestValidatePathEmptySandbox:
     """Test validate_path with empty SANDBOX_DIR (no sandbox confinement)."""
 

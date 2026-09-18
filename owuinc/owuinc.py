@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar,aiowebdav2
-version: 3.8.0
+version: 3.9.0
 license: MIT
 """
 
@@ -33,7 +33,7 @@ from aiowebdav2.exceptions import (
 from caldav.aio import get_async_davclient
 from caldav.lib.error import NotFoundError
 from dateutil.rrule import rrulestr
-from icalendar import Alarm, Event
+from icalendar import Alarm, Event, vRecur
 from pydantic import BaseModel, Field
 
 _logger = logging.getLogger("owuinc")
@@ -561,6 +561,33 @@ def parse_reminders(reminders: list | None = None) -> list:
         if not matched:
             raise ValueError(f"unrecognized reminder format: {r!r}")
         parsed.append({"minutes": minutes, "action": "DISPLAY"})
+    return parsed
+
+
+def _parse_rrule(rrule: str) -> vRecur:
+    """Parse and validate an RRULE string into an icalendar vRecur value.
+
+    Not optional: Component.add("rrule", <str>) calls vRecur(<str>), which is a
+    CaselessDict and raises on a string; and a raw assignment
+    (component["rrule"] = "FREQ=WEEKLY;BYDAY=MO") serializes through vText,
+    which escapes the separators and writes 'FREQ=WEEKLY\\;BYDAY=MO'.
+    """
+    text = rrule.strip()
+    if text.upper().startswith("RRULE:"):
+        text = text.split(":", 1)[1].strip()
+    if not text:
+        raise ValueError("empty RRULE")
+    try:
+        parsed = vRecur.from_ical(text)
+    except Exception as e:
+        raise ValueError(f"invalid RRULE: {e}") from None
+    if not any(k.upper() == "FREQ" for k in parsed):
+        raise ValueError("RRULE must contain FREQ (e.g. 'FREQ=WEEKLY;BYDAY=MO')")
+    try:
+        # dateutil catches semantically broken rules that parse fine as key=value.
+        rrulestr(text, dtstart=datetime.now(timezone.utc))
+    except Exception as e:
+        raise ValueError(f"invalid RRULE: {e}") from None
     return parsed
 
 
@@ -1794,24 +1821,41 @@ class Tools:
         list_name: str | None = None,
         __user__: dict = {},
         __event_emitter__=None,
-    ) -> None:
-        """Mark a task as completed by summary or uid."""
+    ) -> str:
+        """Mark a task as completed by summary or uid. Safe to repeat."""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
+        if not (summary or uid):
+            raise Exception("must specify summary or uid of task to complete")
 
         client = await self._caldav_client()
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, list_name)
             todo = await self._find_task_by_uid_or_summary(cal, uid, summary)
-            if todo.component.get("status") == "NEEDS-ACTION":
-                todo.component["status"] = "COMPLETED"
-                todo.component.add(
-                    "completed", datetime.now(timezone.utc).replace(microsecond=0)
-                )
-                todo.component["percent-complete"] = 100
+            comp = todo.component
+            label = str(comp.get("summary") or uid or summary)
+
+            # STATUS is optional in RFC 5545 and caldav's save_todo() doesn't
+            # emit it, so an absent STATUS means "still open". The old
+            # `== "NEEDS-ACTION"` gate therefore skipped exactly the tasks this
+            # tool creates: it saved an unchanged todo and reported success.
+            if str(comp.get("status") or "").upper() == "COMPLETED":
+                return f"{label} (already completed)"
+
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+            for key, value in (
+                ("status", "COMPLETED"),
+                ("percent-complete", 100),
+                ("completed", now),
+                ("last-modified", now),
+            ):
+                comp.pop(key, None)  # add() appends, so drop any existing value
+                comp.add(key, value)
+
             await todo.save()
+            return label
         finally:
             await client.close()
 
@@ -1866,6 +1910,8 @@ class Tools:
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             raise Exception(f"{calendar_name!r} not in whitelist")
 
+        parsed_rrule = _parse_rrule(rrule) if rrule else None
+
         zi = ZoneInfo(__user__["timezone"])
         now = datetime.now(zi).replace(second=0, microsecond=0)
         client = await self._caldav_client()
@@ -1897,8 +1943,8 @@ class Tools:
                 e.add("description", description)
             if location:
                 e.add("location", location)
-            if rrule:
-                e.add("rrule", rrule)
+            if parsed_rrule is not None:
+                e.add("rrule", parsed_rrule)
 
             # Add alarm triggers.
             if alarms:
@@ -1928,16 +1974,23 @@ class Tools:
         new_location: str | None = None,
         new_alarms: list[str] | None = None,
         new_rrule: str | None = None,
+        remove_rrule: bool = False,
         __event_emitter__=None,
     ) -> None:
         """Edit an event by summary or uid. Only provided fields change.
-        new_alarms: relative offsets like ['15min']. new_rrule: RRULE string, or None to remove recurrence.
+        Recurrence is kept as-is unless you pass new_rrule (replace it) or remove_rrule=True (make it one-off).
+        Edits apply to the whole series for recurring events.
+        new_alarms: relative offsets like ['15min']; replaces all existing alarms.
         """
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             raise Exception(f"{calendar_name!r} not in whitelist")
         if not (summary or uid):
             raise Exception("must provide a summary or uid")
+        if remove_rrule and new_rrule:
+            raise ValueError("pass either new_rrule or remove_rrule, not both")
+
+        parsed_rrule = _parse_rrule(new_rrule) if new_rrule else None
 
         zi = ZoneInfo(__user__["timezone"])
         client = await self._caldav_client()
@@ -1950,13 +2003,14 @@ class Tools:
                 dtstart = datetime.fromisoformat(new_start)
                 if dtstart.tzinfo is None:
                     dtstart = dtstart.replace(tzinfo=zi)
-                del e.component["dtstart"]
+                e.component.pop("dtstart", None)  # del raises KeyError if absent
                 e.component.add("dtstart", dtstart)
             if new_end:
                 dtend = datetime.fromisoformat(new_end)
                 if dtend.tzinfo is None:
                     dtend = dtend.replace(tzinfo=zi)
-                del e.component["dtend"]
+                e.component.pop("dtend", None)
+                e.component.pop("duration", None)  # DTEND and DURATION are exclusive
                 e.component.add("dtend", dtend)
             if new_summary is not None:
                 e.component["summary"] = new_summary.strip()
@@ -1965,13 +2019,15 @@ class Tools:
             if new_description is not None:
                 e.component["description"] = new_description
 
-            # RRule: set to value, or remove entirely if None.
-            if new_rrule is not None:
-                e.component["rrule"] = new_rrule
-            elif "rrule" in e.component:
-                e.component.pop("rrule")
+            # Recurrence is only touched on explicit request. The old code
+            # popped RRULE whenever new_rrule was omitted, so editing the
+            # location of a weekly meeting quietly turned it into a one-off.
+            if remove_rrule:
+                e.component.pop("rrule", None)
+            elif parsed_rrule is not None:
+                e.component.pop("rrule", None)
+                e.component.add("rrule", parsed_rrule)
 
-            # Replace all alarms.
             if new_alarms is not None:
                 valarm_subs = [
                     sub for sub in e.component.subcomponents if sub.name == "VALARM"
@@ -1984,6 +2040,13 @@ class Tools:
                     a.add("trigger", timedelta(minutes=-reminder.get("minutes")))
                     a.add("description", e.component["summary"])
                     e.component.add_component(a)
+
+            # Bump SEQUENCE/LAST-MODIFIED so sync clients notice the change.
+            seq = int(e.component.get("sequence", 0) or 0)
+            e.component.pop("sequence", None)
+            e.component.add("sequence", seq + 1)
+            e.component.pop("last-modified", None)
+            e.component.add("last-modified", datetime.now(timezone.utc))
 
             await e.save()
         finally:
