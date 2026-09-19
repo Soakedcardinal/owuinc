@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar,aiowebdav2
-version: 3.10.0
+version: 3.11.0
 license: MIT
 """
 
@@ -32,8 +32,8 @@ from aiowebdav2.exceptions import (
 )
 from caldav.aio import get_async_davclient
 from caldav.lib.error import NotFoundError
-from dateutil.rrule import rrulestr
-from icalendar import Alarm, Event, vRecur
+from dateutil.rrule import rrule, rruleset, rrulestr
+from icalendar import Alarm, Component, Event, vRecur
 from pydantic import BaseModel, Field
 
 _logger = logging.getLogger("owuinc")
@@ -418,13 +418,22 @@ def webdav_safe(func: Callable) -> Callable:
 
 def _check_redos_risk(pattern: str) -> None:
     """Raise ValueError if pattern contains nested quantifiers that can cause ReDoS."""
-    from re import _parser as re_parser  # type: ignore[attr-defined]
-    from re._constants import _NamedIntConstant  # type: ignore[attr-defined]
+    try:
+        from re import _parser as re_parser  # type: ignore[attr-defined]
+        from re._constants import _NamedIntConstant  # type: ignore[attr-defined]
+    except ImportError:
+        # Private stdlib modules moved/renamed: degrade to a length cap.
+        if len(pattern) > 500:
+            raise ValueError("pattern too long for safe ReDoS analysis")
+        return
 
     def _token_name(t):
         return t.name if isinstance(t, _NamedIntConstant) else str(t)
 
-    parsed = list(re_parser.parse(pattern, re.VERBOSE))
+    # flags must match the caller's re.compile(pattern): parsing with
+    # re.VERBOSE strips whitespace/#-comments, validating a different
+    # pattern than the one that actually runs.
+    parsed = list(re_parser.parse(pattern, 0))
     _Q = {"MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT"}
 
     def _has_nested(tokens, inside_q=False):
@@ -591,6 +600,93 @@ def _parse_rrule(rrule: str) -> vRecur:
     return parsed
 
 
+def _resolve_timezone(user: dict | None, default: str = "UTC") -> ZoneInfo:
+    """Timezone from OpenWebUI's __user__, falling back to default.
+
+    OpenWebUI may omit __user__ entirely or lack the "timezone" key (e.g.
+    API-key access without OAuth), and __user__["timezone"] then raised
+    KeyError, which surfaced as the useless error "'timezone'".
+    """
+    name = (user or {}).get("timezone") or default or "UTC"
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return ZoneInfo("UTC")
+
+
+def _get_parent_uid(component) -> str | None:
+    """Parent UID from a component's RELATED-TO properties, or None.
+
+    RELATED-TO may occur several times (single value or list). A missing
+    RELTYPE parameter means PARENT per RFC 5545; CHILD reverse-relations
+    added by caldav's _handle_reverse_relations are ignored.
+    """
+    rel = component.get("related-to")
+    if rel is None:
+        return None
+    for r in rel if isinstance(rel, list) else [rel]:
+        if str(r.params.get("RELTYPE", "PARENT")).upper() == "PARENT":
+            return str(r)
+    return None
+
+
+def _to_aware(value: date | datetime, tz: ZoneInfo) -> datetime:
+    """Coerce an iCal date/datetime value to an aware datetime in tz."""
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return datetime.combine(value, datetime.min.time(), tzinfo=tz)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=tz)
+    return value
+
+
+def _expand_occurrences(
+    rrule_str: str,
+    dtstart: datetime,
+    window_start: datetime,
+    window_end: datetime,
+    exdates: list[datetime] | None = None,
+    overrides: dict[datetime, datetime | None] | None = None,
+) -> list[tuple[datetime, datetime | None]]:
+    """Occurrence starts of a recurring series inside [window_start, window_end].
+
+    Returns (start, replaced_instance) tuples sorted by start; replaced_instance
+    is the original instance start when an override applied, else None.
+    dtstart/window bounds must be aware datetimes. EXDATE instances are dropped;
+    overrides maps RECURRENCE-ID instance starts to their new start, or None
+    when the instance was cancelled. An occurrence beginning exactly at
+    window_start is included.
+    """
+    rset = rruleset()
+    rule = rrulestr(rrule_str, dtstart=dtstart)
+    if not isinstance(rule, rrule):
+        raise ValueError("unsupported RRULE value")
+    rset.rrule(rule)
+    for ex in exdates or []:
+        rset.exdate(ex)
+    ov = overrides or {}
+
+    result: list[tuple[datetime, datetime | None]] = []
+    seen: set[datetime] = set()
+    for start in rset.between(window_start, window_end, inc=True):
+        replaced = None
+        if start in ov:
+            new = ov[start]
+            if new is None:
+                continue
+            start, replaced = new, start
+        if start in seen:
+            continue
+        seen.add(start)
+        result.append((start, replaced))
+    for orig, new in ov.items():
+        # Override moved an instance from outside the window into it.
+        if new is not None and new not in seen and window_start <= new <= window_end:
+            seen.add(new)
+            result.append((new, orig))
+    result.sort(key=lambda item: item[0])
+    return result
+
+
 # ============================================================
 # WHITELIST / BLACKLIST CHECKS
 # ============================================================
@@ -649,6 +745,10 @@ class Tools:
         )
         DEFAULT_TASK_LIST: str = Field(
             default="Tasks", description="Default task list for task operations"
+        )
+        DEFAULT_TIMEZONE: str = Field(
+            default="UTC",
+            description="Fallback timezone when the user profile has none",
         )
         CALENDAR_WHITELIST: str = Field(
             default="Personal",
@@ -1631,18 +1731,7 @@ class Tools:
             task_map: dict[str, dict] = {}
             for todo in todos:
                 uid = str(todo.component["uid"])
-                # Extract parent-only RELATED-TO from raw iCal, ignoring CHILD
-                # reverse-relations added by caldav's _handle_reverse_relations.
-                ical_text = todo.component.to_ical().decode()
-                parent_id = None
-                for m in re.finditer(
-                    r"RELATED-TO(;RELTYPE=(?:PARENT|[^;]*))?:([^;\r\n]+)", ical_text
-                ):
-                    reltype_part = m.group(1)
-                    rel_uid = m.group(2).strip()
-                    if reltype_part is None or reltype_part == ";RELTYPE=PARENT":
-                        parent_id = rel_uid
-                        break
+                parent_id = _get_parent_uid(todo.component)
 
                 task_map[uid] = {
                     key: (
@@ -1789,11 +1878,9 @@ class Tools:
                 parent_map: dict[str, str] = {}
                 for t in await cal.todos():
                     tid = str(t.component["uid"])
-                    rel = t.component.get("related-to")
-                    if rel is not None:
-                        for r in [rel] if not isinstance(rel, list) else rel:
-                            if r.params.get("RELTYPE") == "PARENT":
-                                parent_map[tid] = str(r)
+                    rel_parent = _get_parent_uid(t.component)
+                    if rel_parent is not None:
+                        parent_map[tid] = rel_parent
 
                 visited = {my_uid}
                 cur = parent_uid
@@ -1942,7 +2029,7 @@ class Tools:
 
         parsed_rrule = _parse_rrule(rrule) if rrule else None
 
-        zi = ZoneInfo(__user__["timezone"])
+        zi = _resolve_timezone(__user__, self.valves.DEFAULT_TIMEZONE)
         now = datetime.now(zi).replace(second=0, microsecond=0)
         client = await self._caldav_client()
         try:
@@ -2022,7 +2109,7 @@ class Tools:
 
         parsed_rrule = _parse_rrule(new_rrule) if new_rrule else None
 
-        zi = ZoneInfo(__user__["timezone"])
+        zi = _resolve_timezone(__user__, self.valves.DEFAULT_TIMEZONE)
         client = await self._caldav_client()
         try:
             principal = await client.principal()
@@ -2089,7 +2176,11 @@ class Tools:
         __user__: dict = {},
         __event_emitter__=None,
     ) -> list[dict]:
-        """Retrieve upcoming events from a calendar (next 30 days)."""
+        """Retrieve upcoming events from a calendar (next 30 days).
+
+        Recurring events expand into one entry per occurrence within the
+        window; EXDATE exclusions and RECURRENCE-ID overrides are applied.
+        """
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             raise Exception(f"{calendar_name!r} not in whitelist")
@@ -2099,75 +2190,128 @@ class Tools:
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, calendar_name)
-            tz = ZoneInfo(__user__["timezone"])
+            tz = _resolve_timezone(__user__, self.valves.DEFAULT_TIMEZONE)
+            now = datetime.now(tz)
+            window_end = now + timedelta(days=30)
             events = await cal.search(
-                start=datetime.now(tz),
-                end=datetime.now(tz) + timedelta(days=30),
+                start=now,
+                end=window_end,
                 expand=False,
                 event=True,
             )
+            if not events:
+                # Some servers (e.g. Radicale) mishandle time-range REPORTs
+                # and return nothing; refetch everything and let the
+                # client-side window checks below filter.
+                events = await cal.events()
+
+            # Group components by uid so RECURRENCE-ID overrides render
+            # together with their master (servers return overrides as
+            # separate VEVENT components).
+            by_uid: dict[str, list] = {}
+            for e in events:
+                by_uid.setdefault(str(e.component.get("uid") or ""), []).append(e)
 
             for e in events:
+                comp = e.component
+                if comp.get("recurrence-id") is not None:
+                    continue  # rendered via its master series below
+
                 event_dict: dict[str, str | list[str]] = {}
 
                 for field in ["summary", "description", "location", "organizer", "url"]:
-                    if val := e.component.get(field):
+                    if val := comp.get(field):
                         event_dict[field] = str(val)
 
-                if cats := e.component.get("categories"):
+                if cats := comp.get("categories"):
                     event_dict["categories"] = [str(c) for c in cats.cats]
 
-                dtstart_val = e.component.get("dtstart")
-                dtend_val = e.component.get("dtend")
-                if dtstart_val:
-                    event_dict["dtstart"] = dtstart_val.dt.isoformat()
-                if dtend_val:
-                    event_dict["dtend"] = dtend_val.dt.isoformat()
-
-                # Handle recurring events: compute next occurrence.
-                if e.component.get("rrule"):
-                    rrule_str = e.component["rrule"].to_ical().decode("utf-8")
-                    event_dict["rrule"] = rrule_str
-                    try:
-                        duration = (
-                            (dtend_val.dt - dtstart_val.dt)
-                            if dtstart_val and dtend_val
-                            else timedelta(hours=1)
-                        )
-                        dtstart_dt = dtstart_val.dt
-                        if isinstance(dtstart_dt, date) and not isinstance(
-                            dtstart_dt, datetime
-                        ):
-                            dtstart_dt = datetime.combine(
-                                dtstart_dt,
-                                datetime.min.time(),
-                                tzinfo=ZoneInfo(__user__["timezone"]),
-                            )
-                        elif dtstart_dt.tzinfo is None:
-                            dtstart_dt = dtstart_dt.replace(
-                                tzinfo=ZoneInfo(__user__["timezone"])
-                            )
-                        else:
-                            dtstart_dt = dtstart_dt.astimezone(
-                                ZoneInfo(__user__["timezone"])
-                            )
-
-                        rrule_obj = rrulestr(rrule_str, dtstart=dtstart_dt)
-                        now = datetime.now(ZoneInfo(__user__["timezone"]))
-                        next_occ = rrule_obj.after(now, inc=False)
-
-                        if next_occ:
-                            event_dict["dtstart"] = next_occ.isoformat()
-                            event_dict["dtend"] = (next_occ + duration).isoformat()
-                    except Exception:
-                        pass
-
-                if len(e.component.alarms.times) > 0:
+                if len(comp.alarms.times) > 0:
                     event_dict["alarms"] = [
-                        str(time.trigger) for time in e.component.alarms.times
+                        str(time.trigger) for time in comp.alarms.times
                     ]
 
-                event_data.append(event_dict)
+                dtstart_val = comp.get("dtstart")
+                dtend_val = comp.get("dtend")
+
+                if comp.get("rrule") is None:
+                    # One-off: keep only if it overlaps the window, even when
+                    # the server ignored the time-range filter.
+                    if dtstart_val:
+                        ev_start = _to_aware(dtstart_val.dt, tz)
+                        ev_end = _to_aware(dtend_val.dt, tz) if dtend_val else ev_start
+                        if ev_end < now or ev_start > window_end:
+                            continue
+                        event_dict["dtstart"] = dtstart_val.dt.isoformat()
+                    if dtend_val:
+                        event_dict["dtend"] = dtend_val.dt.isoformat()
+                    event_data.append(event_dict)
+                    continue
+
+                # Recurring: expand into every occurrence inside the window,
+                # honoring EXDATE exclusions and RECURRENCE-ID overrides.
+                # (expand=True is server-side and unsupported by many
+                # servers, e.g. Radicale, so the expansion happens here.)
+                if dtstart_val is None:
+                    continue  # RRULE without DTSTART is malformed; skip
+                rrule_value = comp["rrule"].to_ical().decode("utf-8")
+                duration = (
+                    dtend_val.dt - dtstart_val.dt if dtend_val else timedelta(hours=1)
+                )
+                master_start = _to_aware(dtstart_val.dt, tz)
+
+                exdates: list[datetime] = []
+                ex = comp.get("exdate")
+                if ex is not None:
+                    for x in ex if isinstance(ex, list) else [ex]:
+                        # vDDDLists wraps one or more vDDDTypes values
+                        dts = getattr(x, "dts", None)
+                        for d in dts if dts is not None else [x]:
+                            exdates.append(_to_aware(d.dt, tz))
+
+                overrides: dict[datetime, datetime | None] = {}
+                override_comps: dict[datetime, Component] = {}
+                for sib in by_uid.get(str(comp.get("uid") or ""), []):
+                    sc = sib.component
+                    rid = sc.get("recurrence-id")
+                    if rid is None:
+                        continue
+                    orig = _to_aware(rid.dt, tz)
+                    if str(sc.get("status") or "").upper() == "CANCELLED":
+                        overrides[orig] = None
+                    elif sc.get("dtstart") is not None:
+                        overrides[orig] = _to_aware(sc["dtstart"].dt, tz)
+                    override_comps[orig] = sc
+
+                for start, replaced in _expand_occurrences(
+                    rrule_value,
+                    master_start,
+                    now,
+                    window_end,
+                    exdates=exdates,
+                    overrides=overrides,
+                ):
+                    occ = dict(event_dict)
+                    occ["rrule"] = rrule_value
+                    end = start + duration
+                    if (
+                        replaced is not None
+                        and (oc := override_comps.get(replaced)) is not None
+                    ):
+                        for field in [
+                            "summary",
+                            "description",
+                            "location",
+                            "organizer",
+                            "url",
+                        ]:
+                            if val := oc.get(field):
+                                occ[field] = str(val)
+                        if oc.get("dtend") is not None:
+                            end = _to_aware(oc["dtend"].dt, tz)
+                    occ["dtstart"] = start.isoformat()
+                    occ["dtend"] = end.isoformat()
+                    event_data.append(occ)
 
             return event_data
         finally:

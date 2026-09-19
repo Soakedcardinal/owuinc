@@ -3,6 +3,8 @@ Helper function tests
 Tests sandbox security, path traversal prevention, and normalization
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from owuinc.owuinc import (
@@ -521,3 +523,256 @@ class TestValidatePathEmptySandbox:
         assert validate_path("", valves) == "/"
         assert validate_path(".", valves) == "/"
         assert validate_path("/", valves) == "/"
+
+
+# ============================================================
+# _resolve_timezone
+# ============================================================
+class TestResolveTimezone:
+    def test_user_timezone_used(self):
+        from owuinc.owuinc import _resolve_timezone
+
+        assert str(_resolve_timezone({"timezone": "Europe/Berlin"})) == "Europe/Berlin"
+
+    def test_none_user_falls_back(self):
+        from owuinc.owuinc import _resolve_timezone
+
+        assert str(_resolve_timezone(None, "America/New_York")) == "America/New_York"
+
+    def test_missing_key_falls_back(self):
+        from owuinc.owuinc import _resolve_timezone
+
+        assert str(_resolve_timezone({}, "Europe/Paris")) == "Europe/Paris"
+
+    def test_empty_timezone_falls_back(self):
+        from owuinc.owuinc import _resolve_timezone
+
+        assert (
+            str(_resolve_timezone({"timezone": ""}, "Europe/Paris")) == "Europe/Paris"
+        )
+
+    def test_invalid_timezone_falls_back_utc(self):
+        from owuinc.owuinc import _resolve_timezone
+
+        assert str(_resolve_timezone({"timezone": "Mars/Olympus"})) == "UTC"
+
+
+# ============================================================
+# _get_parent_uid
+# ============================================================
+class TestGetParentUid:
+    @staticmethod
+    def _todo(props: str):
+        from icalendar import Calendar
+
+        cal = Calendar.from_ical(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//EN\r\n"
+            "BEGIN:VTODO\r\nUID:me\r\nSUMMARY:x\r\n"
+            + props
+            + "END:VTODO\r\nEND:VCALENDAR\r\n"
+        )
+        return cal.walk("VTODO")[0]
+
+    def test_no_related_to_returns_none(self):
+        from owuinc.owuinc import _get_parent_uid
+
+        assert _get_parent_uid(self._todo("")) is None
+
+    def test_missing_reltype_means_parent(self):
+        from owuinc.owuinc import _get_parent_uid
+
+        comp = self._todo("RELATED-TO:parent1\r\n")
+        assert _get_parent_uid(comp) == "parent1"
+
+    def test_explicit_parent_reltype(self):
+        from owuinc.owuinc import _get_parent_uid
+
+        comp = self._todo("RELATED-TO;RELTYPE=PARENT:parent2\r\n")
+        assert _get_parent_uid(comp) == "parent2"
+
+    def test_child_reltype_ignored(self):
+        from owuinc.owuinc import _get_parent_uid
+
+        comp = self._todo("RELATED-TO;RELTYPE=CHILD:other\r\n")
+        assert _get_parent_uid(comp) is None
+
+    def test_parent_found_after_child_reverse_relation(self):
+        from owuinc.owuinc import _get_parent_uid
+
+        comp = self._todo(
+            "RELATED-TO;RELTYPE=CHILD:caldav-xyz\r\n"
+            "RELATED-TO;RELTYPE=PARENT:real-parent\r\n"
+        )
+        assert _get_parent_uid(comp) == "real-parent"
+
+    def test_folded_long_uid_not_truncated(self):
+        """Regex-based extraction truncated folded (75-octet wrapped) UIDs."""
+        from owuinc.owuinc import _get_parent_uid
+
+        uid = "a" * 70 + "-" + "b" * 20
+        folded = f"RELATED-TO;RELTYPE=PARENT:{uid[:70]}\r\n {uid[70:]}\r\n"
+        assert _get_parent_uid(self._todo(folded)) == uid
+
+
+# ============================================================
+# _to_aware
+# ============================================================
+class TestToAware:
+    def test_date_becomes_midnight_aware(self):
+        from datetime import date
+        from zoneinfo import ZoneInfo
+
+        from owuinc.owuinc import _to_aware
+
+        result = _to_aware(date(2026, 9, 1), ZoneInfo("UTC"))
+        assert result.hour == 0 and result.tzinfo is not None
+
+    def test_naive_datetime_gets_tz(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from owuinc.owuinc import _to_aware
+
+        result = _to_aware(datetime(2026, 9, 1, 9, 0), ZoneInfo("UTC"))
+        assert result.tzinfo is not None
+
+    def test_aware_datetime_unchanged(self):
+        from datetime import datetime, timezone
+
+        from owuinc.owuinc import _to_aware
+
+        dt = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
+        assert _to_aware(dt, timezone.utc) == dt
+
+
+# ============================================================
+# _expand_occurrences
+# ============================================================
+class TestExpandOccurrences:
+    BASE = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
+
+    def test_daily_count_within_window(self):
+        from owuinc.owuinc import _expand_occurrences
+
+        res = _expand_occurrences(
+            "FREQ=DAILY;COUNT=5", self.BASE, self.BASE, self.BASE + timedelta(days=10)
+        )
+        assert [s for s, _ in res] == [self.BASE + timedelta(days=i) for i in range(5)]
+        assert all(r is None for _, r in res)
+
+    def test_occurrence_at_window_start_included(self):
+        """Old code used rrule.after(now, inc=False): an event starting
+        exactly now was skipped."""
+        from owuinc.owuinc import _expand_occurrences
+
+        res = _expand_occurrences(
+            "FREQ=DAILY", self.BASE, self.BASE, self.BASE + timedelta(days=2)
+        )
+        assert res[0][0] == self.BASE
+
+    def test_no_occurrences_outside_window(self):
+        from owuinc.owuinc import _expand_occurrences
+
+        res = _expand_occurrences(
+            "FREQ=WEEKLY", self.BASE, self.BASE, self.BASE + timedelta(days=3)
+        )
+        assert len(res) == 1
+
+    def test_exdate_removes_instance(self):
+        from owuinc.owuinc import _expand_occurrences
+
+        res = _expand_occurrences(
+            "FREQ=DAILY;COUNT=3",
+            self.BASE,
+            self.BASE,
+            self.BASE + timedelta(days=10),
+            exdates=[self.BASE + timedelta(days=1)],
+        )
+        assert [s for s, _ in res] == [self.BASE, self.BASE + timedelta(days=2)]
+
+    def test_override_replaces_instance(self):
+        from owuinc.owuinc import _expand_occurrences
+
+        moved = self.BASE + timedelta(hours=3)
+        res = _expand_occurrences(
+            "FREQ=DAILY;COUNT=2",
+            self.BASE,
+            self.BASE,
+            self.BASE + timedelta(days=10),
+            overrides={self.BASE: moved},
+        )
+        assert res[0] == (moved, self.BASE)
+        assert res[1][0] == self.BASE + timedelta(days=1)
+
+    def test_cancelled_override_drops_instance(self):
+        from owuinc.owuinc import _expand_occurrences
+
+        res = _expand_occurrences(
+            "FREQ=DAILY;COUNT=2",
+            self.BASE,
+            self.BASE,
+            self.BASE + timedelta(days=10),
+            overrides={self.BASE: None},
+        )
+        assert [s for s, _ in res] == [self.BASE + timedelta(days=1)]
+
+    def test_override_into_window_from_outside(self):
+        from owuinc.owuinc import _expand_occurrences
+
+        res = _expand_occurrences(
+            "FREQ=DAILY",
+            self.BASE,
+            self.BASE + timedelta(hours=1),
+            self.BASE + timedelta(hours=3),
+            overrides={self.BASE: self.BASE + timedelta(hours=2)},
+        )
+        assert res == [(self.BASE + timedelta(hours=2), self.BASE)]
+
+
+# ============================================================
+# _check_redos_risk
+# ============================================================
+class TestCheckRedosRisk:
+    def test_nested_quantifier_raises(self):
+        from owuinc.owuinc import _check_redos_risk
+
+        with pytest.raises(ValueError, match="nested quantifiers"):
+            _check_redos_risk("(a+)+b")
+
+    def test_plain_pattern_passes(self):
+        from owuinc.owuinc import _check_redos_risk
+
+        _check_redos_risk(r"ERROR: \w+")
+
+    def test_pattern_with_literal_space_quantifier_passes(self):
+        """re.compile('( )+') is valid; parsing with re.VERBOSE would
+        strip the space and fail with 'nothing to repeat' — validating a
+        different pattern than the one that runs."""
+        import re
+
+        from owuinc.owuinc import _check_redos_risk
+
+        re.compile("( )+")  # must be a valid runnable pattern
+        _check_redos_risk("( )+")
+
+    def test_hash_pattern_not_treated_as_comment(self):
+        from owuinc.owuinc import _check_redos_risk
+
+        _check_redos_risk("a+b#c")
+
+    def test_import_fallback_uses_length_cap(self, monkeypatch):
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name.startswith("re._"):
+                raise ImportError
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        from owuinc.owuinc import _check_redos_risk
+
+        _check_redos_risk("(a+)+")  # analysis degraded: short pattern allowed
+        with pytest.raises(ValueError, match="too long"):
+            _check_redos_risk("a" * 501)

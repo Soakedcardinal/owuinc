@@ -507,6 +507,48 @@ class TestTaskOperations:
         audits = [t for t in all_todos if str(t.component.get("summary")) == "Audit"]
         assert len(audits) == 1, "no extra completed copy should be filed"
 
+    @staticmethod
+    async def _seed_todo(cal, uid: str, summary: str, related_to: str | None = None):
+        """PUT a raw VTODO with RELATED-TO that has no RELTYPE parameter."""
+        zi = ZoneInfo("UTC")
+        stamp = datetime.now(zi).strftime("%Y%m%dT%H%M%SZ")
+        rel = f"RELATED-TO:{related_to}\r\n" if related_to else ""
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//owuinc-test//EN\r\n"
+            "BEGIN:VTODO\r\n"
+            f"UID:{uid}\r\nSUMMARY:{summary}\r\nDTSTAMP:{stamp}\r\n{rel}"
+            "END:VTODO\r\nEND:VCALENDAR\r\n"
+        )
+        await cal.save_todo(ical=ical)
+
+    @pytest.mark.asyncio
+    async def test_tasks_nests_link_without_reltype(self, caldav_tools, tasks_calendar):
+        """RELATED-TO without a RELTYPE parameter means PARENT (RFC 5545)."""
+        await self._seed_todo(tasks_calendar, "pt-parent", "Plan trip")
+        await self._seed_todo(
+            tasks_calendar, "pt-child", "Book hotel", related_to="pt-parent"
+        )
+        tree = await caldav_tools.tasks(list_name="Tasks")
+        assert tree["result"] == "True"
+        roots = {t["summary"]: t for t in tree["data"]}
+        assert "Book hotel" not in roots, "child must not appear as a root"
+        kids = [s["summary"] for s in roots["Plan trip"].get("subtasks", [])]
+        assert "Book hotel" in kids
+
+    @pytest.mark.asyncio
+    async def test_edit_task_cycle_detected_through_reltype_less_link(
+        self, caldav_tools, tasks_calendar
+    ):
+        """A->B (no RELTYPE): reparenting B under A is a cycle; the old
+        ancestor walk only counted RELTYPE=PARENT links and missed it."""
+        await self._seed_todo(tasks_calendar, "cyc-a", "Cyc A", related_to="cyc-b")
+        await self._seed_todo(tasks_calendar, "cyc-b", "Cyc B")
+        result = await caldav_tools.edit_task(
+            uid="cyc-b", new_related_to="Cyc A", list_name="Tasks"
+        )
+        assert result["result"] == "False"
+        assert "circular" in result["details"]
+
     @pytest.mark.asyncio
     async def test_delete_task(self, caldav_tools, tasks_calendar):
         """Verify delete_task removes a task from the list."""
@@ -577,19 +619,91 @@ class TestEventOperations:
 
     @pytest.mark.asyncio
     async def test_calendar_events(self, caldav_tools, future_event):
-        """SKIP: Radicale returns 0 events for all time-range searches.
+        """Verify calendar_events surfaces the future event.
 
-        calendar_events uses cal.search(start=datetime.now()), which
-        Radicale ignores entirely — returns empty for open-ended AND closed
-        ranges. Only cal.search(event=True) with no time filter works.
-
-        This means calendar_events is fundamentally untestable against
-        Radicale. Needs real Nextcloud or a CalDAV server that implements
-        RFC 4791 time-range filtering.
+        Radicale ignores server-side time-range filters, so this also
+        covers the client-side window fallback (refetch + local filter).
         """
-        pytest.skip(
-            "calendar_events untestable — Radicale ignores time-range filters in search() (see caldav.compatibility_hints.radicale old_flags: no_search_openended)"
+        result = await caldav_tools.calendar_events(
+            calendar_name="Personal", __user__={"timezone": "America/New_York"}
         )
+        assert result["result"] == "True"
+        summaries = [e.get("summary") for e in result["data"]]
+        assert "Test event" in summaries
+
+    @staticmethod
+    async def _seed_event(
+        cal,
+        uid: str,
+        summary: str,
+        dtstart=None,
+        dtend=None,
+        rrule: str | None = None,
+        exdates=(),
+    ):
+        """PUT a raw VEVENT so uid/RRULE/EXDATE are fully controlled."""
+        zi = ZoneInfo("UTC")
+
+        def f(dt):
+            return dt.strftime("%Y%m%dT%H%M%SZ")
+
+        lines = [
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//owuinc-test//EN",
+            "BEGIN:VEVENT",
+            f"UID:{uid}",
+            f"SUMMARY:{summary}",
+            f"DTSTAMP:{f(datetime.now(zi))}",
+        ]
+        if dtstart:
+            lines.append(f"DTSTART:{f(dtstart)}")
+        if dtend:
+            lines.append(f"DTEND:{f(dtend)}")
+        if rrule:
+            lines.append(f"RRULE:{rrule}")
+        for ex in exdates:
+            lines.append(f"EXDATE:{f(ex)}")
+        lines += ["END:VEVENT", "END:VCALENDAR", ""]
+        await cal.save_event(ical="\r\n".join(lines))
+
+    @pytest.mark.asyncio
+    async def test_calendar_events_expands_recurring_with_exdate(
+        self, caldav_tools, personal_calendar
+    ):
+        """Recurring series expands to one entry per occurrence inside the
+        window, and the EXDATE instance is dropped.
+
+        (RECURRENCE-ID overrides share the master's UID; Radicale rejects
+        duplicate UIDs with 409, so override handling is unit-tested
+        against the pure expander instead.)
+        """
+        zi = ZoneInfo("UTC")
+        base = datetime.now(zi).replace(second=0, microsecond=0) + timedelta(hours=1)
+        uid = "recurring-series-test"
+        await self._seed_event(
+            personal_calendar,
+            uid,
+            "Standup",
+            base,
+            base + timedelta(hours=1),
+            rrule="FREQ=DAILY;COUNT=3",
+            exdates=(base + timedelta(days=1),),
+        )
+
+        result = await caldav_tools.calendar_events(
+            calendar_name="Personal", __user__={"timezone": "UTC"}
+        )
+        assert result["result"] == "True"
+        occurrences = [e for e in result["data"] if e.get("rrule")]
+        assert len(occurrences) == 2, "COUNT=3 minus one EXDATE instance"
+        day2 = (base + timedelta(days=1)).strftime("%Y-%m-%d")
+        assert not any(
+            e["dtstart"].startswith(day2) for e in occurrences
+        ), "EXDATE instance must not be returned"
+        starts = sorted(e["dtstart"] for e in occurrences)
+        assert starts[0] == base.isoformat()
+        assert starts[1] == (base + timedelta(days=2)).isoformat()
 
     @pytest.mark.asyncio
     async def test_edit_calendar_event(self, caldav_tools, future_event):
