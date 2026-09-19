@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "owuinc"
-version = "3.17.0"
+version = "3.17.1"
 description = "Manage files, tasks, and calendars via WebDAV and CalDAV."
 readme = "README.md"
 license = {text = "MIT"}

@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar>=6.0,aiowebdav2>=0.6,pydantic>=2,tiktoken>=0.5,aiohttp>=3.9,python-dateutil>=2.8.2
-version: 3.17.0
+version: 3.17.1
 license: MIT
 """
 
@@ -319,17 +319,17 @@ def _format_status(op: str, kwargs: dict, response: dict) -> str:
         return f"add_task '{summary}' {list_name}"
 
     if op == "edit_task":
-        target = kwargs.get("summary") or kwargs.get("uid", "(unknown)")
+        target = kwargs.get("summary", "(unknown)")
         list_name = kwargs.get("list_name") or "(default)"
         return f"edit_task '{target}' {list_name}"
 
     if op == "complete_task":
-        target = kwargs.get("summary") or kwargs.get("uid", "(unknown)")
+        target = kwargs.get("summary", "(unknown)")
         list_name = kwargs.get("list_name") or "(default)"
         return f"complete_task '{target}' {list_name}"
 
     if op == "delete_task":
-        target = kwargs.get("summary") or kwargs.get("uid", "(unknown)")
+        target = kwargs.get("summary", "(unknown)")
         list_name = kwargs.get("list_name") or "(default)"
         return f"delete_task '{target}' {list_name}"
 
@@ -339,7 +339,7 @@ def _format_status(op: str, kwargs: dict, response: dict) -> str:
         return f"create_event '{summary}' {cal}"
 
     if op == "edit_calendar_event":
-        target = kwargs.get("summary") or kwargs.get("uid", "(unknown)")
+        target = kwargs.get("summary", "(unknown)")
         cal = kwargs.get("calendar_name") or "(default)"
         return f"edit_event '{target}' {cal}"
 
@@ -350,7 +350,7 @@ def _format_status(op: str, kwargs: dict, response: dict) -> str:
         return f"{cmd}\n{tok}" if tok else cmd
 
     if op == "delete_calendar_event":
-        target = kwargs.get("summary") or kwargs.get("uid", "(unknown)")
+        target = kwargs.get("summary", "(unknown)")
         cal = kwargs.get("calendar_name") or "(default)"
         return f"delete_event '{target}' {cal}"
 
@@ -1071,32 +1071,37 @@ class Tools:
         raise NotFoundError(f"No calendar with name {calendar_name!r} found")
 
     async def _resolve_task_uid(self, cal, identifier: str) -> str:
-        """Resolve a task identifier to its UID.
+        """Resolve a parent-task identifier (by summary) to its UID.
 
-        If identifier is a UUID, verify it exists before returning.
-        Otherwise, look up the task by summary and return its UID.
-        Raises if not found or multiple tasks match the summary.
+        The model never sees a uid, so identifier must be a summary, not a
+        uid: matching an identifier that happens to look like one is
+        removed, since it invited a "pass the uid back" workflow the model
+        cannot follow. Raises if not found or ambiguous; ambiguity is
+        reported by due date, mirroring _find_task_by_summary.
         """
         todos = await cal.todos()
-        todo_map = {str(t.component["uid"]): t for t in todos}
-        try:
-            uuid.UUID(identifier)
-        except (ValueError, AttributeError):
-            pass
-        else:
-            if identifier not in todo_map:
-                raise Exception(f"task with uid {identifier!r} not found")
-            return identifier
-        summary_matches = []
         norm_identifier = identifier.strip().lower()
-        for todo in todos:
-            if norm_identifier == str(todo.component["summary"]).strip().lower():
-                summary_matches.append(str(todo.component["uid"]))
-        if len(summary_matches) > 1:
-            raise Exception(f"Multiple matches for {identifier!r}: {summary_matches}")
-        if len(summary_matches) == 1:
-            return summary_matches[0]
-        raise Exception(f"Parent task with summary {identifier!r} not found")
+        matches = [
+            t
+            for t in todos
+            if norm_identifier == str(t.component["summary"]).strip().lower()
+        ]
+        if not matches:
+            raise Exception(f"parent task with summary {identifier!r} not found")
+        if len(matches) > 1:
+            options = []
+            for t in matches:
+                due_val = t.component.get("due")
+                due_s = due_val.dt.isoformat() if due_val else "no due date"
+                options.append(f"due {due_s}")
+            raise Exception(
+                f"{len(matches)} tasks named {identifier!r} — "
+                + "; ".join(options)
+                + ". This parent reference is ambiguous; rename one of the "
+                "tasks or use edit_task's due=/description_contains= on the "
+                "child after creating it to set the parent unambiguously."
+            )
+        return str(matches[0].component["uid"])
 
     async def _find_task_by_summary(
         self,
