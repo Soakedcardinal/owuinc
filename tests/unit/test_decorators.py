@@ -45,6 +45,39 @@ class TestSanitize:
     def test_preserves_plain_message(self):
         assert _sanitize("not whitelisted") == "not whitelisted"
 
+    def test_redacts_literal_secrets(self):
+        msg = "Basic auth failed for ncuser / sup3rsecret"
+        out = _sanitize(msg, ("sup3rsecret", "ncuser"))
+        assert "sup3rsecret" not in out
+        assert "ncuser" not in out
+        assert "<redacted>" in out
+
+    def test_empty_secret_ignored(self):
+        assert _sanitize("user ncuser", ("",)) == "user ncuser"
+
+
+class TestSafeDecoratorSecrets:
+    class CredValves:
+        DEBUG_MODE = False
+        NEXTCLOUD_APP_PASSWORD = "sup3rsecret"
+        NEXTCLOUD_USERNAME = "ncuser"
+
+    class CredTools:
+        def __init__(self):
+            self.valves = TestSafeDecoratorSecrets.CredValves()
+
+    async def test_error_details_redact_credentials(self):
+        tool = self.CredTools()
+
+        @webdav_safe
+        async def boom(self):
+            raise ValueError("auth failed: sup3rsecret")
+
+        res = await boom(tool)
+        assert res["result"] == "False"
+        assert "sup3rsecret" not in res["details"]
+        assert "<redacted>" in res["details"]
+
 
 # ---------------------------------------------------------------------------
 # _safe decorator — general behavior

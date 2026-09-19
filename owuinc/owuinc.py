@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar,aiowebdav2
-version: 3.11.0
+version: 3.12.0
 license: MIT
 """
 
@@ -69,8 +69,16 @@ _CONNECTION_EXC = (
 # ============================================================
 
 
-def _sanitize(msg: str) -> str:
-    """Strip URLs, UUIDs, and WebDAV paths from error messages to prevent info leaks."""
+def _sanitize(msg: str, secrets: tuple[str, ...] = ()) -> str:
+    """Strip URLs, UUIDs, and WebDAV paths from error messages to prevent info leaks.
+
+    Literal credential values in `secrets` are redacted first so they never
+    surface verbatim in tool output or logs (aiohttp auth errors can echo
+    configured credentials).
+    """
+    for secret in secrets:
+        if secret:
+            msg = msg.replace(secret, "<redacted>")
     msg = _URL_RE.sub("<url>", msg)
     msg = _UUID_RE.sub("<uuid>", msg)
     msg = re.sub(r"/remote\.php/dav/files/[^/\s]+(?:/[^/\s]*)*", "<path>", msg)
@@ -314,6 +322,17 @@ def _safe(func: Callable) -> Callable:
             valves = args[0].valves
         emitter = kwargs.get("__event_emitter__")
 
+        secrets: tuple[str, ...] = ()
+        if valves is not None:
+            secrets = tuple(
+                s
+                for s in (
+                    getattr(valves, "NEXTCLOUD_APP_PASSWORD", ""),
+                    getattr(valves, "NEXTCLOUD_USERNAME", ""),
+                )
+                if s
+            )
+
         debug = (
             bool(valves.DEBUG_MODE)
             if valves and hasattr(valves, "DEBUG_MODE")
@@ -367,7 +386,9 @@ def _safe(func: Callable) -> Callable:
                     else "connection error"
                 )
             else:
-                details = _sanitize(str(e)) or _sanitize(type(e).__name__)
+                details = _sanitize(str(e), secrets) or _sanitize(
+                    type(e).__name__, secrets
+                )
 
             if debug:
                 _logger.warning(f"{op}: error ({elapsed}ms) → {details}", exc_info=True)
@@ -768,6 +789,12 @@ class Tools:
                 "Comma-separated paths (relative to sandbox root) to exclude from all file operations. SECURITY NOTE: uses default-allow semantics (empty = no restrictions). The primary file boundary is SANDBOX_DIR. CALENDAR_WHITELIST and TASK_LIST_WHITELIST use default-deny semantics — only explicitly listed calendars/task lists are accessible."
             ),
         )
+        READ_ONLY_PATHS: str = Field(
+            default="AGENTS.md,SOUL.md,IDENTITY.md,TOOLS.md,STYLE.md,USER.md,MEMORY.md",
+            description=(
+                "Comma-separated paths (relative to sandbox root) the agent may read (cat/ls/grep/stat) but never modify via write/append/edit/rm/mv/cp. Defaults to the files the startup-context filter injects as system prompt, so the agent cannot rewrite its own instructions."
+            ),
+        )
         DEBUG_MODE: bool = Field(
             default=False,
             description=(
@@ -923,35 +950,59 @@ class Tools:
             raise ValueError("Access denied")
 
     async def _check_blacklisted_recursive(self, client, full_path: str) -> None:
-        """Raise ValueError if full_path or any descendant is blacklisted."""
+        """Raise ValueError if full_path or any descendant is blacklisted.
+
+        Fail-closed: if the descendant listing cannot be retrieved the
+        operation is denied — a transient server error must not let a delete
+        or move proceed unchecked.
+        """
         rel_path = self._get_rel_path(full_path).strip("/")
         self._check_blacklisted(rel_path)
         if not self.valves.FILE_BLACKLIST:
             return
+        root = _strip_leading_slash(full_path).rstrip("/")
         try:
-            is_dir = await client.is_dir(_webdav_path(full_path))
+            infos = await client.list_with_infos(
+                _webdav_path(full_path), recursive=True
+            )
+        except RemoteResourceNotFoundError:
+            raise
         except Exception:
-            return
-        if not is_dir:
-            return
-        items = await client.list_files(_webdav_path(full_path))
-        for item in items:
-            item_stripped = _strip_leading_slash(item).rstrip("/")
-            if item_stripped == _strip_leading_slash(full_path).rstrip("/"):
+            raise ValueError("Access denied")
+        for info in infos:
+            item_path = _strip_leading_slash(str(info.get("path", ""))).rstrip("/")
+            if not item_path or item_path == root:
                 continue
-            item_rel = self._get_rel_path(item_stripped).strip("/")
-            self._check_blacklisted(item_rel)
-            try:
-                if not await client.is_dir(_webdav_path(item_stripped)):
-                    continue
-            except Exception:
-                continue
-            await self._check_blacklisted_recursive(client, item_stripped)
+            if self._is_result_blacklisted(self._get_rel_path(item_path)):
+                raise ValueError("Access denied")
 
     def _is_result_blacklisted(self, rel_path: str) -> bool:
         """Check if a result path (relative to sandbox) should be hidden."""
         rel_path = rel_path.strip("/")
         return bool(rel_path) and is_blacklisted(self.valves.FILE_BLACKLIST, rel_path)
+
+    def _check_not_sandbox_root(self, full_path: str) -> None:
+        """Reject operations that target the sandbox root itself (rm/mv)."""
+        target = _strip_leading_slash(full_path).strip("/")
+        root = _strip_leading_slash(self.sandbox_prefix).strip("/")
+        if target == root:
+            raise ValueError("operation on sandbox root is not allowed")
+
+    def _check_read_only(self, rel_path: str) -> None:
+        """Raise ValueError if rel_path is on the read-only protection list."""
+        rel_path = rel_path.strip("/")
+        if rel_path and is_blacklisted(self.valves.READ_ONLY_PATHS, rel_path):
+            raise ValueError("path is read-only")
+
+    def _secrets(self) -> tuple[str, ...]:
+        return tuple(
+            s
+            for s in (
+                self.valves.NEXTCLOUD_APP_PASSWORD,
+                self.valves.NEXTCLOUD_USERNAME,
+            )
+            if s
+        )
 
     @property
     def sandbox_prefix(self) -> str:
@@ -1374,6 +1425,7 @@ class Tools:
             content = ""
         full_path = validate_path(path, self.valves)
         self._check_blacklisted(self._get_rel_path(full_path))
+        self._check_read_only(self._get_rel_path(full_path))
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
@@ -1431,6 +1483,7 @@ class Tools:
             content = ""
         full_path = validate_path(path, self.valves)
         self._check_blacklisted(self._get_rel_path(full_path))
+        self._check_read_only(self._get_rel_path(full_path))
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
@@ -1477,6 +1530,7 @@ class Tools:
 
         full_path = validate_path(file_path, self.valves)
         self._check_blacklisted(self._get_rel_path(full_path))
+        self._check_read_only(self._get_rel_path(full_path))
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
@@ -1517,12 +1571,18 @@ class Tools:
             for p in paths:
                 try:
                     full_path = validate_path(p, self.valves)
+                    self._check_not_sandbox_root(full_path)
+                    self._check_read_only(self._get_rel_path(full_path))
                     await self._check_blacklisted_recursive(client, full_path)
                     await client.clean(_webdav_path(full_path))
                     results.append({"path": p, "result": "True"})
                 except Exception as e:
                     results.append(
-                        {"path": p, "result": "False", "details": _sanitize(str(e))}
+                        {
+                            "path": p,
+                            "result": "False",
+                            "details": _sanitize(str(e), self._secrets()),
+                        }
                     )
             return results
         finally:
@@ -1585,6 +1645,11 @@ class Tools:
         src_full = validate_path(src, self.valves)
         dst_full = validate_path(dst, self.valves)
 
+        self._check_not_sandbox_root(src_full)
+        self._check_not_sandbox_root(dst_full)
+        self._check_read_only(self._get_rel_path(src_full))
+        self._check_read_only(self._get_rel_path(dst_full))
+
         if self._dst_inside_src(src_full, dst_full):
             raise ValueError("destination is inside or equal to source")
 
@@ -1609,6 +1674,8 @@ class Tools:
 
         if self._dst_inside_src(src_full, dst_full):
             raise ValueError("destination is inside or equal to source")
+
+        self._check_read_only(self._get_rel_path(dst_full))
 
         client = self._webdav_client()
         copied: list[str] = []

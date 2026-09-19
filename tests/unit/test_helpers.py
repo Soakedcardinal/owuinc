@@ -776,3 +776,123 @@ class TestCheckRedosRisk:
         _check_redos_risk("(a+)+")  # analysis degraded: short pattern allowed
         with pytest.raises(ValueError, match="too long"):
             _check_redos_risk("a" * 501)
+
+
+class TestCheckNotSandboxRoot:
+    def _tools(self, sandbox_dir):
+        t = Tools()
+        t.valves.SANDBOX_DIR = sandbox_dir
+        return t
+
+    def test_sandbox_root_denied(self):
+        t = self._tools("owuinc")
+        with pytest.raises(ValueError, match="sandbox root"):
+            t._check_not_sandbox_root("owuinc/")
+
+    def test_sandbox_root_without_slash_denied(self):
+        t = self._tools("owuinc")
+        with pytest.raises(ValueError, match="sandbox root"):
+            t._check_not_sandbox_root("/owuinc")
+
+    def test_child_path_allowed(self):
+        t = self._tools("owuinc")
+        t._check_not_sandbox_root("owuinc/notes.md")
+
+    def test_empty_sandbox_denies_account_root(self):
+        t = self._tools("")
+        with pytest.raises(ValueError, match="sandbox root"):
+            t._check_not_sandbox_root("/")
+        t._check_not_sandbox_root("notes.md")
+
+
+class TestCheckReadOnly:
+    def _tools(self, read_only):
+        t = Tools()
+        t.valves.READ_ONLY_PATHS = read_only
+        return t
+
+    def test_default_protects_injected_files(self):
+        t = Tools()
+        for name in ("AGENTS.md", "SOUL.md", "IDENTITY.md", "MEMORY.md"):
+            with pytest.raises(ValueError, match="read-only"):
+                t._check_read_only(name)
+
+    def test_other_files_writable(self):
+        t = Tools()
+        t._check_read_only("notes.md")
+
+    def test_only_the_injected_path_itself_is_protected(self):
+        t = Tools()
+        t._check_read_only("archive/SOUL.md")
+
+    def test_custom_list_with_directory(self):
+        t = self._tools("locked")
+        with pytest.raises(ValueError, match="read-only"):
+            t._check_read_only("locked/inner.md")
+
+    def test_empty_valve_allows_all(self):
+        t = self._tools("")
+        t._check_read_only("SOUL.md")
+
+
+class _FailingDavClient:
+    async def list_with_infos(self, path, recursive=False):
+        raise RuntimeError("server exploded")
+
+
+class _MissingDavClient:
+    async def list_with_infos(self, path, recursive=False):
+        from aiowebdav2.exceptions import RemoteResourceNotFoundError
+
+        raise RemoteResourceNotFoundError(path=path)
+
+
+class _StaticDavClient:
+    def __init__(self, infos):
+        self._infos = infos
+
+    async def list_with_infos(self, path, recursive=False):
+        return self._infos
+
+
+class TestCheckBlacklistedRecursive:
+    def _tools(self, blacklist):
+        t = Tools()
+        t.valves.SANDBOX_DIR = "owuinc"
+        t.valves.FILE_BLACKLIST = blacklist
+        return t
+
+    async def test_listing_error_fails_closed(self):
+        t = self._tools("secret")
+        with pytest.raises(ValueError, match="Access denied"):
+            await t._check_blacklisted_recursive(_FailingDavClient(), "owuinc/dir")
+
+    async def test_not_found_propagates(self):
+        from aiowebdav2.exceptions import RemoteResourceNotFoundError
+
+        t = self._tools("secret")
+        with pytest.raises(RemoteResourceNotFoundError):
+            await t._check_blacklisted_recursive(_MissingDavClient(), "owuinc/dir")
+
+    async def test_blacklisted_descendant_denies(self):
+        t = self._tools("dir/secret")
+        client = _StaticDavClient(
+            [
+                {"path": "owuinc/dir"},
+                {"path": "owuinc/dir/ok.txt"},
+                {"path": "owuinc/dir/secret/token.txt"},
+            ]
+        )
+        with pytest.raises(ValueError, match="Access denied"):
+            await t._check_blacklisted_recursive(client, "owuinc/dir")
+
+    async def test_clean_tree_allowed(self):
+        t = self._tools("secret")
+        client = _StaticDavClient(
+            [{"path": "owuinc/dir"}, {"path": "owuinc/dir/ok.txt"}]
+        )
+        await t._check_blacklisted_recursive(client, "owuinc/dir")
+
+    async def test_empty_blacklist_skips_listing(self):
+        t = self._tools("")
+        await t._check_blacklisted_recursive(_FailingDavClient(), "owuinc/dir")

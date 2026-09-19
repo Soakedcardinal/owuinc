@@ -927,3 +927,83 @@ class TestWebDavLocking:
             await lock.close()
         finally:
             await client.close()
+
+
+class TestSandboxSelfProtection:
+    """Batch C: rm/mv cannot target the sandbox root; READ_ONLY_PATHS blocks
+    writes to injected prompt files while reads stay allowed."""
+
+    @pytest.mark.asyncio
+    async def test_rm_dot_denied_sandbox_survives(self, webdav_tools):
+        await webdav_tools.write("survives.txt", "x")
+        res = await webdav_tools.rm(["."])
+        assert res["data"][0]["result"] == "False"
+        assert "sandbox root" in res["data"][0]["details"]
+        ls = await webdav_tools.ls(".")
+        assert "survives.txt" in str(ls["data"])
+
+    @pytest.mark.asyncio
+    async def test_rm_slash_denied(self, webdav_tools):
+        res = await webdav_tools.rm(["/"])
+        assert res["data"][0]["result"] == "False"
+        assert "sandbox root" in res["data"][0]["details"]
+
+    @pytest.mark.asyncio
+    async def test_rm_empty_string_denied(self, webdav_tools):
+        res = await webdav_tools.rm([""])
+        assert res["data"][0]["result"] == "False"
+        assert "sandbox root" in res["data"][0]["details"]
+
+    @pytest.mark.asyncio
+    async def test_rm_mixed_list_protects_only_root(self, webdav_tools):
+        await webdav_tools.write("doomed.txt", "x")
+        res = await webdav_tools.rm(["doomed.txt", "."])
+        assert res["data"][0]["result"] == "True"
+        assert res["data"][1]["result"] == "False"
+        assert "sandbox root" in res["data"][1]["details"]
+
+    @pytest.mark.asyncio
+    async def test_mv_into_root_denied(self, webdav_tools):
+        await webdav_tools.write("mvsrc.txt", "x")
+        res = await webdav_tools.mv("mvsrc.txt", ".")
+        assert res["result"] == "False"
+        assert "sandbox root" in res["details"]
+
+    @pytest.mark.asyncio
+    async def test_mv_sandbox_root_as_source_denied(self, webdav_tools):
+        res = await webdav_tools.mv(".", "elsewhere")
+        assert res["result"] == "False"
+        assert "sandbox root" in res["details"]
+
+    @pytest.mark.asyncio
+    async def test_write_prompt_file_denied_by_default(self, webdav_tools):
+        res = await webdav_tools.write("SOUL.md", "evil")
+        assert res["result"] == "False"
+        assert "read-only" in res["details"]
+
+    @pytest.mark.asyncio
+    async def test_read_only_blocks_mutations_allows_reads(self, webdav_tools):
+        webdav_tools.valves.READ_ONLY_PATHS = ""
+        await webdav_tools.write("locked.md", "secret soul")
+        await webdav_tools.write("donor.txt", "donor")
+        webdav_tools.valves.READ_ONLY_PATHS = "locked.md"
+
+        w = await webdav_tools.write("locked.md", "evil")
+        assert w["result"] == "False" and "read-only" in w["details"]
+        a = await webdav_tools.append("locked.md", "evil")
+        assert a["result"] == "False" and "read-only" in a["details"]
+        e = await webdav_tools.edit("locked.md", "secret", "evil")
+        assert e["result"] == "False" and "read-only" in e["details"]
+        r = await webdav_tools.rm(["locked.md"])
+        assert (
+            r["data"][0]["result"] == "False" and "read-only" in r["data"][0]["details"]
+        )
+        mv_src = await webdav_tools.mv("locked.md", "freed.md")
+        assert mv_src["result"] == "False" and "read-only" in mv_src["details"]
+        mv_dst = await webdav_tools.mv("donor.txt", "locked.md")
+        assert mv_dst["result"] == "False" and "read-only" in mv_dst["details"]
+        c = await webdav_tools.cp("donor.txt", "locked.md")
+        assert c["result"] == "False" and "read-only" in c["details"]
+
+        cat = await webdav_tools.cat("locked.md")
+        assert cat["data"] == "secret soul"
