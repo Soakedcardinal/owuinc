@@ -894,3 +894,182 @@ class TestTaskEventUsability:
                     await cal.delete()
                 except Exception:
                     pass
+
+
+class TestEditEventRangeValidation:
+    """edit_calendar_event enforces the same range rules as create."""
+
+    @pytest_asyncio.fixture
+    async def personal_calendar(self, caldav_tools):
+        client = await caldav_tools._caldav_client()
+        principal = await client.principal()
+        cal = await _make_calendar(principal, name="Personal", cal_id="personal")
+        yield cal
+        try:
+            await cal.delete()
+        except Exception:
+            pass
+
+    async def _component(self, caldav_tools, summary):
+        client = await caldav_tools._caldav_client()
+        try:
+            cal = await caldav_tools._get_calendar(await client.principal(), "Personal")
+            ev = await caldav_tools._find_event_by_uid_or_summary(cal, None, summary)
+            return ev.component
+        finally:
+            await client.close()
+
+    async def _create(self, caldav_tools, summary, start, end=None):
+        res = await caldav_tools.create_calendar_event(
+            summary=summary,
+            calendar_name="Personal",
+            start=start,
+            end=end,
+            __user__={"timezone": "America/New_York"},
+        )
+        assert res["result"] == "True"
+
+    @pytest.mark.asyncio
+    async def test_end_before_start_rejected_event_untouched(
+        self, caldav_tools, personal_calendar
+    ):
+        zi = ZoneInfo("America/New_York")
+        now = datetime.now(zi).replace(second=0, microsecond=0)
+        await self._create(
+            caldav_tools,
+            "Range Bad",
+            (now + timedelta(hours=2)).isoformat(),
+            (now + timedelta(hours=3)).isoformat(),
+        )
+        res = await caldav_tools.edit_calendar_event(
+            summary="Range Bad",
+            calendar_name="Personal",
+            new_start=(now + timedelta(hours=5)).isoformat(),
+            new_end=(now + timedelta(hours=1)).isoformat(),
+            __user__={"timezone": "America/New_York"},
+        )
+        assert res["result"] == "False"
+        comp = await self._component(caldav_tools, "Range Bad")
+        # The server round-trips TZID as a plain offset with a naive dt.
+        assert comp["dtstart"].dt == (now + timedelta(hours=2)).replace(tzinfo=None)
+
+    @pytest.mark.asyncio
+    async def test_date_only_start_needs_date_only_end(
+        self, caldav_tools, personal_calendar
+    ):
+        zi = ZoneInfo("America/New_York")
+        now = datetime.now(zi).replace(second=0, microsecond=0)
+        await self._create(
+            caldav_tools,
+            "Range Mixed",
+            (now + timedelta(hours=2)).isoformat(),
+            (now + timedelta(hours=3)).isoformat(),
+        )
+        res = await caldav_tools.edit_calendar_event(
+            summary="Range Mixed",
+            calendar_name="Personal",
+            new_start="2026-12-01",
+            __user__={"timezone": "America/New_York"},
+        )
+        assert res["result"] == "False"
+        assert "date-only" in res["details"]
+
+    @pytest.mark.asyncio
+    async def test_date_only_end_needs_date_only_start(
+        self, caldav_tools, personal_calendar
+    ):
+        zi = ZoneInfo("America/New_York")
+        now = datetime.now(zi).replace(second=0, microsecond=0)
+        await self._create(
+            caldav_tools,
+            "Range Mixed2",
+            (now + timedelta(hours=2)).isoformat(),
+            (now + timedelta(hours=3)).isoformat(),
+        )
+        res = await caldav_tools.edit_calendar_event(
+            summary="Range Mixed2",
+            calendar_name="Personal",
+            new_end="2026-12-05",
+            __user__={"timezone": "America/New_York"},
+        )
+        assert res["result"] == "False"
+        assert "date-only" in res["details"]
+
+    @pytest.mark.asyncio
+    async def test_timed_edit_to_all_day(self, caldav_tools, personal_calendar):
+        zi = ZoneInfo("America/New_York")
+        now = datetime.now(zi).replace(second=0, microsecond=0)
+        await self._create(
+            caldav_tools,
+            "Range AllDay",
+            (now + timedelta(hours=2)).isoformat(),
+            (now + timedelta(hours=3)).isoformat(),
+        )
+        res = await caldav_tools.edit_calendar_event(
+            summary="Range AllDay",
+            calendar_name="Personal",
+            new_start="2026-12-01",
+            new_end="2026-12-03",
+            __user__={"timezone": "America/New_York"},
+        )
+        assert res["result"] == "True"
+        comp = await self._component(caldav_tools, "Range AllDay")
+        from datetime import date
+
+        assert comp["dtstart"].dt == date(2026, 12, 1)
+        assert comp["dtend"].dt == date(2026, 12, 4)  # exclusive
+
+    @pytest.mark.asyncio
+    async def test_valid_timed_shift_succeeds(self, caldav_tools, personal_calendar):
+        zi = ZoneInfo("America/New_York")
+        now = datetime.now(zi).replace(second=0, microsecond=0)
+        await self._create(
+            caldav_tools,
+            "Range Shift",
+            (now + timedelta(hours=1)).isoformat(),
+            (now + timedelta(hours=2)).isoformat(),
+        )
+        res = await caldav_tools.edit_calendar_event(
+            summary="Range Shift",
+            calendar_name="Personal",
+            new_start=(now + timedelta(hours=4)).isoformat(),
+            new_end=(now + timedelta(hours=5)).isoformat(),
+            __user__={"timezone": "America/New_York"},
+        )
+        assert res["result"] == "True"
+        comp = await self._component(caldav_tools, "Range Shift")
+        assert comp["dtstart"].dt == (now + timedelta(hours=4)).replace(tzinfo=None)
+
+    @pytest.mark.asyncio
+    async def test_all_day_start_only_move_shifts_end(
+        self, caldav_tools, personal_calendar
+    ):
+        await self._create(caldav_tools, "AllDay Shift", "2026-12-10", "2026-12-12")
+        res = await caldav_tools.edit_calendar_event(
+            summary="AllDay Shift",
+            calendar_name="Personal",
+            new_start="2026-12-20",
+            __user__={"timezone": "America/New_York"},
+        )
+        assert res["result"] == "True"
+        comp = await self._component(caldav_tools, "AllDay Shift")
+        from datetime import date
+
+        assert comp["dtstart"].dt == date(2026, 12, 20)
+        # Same 3-day length, end shifted.
+        assert comp["dtend"].dt == date(2026, 12, 23)
+
+    @pytest.mark.asyncio
+    async def test_all_day_explicit_bad_range_rejected(
+        self, caldav_tools, personal_calendar
+    ):
+        await self._create(caldav_tools, "AllDay Bad", "2026-12-10", "2026-12-12")
+        res = await caldav_tools.edit_calendar_event(
+            summary="AllDay Bad",
+            calendar_name="Personal",
+            new_start="2026-12-20",
+            new_end="2026-12-15",
+            __user__={"timezone": "America/New_York"},
+        )
+        assert res["result"] == "False"
+        assert "before start" in res["details"]

@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar>=6.0,aiowebdav2>=0.6,pydantic>=2,tiktoken>=0.5,aiohttp>=3.9,python-dateutil>=2.8.2
-version: 3.15.1
+version: 3.16.0
 license: MIT
 """
 
@@ -20,7 +20,7 @@ import urllib.parse
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
-from typing import Callable
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import tiktoken
@@ -741,6 +741,13 @@ def parse_reminders(reminders: list | None = None) -> list:
             raise ValueError(f"unrecognized reminder format: {r!r}")
         parsed.append({"minutes": minutes, "action": "DISPLAY"})
     return parsed
+
+
+def _as_date_only(value: object) -> date | None:
+    """Return the value if it's a plain date (all-day), else None."""
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    return None
 
 
 def _parse_rrule(rrule: str) -> vRecur:
@@ -2447,6 +2454,8 @@ class Tools:
         """Edit an event by summary or uid. Only provided fields change.
         Recurrence is kept as-is unless you pass new_rrule (replace it) or remove_rrule=True (make it one-off).
         Edits apply to the whole series for recurring events.
+        new_start/new_end: ISO 8601 (naive = user's timezone); date-only values make it all-day (end inclusive) and both must be date-only or both datetime.
+        Passing only new_start moves the event and shifts the end to keep its length; passing both validates the range.
         new_alarms: relative offsets like ['15min']; replaces all existing alarms.
         """
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
@@ -2466,19 +2475,93 @@ class Tools:
             cal = await self._get_calendar(principal, calendar_name)
             e = await self._find_event_by_uid_or_summary(cal, uid, summary)
 
-            if new_start:
-                dtstart = datetime.fromisoformat(new_start)
-                if dtstart.tzinfo is None:
-                    dtstart = dtstart.replace(tzinfo=zi)
-                e.component.pop("dtstart", None)  # del raises KeyError if absent
-                e.component.add("dtstart", dtstart)
-            if new_end:
-                dtend = datetime.fromisoformat(new_end)
-                if dtend.tzinfo is None:
-                    dtend = dtend.replace(tzinfo=zi)
-                e.component.pop("dtend", None)
-                e.component.pop("duration", None)  # DTEND and DURATION are exclusive
-                e.component.add("dtend", dtend)
+            start_s = new_start.strip() if new_start else ""
+            end_s = new_end.strip() if new_end else ""
+            if start_s or end_s:
+                date_only = r"\d{4}-\d{2}-\d{2}"
+
+                def _parse_new(value: str) -> date | datetime:
+                    if re.fullmatch(date_only, value):
+                        return date.fromisoformat(value)
+                    dt = datetime.fromisoformat(value)
+                    return dt.replace(tzinfo=zi) if dt.tzinfo is None else dt
+
+                new_sv: date | datetime | None = (
+                    _parse_new(start_s) if start_s else None
+                )
+                new_ev: date | datetime | None = _parse_new(end_s) if end_s else None
+
+                def _prop_dt(name: str) -> Any:
+                    # component.get() returns a vDDDTypes wrapper; .dt is
+                    # the native date/datetime.
+                    val = e.component.get(name)
+                    return val.dt if hasattr(val, "dt") else val
+
+                old_s = _prop_dt("dtstart")
+                old_e = _prop_dt("dtend")
+                eff_s = new_sv if new_sv is not None else old_s
+                eff_e = new_ev if new_ev is not None else old_e
+                s_day = _as_date_only(eff_s)
+                e_day = _as_date_only(eff_e)
+                if eff_e is not None and (s_day is None) != (e_day is None):
+                    raise ValueError(
+                        "start and end must both be date-only or both datetime"
+                    )
+
+                if s_day is not None:
+                    # All-day: DTEND is exclusive, user-facing end is inclusive.
+                    old_day = _as_date_only(old_s)
+                    if isinstance(new_ev, date):
+                        day_end: Any = new_ev + timedelta(days=1)
+                        if day_end <= s_day:
+                            raise ValueError("end must not be before start")
+                    else:
+                        day_end = old_e
+                        if day_end is not None and day_end <= s_day:
+                            if old_day is None:
+                                raise ValueError("end must not be before start")
+                            # Start-only move: shift the end to keep the
+                            # event's length instead of failing.
+                            day_end = day_end + (s_day - old_day)
+                    e.component.pop("dtstart", None)
+                    e.component.pop("dtend", None)
+                    e.component.pop("duration", None)
+                    e.component.add("dtstart", s_day)
+                    if day_end is not None:
+                        e.component.add("dtend", day_end)
+                else:
+                    if not isinstance(eff_s, datetime):
+                        raise ValueError(
+                            "new_start must be an ISO 8601 date or datetime"
+                        )
+                    s_dt = eff_s if eff_s.tzinfo else eff_s.replace(tzinfo=zi)
+                    e_dt: datetime | None = None
+                    shifted = False
+                    if eff_e is not None:
+                        if not isinstance(eff_e, datetime):
+                            raise ValueError(
+                                "new_end must be an ISO 8601 date or datetime"
+                            )
+                        e_dt = eff_e if eff_e.tzinfo else eff_e.replace(tzinfo=zi)
+                        if e_dt <= s_dt:
+                            old_dt = old_s if isinstance(old_s, datetime) else None
+                            if new_ev is None and new_sv is not None and old_dt:
+                                old_aware = (
+                                    old_dt
+                                    if old_dt.tzinfo
+                                    else old_dt.replace(tzinfo=zi)
+                                )
+                                e_dt = e_dt + (s_dt - old_aware)
+                                shifted = True
+                            else:
+                                raise ValueError("end must be after start")
+                    if start_s:
+                        e.component.pop("dtstart", None)
+                        e.component.add("dtstart", s_dt)
+                    if (end_s or shifted) and e_dt is not None:
+                        e.component.pop("dtend", None)
+                        e.component.pop("duration", None)
+                        e.component.add("dtend", e_dt)
             if new_summary is not None:
                 e.component["summary"] = new_summary.strip()
             if new_location is not None:
