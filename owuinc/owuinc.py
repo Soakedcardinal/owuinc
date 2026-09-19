@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar>=6.0,aiowebdav2>=0.6,pydantic>=2,tiktoken>=0.5,aiohttp>=3.9,python-dateutil>=2.8.2
-version: 3.16.0
+version: 3.17.0
 license: MIT
 """
 
@@ -791,6 +791,30 @@ def _resolve_timezone(user: dict | None, default: str = "UTC") -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
+def _parse_date_loose(value: str) -> date:
+    """Parse an ISO date or datetime string, returning just the date part."""
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return datetime.fromisoformat(value).date()
+
+
+def _task_due_matches(due_prop, want: date) -> bool:
+    """True if a task's DUE property falls on the given date."""
+    if due_prop is None:
+        return False
+    dt = due_prop.dt
+    return (dt.date() if isinstance(dt, datetime) else dt) == want
+
+
+def _event_starts_on(dtstart_prop, want: date) -> bool:
+    """True if an event's DTSTART falls on the given date."""
+    if dtstart_prop is None:
+        return False
+    dt = dtstart_prop.dt
+    return (dt.date() if isinstance(dt, datetime) else dt) == want
+
+
 def _get_parent_uid(component) -> str | None:
     """Parent UID from a component's RELATED-TO properties, or None.
 
@@ -1074,41 +1098,115 @@ class Tools:
             return summary_matches[0]
         raise Exception(f"Parent task with summary {identifier!r} not found")
 
-    async def _find_task_by_uid_or_summary(
-        self, cal, uid: str | None, summary: str | None
+    async def _find_task_by_summary(
+        self,
+        cal,
+        summary: str,
+        due: str | None = None,
+        description_contains: str | None = None,
     ):
-        """Find a task by uid or summary. Raises if not found or ambiguous."""
-        if uid:
-            return await cal.todo_by_uid(uid)
-        if summary is not None:
-            matches = []
-            norm_summary = summary.strip().lower()
-            for todo in await cal.todos():
-                if norm_summary == str(todo.component["summary"]).strip().lower():
-                    matches.append(todo.component["uid"])
-            if len(matches) > 1:
-                raise Exception(f"Multiple matches for {summary!r}: {matches}")
-            if len(matches) == 1:
-                return await cal.todo_by_uid(matches[0])
-        raise Exception("task not found")
+        """Find a task by summary, narrowing on due/description if ambiguous.
 
-    async def _find_event_by_uid_or_summary(
-        self, cal, uid: str | None, summary: str | None
+        Raises if not found or still ambiguous. The error names each
+        candidate by due date and description snippet only — uid is never
+        surfaced, because the model has no way to have obtained one.
+        """
+        norm_summary = summary.strip().lower()
+        todos = await cal.todos()
+        matches = [
+            t
+            for t in todos
+            if norm_summary == str(t.component["summary"]).strip().lower()
+        ]
+        if not matches:
+            raise Exception(f"no task named {summary!r} found")
+
+        if len(matches) > 1 and due:
+            want = _parse_date_loose(due)
+            narrowed = [
+                t for t in matches if _task_due_matches(t.component.get("due"), want)
+            ]
+            if narrowed:
+                matches = narrowed
+
+        if len(matches) > 1 and description_contains:
+            needle = description_contains.strip().lower()
+            narrowed = [
+                t
+                for t in matches
+                if needle in str(t.component.get("description") or "").lower()
+            ]
+            if narrowed:
+                matches = narrowed
+
+        if len(matches) > 1:
+            options = []
+            for t in matches:
+                due_val = t.component.get("due")
+                due_s = due_val.dt.isoformat() if due_val else "no due date"
+                desc = str(t.component.get("description") or "").strip()
+                desc_s = f", description starting {desc[:40]!r}" if desc else ""
+                options.append(f"due {due_s}{desc_s}")
+            raise Exception(
+                f"{len(matches)} tasks named {summary!r} — "
+                + "; ".join(options)
+                + ". Retry with due= and/or description_contains= to pick one."
+            )
+        return matches[0]
+
+    async def _find_event_by_summary(
+        self,
+        cal,
+        summary: str,
+        on_date: str | None = None,
+        description_contains: str | None = None,
     ):
-        """Find an event by uid or summary. Raises if not found or ambiguous."""
-        if uid:
-            return await cal.event_by_uid(uid)
-        if summary is not None:
-            matches = []
-            norm_summary = summary.strip().lower()
-            for e in await cal.events():
-                if norm_summary == str(e.component["summary"]).strip().lower():
-                    matches.append(e.component["uid"])
-            if len(matches) > 1:
-                raise NotFoundError("multiple matches")
-            if len(matches) == 1:
-                return await cal.event_by_uid(matches[0])
-        raise NotFoundError("event not found")
+        """Find an event by summary, narrowing on start date/description if
+        ambiguous. Raises if not found or still ambiguous. Candidates are
+        described by start time and description only — never uid.
+        """
+        norm_summary = summary.strip().lower()
+        events = await cal.events()
+        matches = [
+            e
+            for e in events
+            if norm_summary == str(e.component["summary"]).strip().lower()
+        ]
+        if not matches:
+            raise NotFoundError(f"no event named {summary!r} found")
+
+        if len(matches) > 1 and on_date:
+            want = _parse_date_loose(on_date)
+            narrowed = [
+                e for e in matches if _event_starts_on(e.component.get("dtstart"), want)
+            ]
+            if narrowed:
+                matches = narrowed
+
+        if len(matches) > 1 and description_contains:
+            needle = description_contains.strip().lower()
+            narrowed = [
+                e
+                for e in matches
+                if needle in str(e.component.get("description") or "").lower()
+            ]
+            if narrowed:
+                matches = narrowed
+
+        if len(matches) > 1:
+            options = []
+            for e in matches:
+                dtstart = e.component.get("dtstart")
+                start_s = dtstart.dt.isoformat() if dtstart else "no start time"
+                desc = str(e.component.get("description") or "").strip()
+                desc_s = f", description starting {desc[:40]!r}" if desc else ""
+                options.append(f"starts {start_s}{desc_s}")
+            raise NotFoundError(
+                f"{len(matches)} events named {summary!r} — "
+                + "; ".join(options)
+                + ". Retry with on_date= and/or description_contains= to pick one."
+            )
+        return matches[0]
 
     # -- Sandbox & blacklist helpers --
 
@@ -2157,8 +2255,9 @@ class Tools:
     @caldav_safe
     async def edit_task(
         self,
-        summary: str | None = None,
-        uid: str | None = None,
+        summary: str,
+        due: str | None = None,
+        description_contains: str | None = None,
         new_summary: str | None = None,
         list_name: str | None = None,
         new_priority: int | None = None,
@@ -2169,19 +2268,22 @@ class Tools:
         new_related_to: str | None = None,
         __event_emitter__=None,
     ) -> None:
-        """Edit a task by summary or uid. Only provided fields change. new_related_to: parent summary/uid (reparenting is cycle-safe)."""
+        """Edit a task by summary. Only provided fields change.
+        If more than one task shares that summary, pass due (its due date)
+        and/or description_contains (a substring of its description) — the
+        error message lists the actual candidates to choose from.
+        new_related_to: parent task's summary (reparenting is cycle-safe)."""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
-
-        if not (summary or uid):
-            raise Exception("must specify summary or uid of task to edit")
 
         client = await self._caldav_client()
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, list_name)
-            todo = await self._find_task_by_uid_or_summary(cal, uid, summary)
+            todo = await self._find_task_by_summary(
+                cal, summary, due=due, description_contains=description_contains
+            )
 
             if new_summary is not None:
                 todo.component["summary"] = new_summary.strip()
@@ -2232,32 +2334,32 @@ class Tools:
     @caldav_safe
     async def complete_task(
         self,
-        summary: str | None = None,
-        uid: str | None = None,
+        summary: str,
+        due: str | None = None,
+        description_contains: str | None = None,
         list_name: str | None = None,
         entire_series: bool = False,
         __user__: dict = {},
         __event_emitter__=None,
     ) -> str:
-        """Mark a task as completed by summary or uid. Safe to repeat.
-
-        Recurring tasks complete one occurrence at a time: the done instance
-        is filed off as completed and the series reschedules itself. Pass
-        entire_series=True to complete the task and end the whole series.
-        """
+        """Mark a task as completed by summary. Safe to repeat.
+        If more than one task shares that summary, pass due and/or
+        description_contains to disambiguate (see the error message).
+        Recurring tasks complete one occurrence at a time; pass
+        entire_series=True to end the whole series instead."""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
-        if not (summary or uid):
-            raise Exception("must specify summary or uid of task to complete")
 
         client = await self._caldav_client()
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, list_name)
-            todo = await self._find_task_by_uid_or_summary(cal, uid, summary)
+            todo = await self._find_task_by_summary(
+                cal, summary, due=due, description_contains=description_contains
+            )
             comp = todo.component
-            label = str(comp.get("summary") or uid or summary)
+            label = str(comp.get("summary") or summary)
 
             # STATUS is optional in RFC 5545 and caldav's save_todo() doesn't
             # emit it, so an absent STATUS means "still open". The old
@@ -2308,24 +2410,25 @@ class Tools:
     @caldav_safe
     async def delete_task(
         self,
-        summary: str | None = None,
-        uid: str | None = None,
+        summary: str,
+        due: str | None = None,
+        description_contains: str | None = None,
         list_name: str | None = None,
         __event_emitter__=None,
     ) -> None:
-        """Delete a task by summary or uid."""
+        """Delete a task by summary. If more than one task shares that
+        summary, pass due and/or description_contains to disambiguate."""
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
-
-        if not (summary or uid):
-            raise Exception("must specify summary or uid of task to delete")
 
         client = await self._caldav_client()
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, list_name)
-            todo = await self._find_task_by_uid_or_summary(cal, uid, summary)
+            todo = await self._find_task_by_summary(
+                cal, summary, due=due, description_contains=description_contains
+            )
             await todo.delete()
         finally:
             await client.close()
@@ -2437,9 +2540,10 @@ class Tools:
     @caldav_safe
     async def edit_calendar_event(
         self,
+        summary: str,
         __user__: dict = {},
-        summary: str | None = None,
-        uid: str | None = None,
+        on_date: str | None = None,
+        description_contains: str | None = None,
         calendar_name: str | None = None,
         new_summary: str | None = None,
         new_start: str | None = None,
@@ -2451,7 +2555,9 @@ class Tools:
         remove_rrule: bool = False,
         __event_emitter__=None,
     ) -> None:
-        """Edit an event by summary or uid. Only provided fields change.
+        """Edit an event by summary. Only provided fields change.
+        If more than one event shares that summary, pass on_date (its start
+        date) and/or description_contains to disambiguate.
         Recurrence is kept as-is unless you pass new_rrule (replace it) or remove_rrule=True (make it one-off).
         Edits apply to the whole series for recurring events.
         new_start/new_end: ISO 8601 (naive = user's timezone); date-only values make it all-day (end inclusive) and both must be date-only or both datetime.
@@ -2461,8 +2567,6 @@ class Tools:
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             raise Exception(f"{calendar_name!r} not in whitelist")
-        if not (summary or uid):
-            raise Exception("must provide a summary or uid")
         if remove_rrule and new_rrule:
             raise ValueError("pass either new_rrule or remove_rrule, not both")
 
@@ -2473,7 +2577,9 @@ class Tools:
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, calendar_name)
-            e = await self._find_event_by_uid_or_summary(cal, uid, summary)
+            e = await self._find_event_by_summary(
+                cal, summary, on_date=on_date, description_contains=description_contains
+            )
 
             start_s = new_start.strip() if new_start else ""
             end_s = new_end.strip() if new_end else ""
@@ -2513,16 +2619,14 @@ class Tools:
                     old_day = _as_date_only(old_s)
                     if isinstance(new_ev, date):
                         day_end: Any = new_ev + timedelta(days=1)
-                        if day_end <= s_day:
-                            raise ValueError("end must not be before start")
                     else:
                         day_end = old_e
-                        if day_end is not None and day_end <= s_day:
-                            if old_day is None:
-                                raise ValueError("end must not be before start")
+                        if day_end is not None and old_day is not None:
                             # Start-only move: shift the end to keep the
                             # event's length instead of failing.
                             day_end = day_end + (s_day - old_day)
+                    if day_end is not None and day_end <= s_day:
+                        raise ValueError("end must not be before start")
                     e.component.pop("dtstart", None)
                     e.component.pop("dtend", None)
                     e.component.pop("duration", None)
@@ -2543,9 +2647,9 @@ class Tools:
                                 "new_end must be an ISO 8601 date or datetime"
                             )
                         e_dt = eff_e if eff_e.tzinfo else eff_e.replace(tzinfo=zi)
-                        if e_dt <= s_dt:
+                        if new_ev is None and new_sv is not None:
                             old_dt = old_s if isinstance(old_s, datetime) else None
-                            if new_ev is None and new_sv is not None and old_dt:
+                            if old_dt is not None:
                                 old_aware = (
                                     old_dt
                                     if old_dt.tzinfo
@@ -2553,8 +2657,8 @@ class Tools:
                                 )
                                 e_dt = e_dt + (s_dt - old_aware)
                                 shifted = True
-                            else:
-                                raise ValueError("end must be after start")
+                        if e_dt <= s_dt:
+                            raise ValueError("end must be after start")
                     if start_s:
                         e.component.pop("dtstart", None)
                         e.component.add("dtstart", s_dt)
@@ -2765,23 +2869,25 @@ class Tools:
     @caldav_safe
     async def delete_calendar_event(
         self,
-        uid: str | None = None,
-        summary: str | None = None,
+        summary: str,
+        on_date: str | None = None,
+        description_contains: str | None = None,
         calendar_name: str | None = None,
         __event_emitter__=None,
     ) -> None:
-        """Delete an event by summary or uid."""
+        """Delete an event by summary. If more than one event shares that
+        summary, pass on_date and/or description_contains to disambiguate."""
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             raise Exception(f"{calendar_name!r} not in whitelist")
-        if not (summary or uid):
-            raise Exception("must provide a summary or uid")
 
         client = await self._caldav_client()
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, calendar_name)
-            event = await self._find_event_by_uid_or_summary(cal, uid, summary)
+            event = await self._find_event_by_summary(
+                cal, summary, on_date=on_date, description_contains=description_contains
+            )
             await event.delete()
         finally:
             await client.close()

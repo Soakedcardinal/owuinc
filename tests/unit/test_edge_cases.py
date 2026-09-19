@@ -680,7 +680,7 @@ class TestLookupExactMatch:
 
         from owuinc.owuinc import Tools
 
-        src = inspect.getsource(Tools._find_task_by_uid_or_summary)
+        src = inspect.getsource(Tools._find_task_by_summary)
         assert ".lower()" in src
         assert "norm_summary" in src
 
@@ -689,7 +689,7 @@ class TestLookupExactMatch:
 
         from owuinc.owuinc import Tools
 
-        src = inspect.getsource(Tools._find_event_by_uid_or_summary)
+        src = inspect.getsource(Tools._find_event_by_summary)
         assert ".lower()" in src
         assert "norm_summary" in src
 
@@ -699,7 +699,7 @@ class TestLookupExactMatch:
 
         from owuinc.owuinc import Tools
 
-        src = inspect.getsource(Tools._find_task_by_uid_or_summary)
+        src = inspect.getsource(Tools._find_task_by_summary)
         lines = src.split("\n")
         for line in lines:
             stripped = line.strip()
@@ -718,7 +718,7 @@ class TestLookupExactMatch:
 
         from owuinc.owuinc import Tools
 
-        src = inspect.getsource(Tools._find_event_by_uid_or_summary)
+        src = inspect.getsource(Tools._find_event_by_summary)
         lines = src.split("\n")
         for line in lines:
             stripped = line.strip()

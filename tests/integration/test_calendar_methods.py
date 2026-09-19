@@ -546,7 +546,7 @@ class TestTaskOperations:
         await self._seed_todo(tasks_calendar, "cyc-a", "Cyc A", related_to="cyc-b")
         await self._seed_todo(tasks_calendar, "cyc-b", "Cyc B")
         result = await caldav_tools.edit_task(
-            uid="cyc-b", new_related_to="Cyc A", list_name="Tasks"
+            summary="Cyc B", new_related_to="Cyc A", list_name="Tasks"
         )
         assert result["result"] == "False"
         assert "circular" in result["details"]
@@ -914,7 +914,7 @@ class TestEditEventRangeValidation:
         client = await caldav_tools._caldav_client()
         try:
             cal = await caldav_tools._get_calendar(await client.principal(), "Personal")
-            ev = await caldav_tools._find_event_by_uid_or_summary(cal, None, summary)
+            ev = await caldav_tools._find_event_by_summary(cal, summary)
             return ev.component
         finally:
             await client.close()
@@ -1060,6 +1060,53 @@ class TestEditEventRangeValidation:
         assert comp["dtend"].dt == date(2026, 12, 23)
 
     @pytest.mark.asyncio
+    async def test_all_day_start_only_move_earlier_shifts_end(
+        self, caldav_tools, personal_calendar
+    ):
+        await self._create(caldav_tools, "AllDay Earlier", "2026-12-10", "2026-12-12")
+        res = await caldav_tools.edit_calendar_event(
+            summary="AllDay Earlier",
+            calendar_name="Personal",
+            new_start="2026-12-05",
+            __user__={"timezone": "America/New_York"},
+        )
+        assert res["result"] == "True"
+        comp = await self._component(caldav_tools, "AllDay Earlier")
+        from datetime import date
+
+        assert comp["dtstart"].dt == date(2026, 12, 5)
+        # Same 3-day length, end shifted earlier (exclusive).
+        assert comp["dtend"].dt == date(2026, 12, 8)
+
+    @pytest.mark.asyncio
+    async def test_timed_start_only_move_earlier_preserves_length(
+        self, caldav_tools, personal_calendar
+    ):
+        zi = ZoneInfo("America/New_York")
+        now = datetime.now(zi).replace(second=0, microsecond=0)
+        await self._create(
+            caldav_tools,
+            "Timed Earlier",
+            (now + timedelta(hours=5)).isoformat(),
+            (now + timedelta(hours=6)).isoformat(),
+        )
+        res = await caldav_tools.edit_calendar_event(
+            summary="Timed Earlier",
+            calendar_name="Personal",
+            new_start=(now + timedelta(hours=2)).isoformat(),
+            __user__={"timezone": "America/New_York"},
+        )
+        assert res["result"] == "True"
+        comp = await self._component(caldav_tools, "Timed Earlier")
+        assert comp["dtstart"].dt.replace(tzinfo=None) == (
+            now + timedelta(hours=2)
+        ).replace(tzinfo=None)
+        # 1-hour length preserved, not extended back to the old end.
+        assert comp["dtend"].dt.replace(tzinfo=None) == (
+            now + timedelta(hours=3)
+        ).replace(tzinfo=None)
+
+    @pytest.mark.asyncio
     async def test_all_day_explicit_bad_range_rejected(
         self, caldav_tools, personal_calendar
     ):
@@ -1073,3 +1120,215 @@ class TestEditEventRangeValidation:
         )
         assert res["result"] == "False"
         assert "before start" in res["details"]
+
+
+def _due_date(todo):
+    """Date part of a todo's DUE property as an ISO string, or None."""
+    d = todo.component.get("due")
+    if d is None:
+        return None
+    dt = d.dt
+    return (dt.date() if isinstance(dt, datetime) else dt).isoformat()
+
+
+async def _raw_todos(caldav_tools, list_name):
+    client = await caldav_tools._caldav_client()
+    try:
+        cal = await caldav_tools._get_calendar(await client.principal(), list_name)
+        return await cal.todos(include_completed=True)
+    finally:
+        await client.close()
+
+
+async def _raw_events(caldav_tools, calendar_name):
+    client = await caldav_tools._caldav_client()
+    try:
+        cal = await caldav_tools._get_calendar(await client.principal(), calendar_name)
+        return await cal.events()
+    finally:
+        await client.close()
+
+
+class TestSummaryOnlyDisambiguation:
+    """Same-summary collisions are resolved by due/start date and description,
+    never by a uid — the model can't obtain one and must never see one."""
+
+    @pytest_asyncio.fixture
+    async def tasks_calendar(self, caldav_tools):
+        client = await caldav_tools._caldav_client()
+        principal = await client.principal()
+        cal = await _make_calendar(principal, name="Tasks", cal_id="tasks")
+        yield cal
+        try:
+            await cal.delete()
+        except Exception:
+            pass
+
+    @pytest_asyncio.fixture
+    async def personal_calendar(self, caldav_tools):
+        client = await caldav_tools._caldav_client()
+        principal = await client.principal()
+        cal = await _make_calendar(principal, name="Personal", cal_id="personal")
+        yield cal
+        try:
+            await cal.delete()
+        except Exception:
+            pass
+
+    async def _two_call_mom(self, caldav_tools):
+        """Two 'Call mom' tasks: one due, one without. Returns the due date."""
+        due = (datetime.now() + timedelta(days=30)).date().isoformat()
+        assert (
+            await caldav_tools.add_task(summary="Call mom", due=due, list_name="Tasks")
+        )["result"] == "True"
+        assert (await caldav_tools.add_task(summary="Call mom", list_name="Tasks"))[
+            "result"
+        ] == "True"
+        return due
+
+    # -- edit_task -------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_edit_task_ambiguity_lists_candidates_not_uid(
+        self, caldav_tools, tasks_calendar
+    ):
+        due = await self._two_call_mom(caldav_tools)
+        res = await caldav_tools.edit_task(
+            summary="Call mom", new_priority=1, list_name="Tasks"
+        )
+        assert res["result"] == "False"
+        details = res["details"]
+        assert "2 tasks named 'Call mom'" in details
+        assert "no due date" in details  # the no-due candidate is described
+        assert due in details  # by its due date, ...
+        assert "uid" not in details.lower()  # ... never by uid
+
+    @pytest.mark.asyncio
+    async def test_edit_task_due_narrows_to_the_right_one(
+        self, caldav_tools, tasks_calendar
+    ):
+        due = await self._two_call_mom(caldav_tools)
+        res = await caldav_tools.edit_task(
+            summary="Call mom", due=due, new_priority=1, list_name="Tasks"
+        )
+        assert res["result"] == "True"
+        todos = [
+            t
+            for t in await _raw_todos(caldav_tools, "Tasks")
+            if str(t.component["summary"]) == "Call mom"
+        ]
+        edited = [t for t in todos if _due_date(t) == due]
+        untouched = [t for t in todos if _due_date(t) is None]
+        assert int(str(edited[0].component["priority"])) == 1
+        assert int(str(untouched[0].component.get("priority") or 0)) == 0
+
+    # -- complete_task ---------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_complete_task_ambiguity_then_due(self, caldav_tools, tasks_calendar):
+        due = await self._two_call_mom(caldav_tools)
+        amb = await caldav_tools.complete_task(summary="Call mom", list_name="Tasks")
+        assert amb["result"] == "False"
+        assert "2 tasks named 'Call mom'" in amb["details"]
+        res = await caldav_tools.complete_task(
+            summary="Call mom", due=due, list_name="Tasks"
+        )
+        assert res["result"] == "True"
+        todos = [
+            t
+            for t in await _raw_todos(caldav_tools, "Tasks")
+            if str(t.component["summary"]) == "Call mom"
+        ]
+        done = [t for t in todos if _due_date(t) == due]
+        open_ = [t for t in todos if _due_date(t) is None]
+        assert str(done[0].component.get("status") or "").upper() == "COMPLETED"
+        assert str(open_[0].component.get("status") or "").upper() != "COMPLETED"
+
+    # -- delete_task -----------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_delete_task_ambiguity_then_due(self, caldav_tools, tasks_calendar):
+        due = await self._two_call_mom(caldav_tools)
+        amb = await caldav_tools.delete_task(summary="Call mom", list_name="Tasks")
+        assert amb["result"] == "False"
+        assert "2 tasks named 'Call mom'" in amb["details"]
+        res = await caldav_tools.delete_task(
+            summary="Call mom", due=due, list_name="Tasks"
+        )
+        assert res["result"] == "True"
+        remaining = [
+            t
+            for t in await _raw_todos(caldav_tools, "Tasks")
+            if str(t.component["summary"]) == "Call mom"
+        ]
+        assert len(remaining) == 1
+        assert _due_date(remaining[0]) is None  # the due one was deleted
+
+    # -- unique name needs no disambiguation -----------------------------
+
+    @pytest.mark.asyncio
+    async def test_unique_summary_edits_with_summary_only(
+        self, caldav_tools, tasks_calendar
+    ):
+        assert (await caldav_tools.add_task(summary="Only one", list_name="Tasks"))[
+            "result"
+        ] == "True"
+        res = await caldav_tools.edit_task(
+            summary="Only one", new_priority=2, list_name="Tasks"
+        )
+        assert res["result"] == "True"
+
+    # -- events ----------------------------------------------------------
+
+    async def _two_standups(self, caldav_tools):
+        zi = ZoneInfo("America/New_York")
+        base = datetime.now(zi).replace(hour=9, minute=0, second=0, microsecond=0)
+        day1 = (base + timedelta(days=40)).replace(microsecond=0)
+        day2 = (base + timedelta(days=41)).replace(microsecond=0)
+        for day in (day1, day2):
+            r = await caldav_tools.create_calendar_event(
+                summary="Standup",
+                calendar_name="Personal",
+                start=day.isoformat(),
+                end=(day + timedelta(hours=1)).isoformat(),
+                __user__={"timezone": "America/New_York"},
+            )
+            assert r["result"] == "True"
+        return day1.date().isoformat(), day2.date().isoformat()
+
+    @pytest.mark.asyncio
+    async def test_edit_event_ambiguity_lists_start_times_not_uid(
+        self, caldav_tools, personal_calendar
+    ):
+        day1, day2 = await self._two_standups(caldav_tools)
+        res = await caldav_tools.edit_calendar_event(
+            summary="Standup",
+            new_location="Room B",
+            calendar_name="Personal",
+            __user__={"timezone": "America/New_York"},
+        )
+        assert res["result"] == "False"
+        details = res["details"]
+        assert "2 events named 'Standup'" in details
+        assert day1 in details and day2 in details  # both start dates listed
+        assert "uid" not in details.lower()
+
+    @pytest.mark.asyncio
+    async def test_edit_event_on_date_narrows_to_the_right_one(
+        self, caldav_tools, personal_calendar
+    ):
+        day1, day2 = await self._two_standups(caldav_tools)
+        res = await caldav_tools.edit_calendar_event(
+            summary="Standup",
+            on_date=day2,
+            new_summary="Standup Edited",
+            calendar_name="Personal",
+            __user__={"timezone": "America/New_York"},
+        )
+        assert res["result"] == "True"
+        events = await _raw_events(caldav_tools, "Personal")
+        summaries = sorted(str(e.component["summary"]) for e in events)
+        assert summaries == ["Standup", "Standup Edited"]
+        # the one that kept the old name is the day-1 event
+        kept = [e for e in events if str(e.component["summary"]) == "Standup"][0]
+        assert kept.component["dtstart"].dt.date().isoformat() == day1
