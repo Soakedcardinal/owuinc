@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar,aiowebdav2
-version: 3.12.0
+version: 3.13.0
 license: MIT
 """
 
@@ -15,6 +15,7 @@ import inspect
 import logging
 import os
 import re
+import time
 import urllib.parse
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -37,10 +38,75 @@ from icalendar import Alarm, Component, Event, vRecur
 from pydantic import BaseModel, Field
 
 _logger = logging.getLogger("owuinc")
-_logger.addHandler(logging.StreamHandler())
+if not _logger.handlers:  # loader re-execs this module on every source save
+    _logger.addHandler(logging.StreamHandler())
+_logger.propagate = False
 _logger.setLevel(logging.DEBUG)
 
+# tiktoken ships with OpenWebUI, so the encoder is always available here.
 _tokenizer = tiktoken.get_encoding("cl100k_base")
+
+# Per-process caches; every entry is dropped whenever any request 404s, so a
+# renamed/deleted sandbox or calendar can never stay stale beyond one call.
+_SANDBOX_VERIFIED: set[tuple[str, str, str]] = set()
+_CALENDAR_URL_CACHE: dict[tuple[str, str], tuple[float, dict[str, str]]] = {}
+_CALENDAR_CACHE_TTL_S = 60.0
+_GREP_CONCURRENCY = 5
+_GREP_SEARCH_TIMEOUT_S = 5.0
+_BINARY_EXTS = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".bmp",
+        ".webp",
+        ".ico",
+        ".tif",
+        ".tiff",
+        ".pdf",
+        ".zip",
+        ".gz",
+        ".bz2",
+        ".xz",
+        ".tar",
+        ".7z",
+        ".rar",
+        ".exe",
+        ".dll",
+        ".so",
+        ".dylib",
+        ".bin",
+        ".class",
+        ".pyc",
+        ".o",
+        ".a",
+        ".mp3",
+        ".mp4",
+        ".avi",
+        ".mov",
+        ".mkv",
+        ".webm",
+        ".ogg",
+        ".wav",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".otf",
+        ".eot",
+        ".doc",
+        ".docx",
+        ".xls",
+        ".xlsx",
+        ".ppt",
+        ".pptx",
+        ".odt",
+        ".ods",
+        ".odp",
+        ".sqlite",
+        ".db",
+    }
+)
 
 
 def _count_tokens(text: str) -> int:
@@ -289,14 +355,23 @@ def _format_status(op: str, kwargs: dict, response: dict) -> str:
 
 
 async def _emit(emitter, event: dict):
-    """Emit an event through the OpenWebUI event emitter."""
+    """Emit an event through the OpenWebUI event emitter (best effort)."""
     if not emitter:
         return
     try:
-        asyncio.get_running_loop()
-    except RuntimeError:
+        await emitter(event)
+    except Exception:
+        _logger.debug("event emitter failed", exc_info=True)
+
+
+def _invalidate_caches(valves) -> None:
+    """Drop per-process cache entries for this user's server."""
+    if valves is None:
         return
-    await emitter(event)
+    base = getattr(valves, "NEXTCLOUD_BASE_URL", "")
+    _CALENDAR_URL_CACHE.pop((base, getattr(valves, "NEXTCLOUD_USERNAME", "")), None)
+    sandbox = str(getattr(valves, "SANDBOX_DIR", "")).strip().rstrip("/")
+    _SANDBOX_VERIFIED.discard((base, getattr(valves, "WEBDAV_USERNAME", ""), sandbox))
 
 
 # ============================================================
@@ -345,7 +420,7 @@ def _safe(func: Callable) -> Callable:
         elif not debug:
             _logger.debug(f"{op}: starting")
 
-        t0 = asyncio.get_event_loop().time()
+        t0 = time.perf_counter()
 
         try:
             result = func(*args, **kwargs)
@@ -355,7 +430,7 @@ def _safe(func: Callable) -> Callable:
             if result is not None:
                 response["data"] = result
 
-            elapsed = round((asyncio.get_event_loop().time() - t0) * 1000)
+            elapsed = round((time.perf_counter() - t0) * 1000)
             res_str = _format_result(response)
             if debug:
                 _logger.info(f"{op}: success ({elapsed}ms) → {res_str}")
@@ -363,22 +438,22 @@ def _safe(func: Callable) -> Callable:
                 _logger.info(f"{op}: success")
 
             desc = _format_status(op, kwargs, response)
-            asyncio.create_task(
-                _emit(
-                    emitter,
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": desc,
-                            "done": True,
-                        },
+            await _emit(
+                emitter,
+                {
+                    "type": "status",
+                    "data": {
+                        "description": desc,
+                        "done": True,
                     },
-                )
+                },
             )
             return response
 
         except Exception as e:
-            elapsed = round((asyncio.get_event_loop().time() - t0) * 1000)
+            elapsed = round((time.perf_counter() - t0) * 1000)
+            if isinstance(e, (RemoteResourceNotFoundError, NotFoundError)):
+                _invalidate_caches(valves)
             if isinstance(e, _CONNECTION_EXC):
                 details = (
                     f"connection error ({type(e).__name__})"
@@ -395,28 +470,24 @@ def _safe(func: Callable) -> Callable:
             else:
                 _logger.warning(f"{op}: error → {details}")
 
-            asyncio.create_task(
-                _emit(
-                    emitter,
-                    {
-                        "type": "status",
-                        "data": {
-                            "description": f"{op}: {details}",
-                            "done": True,
-                        },
+            await _emit(
+                emitter,
+                {
+                    "type": "status",
+                    "data": {
+                        "description": f"{op}: {details}",
+                        "done": True,
                     },
-                )
+                },
             )
 
             if isinstance(e, _CONNECTION_EXC):
-                asyncio.create_task(
-                    _emit(
-                        emitter,
-                        {
-                            "type": "notification",
-                            "data": {"content": f"{op}: connection error"},
-                        },
-                    )
+                await _emit(
+                    emitter,
+                    {
+                        "type": "notification",
+                        "data": {"content": f"{op}: connection error"},
+                    },
                 )
 
             return {"result": "False", "details": details}
@@ -435,6 +506,14 @@ def webdav_safe(func: Callable) -> Callable:
 # ============================================================
 # ReDoS PROTECTION
 # ============================================================
+
+
+def _regex_line_hits(pattern: re.Pattern, content: str) -> list[tuple[int, str]]:
+    return [
+        (num, line)
+        for num, line in enumerate(content.splitlines(), start=1)
+        if pattern.search(line)
+    ]
 
 
 def _check_redos_risk(pattern: str) -> None:
@@ -854,14 +933,36 @@ class Tools:
         get_display_name() internally without awaiting them, which fails for
         async clients. This helper properly awaits all async calls.
 
+        The display-name -> URL mapping is cached briefly per (server, user)
+        to avoid one PROPFIND per calendar on every operation; the cache is
+        dropped whenever any CalDAV call 404s, so a renamed or deleted
+        calendar can never be reused stale beyond a single failed call.
+
         Raises NotFoundError if no match or multiple matches found.
         """
+        key = (self.valves.NEXTCLOUD_BASE_URL, self.valves.NEXTCLOUD_USERNAME)
+        cached = _CALENDAR_URL_CACHE.get(key)
+        if cached and cached[0] > time.monotonic():
+            url = cached[1].get(calendar_name)
+            if url:
+                return principal.client.calendar(url=url)
+        _CALENDAR_URL_CACHE.pop(key, None)
         calendars = await principal.get_calendars()
+        mapping: dict[str, str] = {}
+        names: list[str] = []
         matches = []
         for cal in calendars:
             display_name = await cal.get_display_name()
+            if display_name:
+                mapping[display_name] = str(cal.url)
+                names.append(display_name)
             if display_name == calendar_name:
                 matches.append(cal)
+        if len(names) == len(set(names)):
+            _CALENDAR_URL_CACHE[key] = (
+                time.monotonic() + _CALENDAR_CACHE_TTL_S,
+                mapping,
+            )
         if len(matches) > 1:
             raise NotFoundError(f"multiple calendars named {calendar_name!r}")
         if len(matches) == 1:
@@ -937,11 +1038,20 @@ class Tools:
     async def _ensure_sandbox(self, client):
         """Ensure sandbox directory exists (must be called within webdav context)."""
         sandbox = self.valves.SANDBOX_DIR.strip().rstrip("/")
-        if sandbox:
-            try:
-                await client.list_files(_webdav_path(sandbox + "/"))
-            except RemoteResourceNotFoundError:
-                await client.mkdir(_webdav_path(sandbox))
+        if not sandbox:
+            return
+        key = (
+            self.valves.NEXTCLOUD_BASE_URL,
+            self.valves.WEBDAV_USERNAME,
+            sandbox,
+        )
+        if key in _SANDBOX_VERIFIED:
+            return
+        try:
+            await client.list_files(_webdav_path(sandbox + "/"))
+        except RemoteResourceNotFoundError:
+            await client.mkdir(_webdav_path(sandbox))
+        _SANDBOX_VERIFIED.add(key)
 
     def _check_blacklisted(self, rel_path: str) -> None:
         """Raise ValueError if rel_path (relative to sandbox) is blacklisted."""
@@ -1319,7 +1429,7 @@ class Tools:
         __event_emitter__=None,
     ) -> dict:
         """Search file contents with regex, recursively. Use include for filter (e.g. '*.py', braces ok: '*.{py,js}').
-        Text files only — binary files are skipped and listed in the result. Nested quantifiers (e.g. '(a+)+') are rejected.
+        Text files only — binary files are skipped and listed in the result. Nested quantifiers (e.g. '(a+)+') are rejected; a pattern that executes too long aborts the search.
         """
         target_dir = validate_path(path if path else "", self.valves)
         search_rel = self._get_rel_path(target_dir)
@@ -1359,7 +1469,9 @@ class Tools:
 
             results = []
             skipped = []
-            for full_path in file_list:
+            sem = asyncio.Semaphore(_GREP_CONCURRENCY)
+
+            async def search_one(full_path: str) -> None:
                 if self.sandbox_prefix in full_path:
                     rel = full_path.split(self.sandbox_prefix, 1)[1]
                 elif full_path.startswith(search_rel + "/"):
@@ -1368,11 +1480,10 @@ class Tools:
                     rel = os.path.basename(full_path)
 
                 if self._is_result_blacklisted(rel):
-                    continue
+                    return
 
                 filename = os.path.basename(rel)
 
-                # Apply include filter.
                 if patterns_to_match:
                     matched = False
                     for pat in patterns_to_match:
@@ -1381,31 +1492,60 @@ class Tools:
                             matched = True
                             break
                     if not matched:
-                        continue
+                        return
 
-                webdav_path = _webdav_path(validate_path(rel, self.valves))
+                if os.path.splitext(filename)[1].lower() in _BINARY_EXTS:
+                    skipped.append(rel)
+                    return
 
                 buf = BytesIO()
-                try:
-                    await client.resource(webdav_path).read_from(buf)
-                except Exception:
-                    continue
+                async with sem:
+                    try:
+                        # The listing returns full hrefs (rooted at
+                        # /remote.php/dav/files/<user>/), so fetch the listed
+                        # path itself instead of re-deriving it from rel.
+                        root_prefix = (
+                            f"remote.php/dav/files/{self.valves.WEBDAV_USERNAME}/"
+                        )
+                        if full_path.startswith(root_prefix):
+                            fetch_path = "/" + full_path[len(root_prefix) :]
+                        else:
+                            fetch_path = _webdav_path(validate_path(rel, self.valves))
+                        await client.resource(fetch_path).read_from(buf)
+                    except Exception:
+                        return
 
                 try:
                     content = buf.getvalue().decode("utf-8")
                 except UnicodeDecodeError:
                     skipped.append(rel)
-                    continue
+                    return
 
-                for line_num, line in enumerate(content.splitlines(), start=1):
-                    if compiled_regex.search(line):
-                        results.append(
-                            {
-                                "file": rel,
-                                "line": line_num,
-                                "content": line.strip(),
-                            }
-                        )
+                try:
+                    hits = await asyncio.wait_for(
+                        asyncio.to_thread(_regex_line_hits, compiled_regex, content),
+                        timeout=_GREP_SEARCH_TIMEOUT_S,
+                    )
+                except TimeoutError:
+                    raise ValueError(
+                        f"regex execution timed out on {rel} after "
+                        f"{int(_GREP_SEARCH_TIMEOUT_S)}s; search aborted"
+                    )
+                for line_num, line in hits:
+                    results.append(
+                        {
+                            "file": rel,
+                            "line": line_num,
+                            "content": line.strip(),
+                        }
+                    )
+
+            outcomes = await asyncio.gather(
+                *(search_one(fp) for fp in file_list), return_exceptions=True
+            )
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
 
             results.sort(key=lambda x: (x["file"], x["line"]))
             return {
@@ -1490,6 +1630,14 @@ class Tools:
             res_path = _webdav_path(full_path)
             try:
                 lock = await client.lock(res_path, timeout=30)
+            except RemoteResourceNotFoundError:
+                # Unlocked create only when the resource does not exist yet;
+                # a 404 during the locked read-modify-write must surface as
+                # an error, never fall through to an unprotected overwrite.
+                await client.resource(res_path).write_to(
+                    BytesIO(content.encode("utf-8"))
+                )
+            else:
                 async with lock as locked:
                     res = locked.resource(res_path)
                     try:
@@ -1504,10 +1652,6 @@ class Tools:
                     if existing and not existing.endswith("\n"):
                         content = "\n" + content
                     await res.write_to(BytesIO((existing + content).encode("utf-8")))
-            except RemoteResourceNotFoundError:
-                await client.resource(res_path).write_to(
-                    BytesIO(content.encode("utf-8"))
-                )
         finally:
             await client.close()
 
