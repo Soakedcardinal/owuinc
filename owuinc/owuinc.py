@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar,aiowebdav2
-version: 3.13.0
+version: 3.14.0
 license: MIT
 """
 
@@ -30,7 +30,9 @@ from aiowebdav2.exceptions import (
     ConnectionExceptionError,
     NoConnectionError,
     RemoteResourceNotFoundError,
+    ResponseErrorCodeError,
 )
+from aiowebdav2.models import PropertyRequest
 from caldav.aio import get_async_davclient
 from caldav.lib.error import NotFoundError
 from dateutil.rrule import rrule, rruleset, rrulestr
@@ -53,6 +55,7 @@ _CALENDAR_URL_CACHE: dict[tuple[str, str], tuple[float, dict[str, str]]] = {}
 _CALENDAR_CACHE_TTL_S = 60.0
 _GREP_CONCURRENCY = 5
 _GREP_SEARCH_TIMEOUT_S = 5.0
+_GETETAG_REQ = PropertyRequest(name="getetag", namespace="DAV:")
 _BINARY_EXTS = frozenset(
     {
         ".png",
@@ -1053,6 +1056,35 @@ class Tools:
             await client.mkdir(_webdav_path(sandbox))
         _SANDBOX_VERIFIED.add(key)
 
+    async def _get_etag(self, client, res_path: str) -> str | None:
+        """Fetch the current ETag of a resource, or None if it has none."""
+        prop = await client.get_property(res_path, _GETETAG_REQ)
+        if prop is None or not prop.value:
+            return None
+        return str(prop.value)
+
+    async def _conditional_put(
+        self, client, res_path: str, payload: bytes, etag: str | None
+    ) -> bool:
+        """PUT guarded by If-Match so the server rejects stale writes (412).
+
+        Returns False when the ETag no longer matches (someone else wrote
+        the file since we read it), True on success. Nextcloud's WebDAV
+        locker grants every LOCK without enforcing it, so LOCK is not real
+        conflict protection; If-Match is enforced by both Nextcloud and
+        standard WebDAV servers.
+        """
+        headers = {"If-Match": etag} if etag else {}
+        try:
+            await client.execute_request(
+                "upload", res_path, data=payload, headers_ext=headers
+            )
+        except ResponseErrorCodeError as e:
+            if e.code == 412:
+                return False
+            raise
+        return True
+
     def _check_blacklisted(self, rel_path: str) -> None:
         """Raise ValueError if rel_path (relative to sandbox) is blacklisted."""
         rel_path = rel_path.strip("/")
@@ -1617,7 +1649,8 @@ class Tools:
         self, path: str, content: str | None = None, __event_emitter__=None
     ) -> None:
         """Append content to a file. Creates if missing.
-        Uses WebDAV lock to prevent concurrent read-modify-write conflicts.
+        Uses optimistic concurrency (ETag + If-Match) to prevent concurrent
+        read-modify-write conflicts; retries once if the file changed mid-write.
         """
         if content is None:
             content = ""
@@ -1628,30 +1661,33 @@ class Tools:
         try:
             await self._ensure_sandbox(client)
             res_path = _webdav_path(full_path)
-            try:
-                lock = await client.lock(res_path, timeout=30)
-            except RemoteResourceNotFoundError:
-                # Unlocked create only when the resource does not exist yet;
-                # a 404 during the locked read-modify-write must surface as
-                # an error, never fall through to an unprotected overwrite.
-                await client.resource(res_path).write_to(
-                    BytesIO(content.encode("utf-8"))
-                )
-            else:
-                async with lock as locked:
-                    res = locked.resource(res_path)
-                    try:
-                        buf = BytesIO()
-                        await res.read_from(buf)
-                        try:
-                            existing = buf.getvalue().decode("utf-8")
-                        except UnicodeDecodeError:
-                            raise ValueError("not a text file")
-                    except RemoteResourceNotFoundError:
-                        existing = ""
-                    if existing and not existing.endswith("\n"):
-                        content = "\n" + content
-                    await res.write_to(BytesIO((existing + content).encode("utf-8")))
+            for attempt in range(2):
+                try:
+                    etag = await self._get_etag(client, res_path)
+                except RemoteResourceNotFoundError:
+                    etag = None
+                if etag is None:
+                    await client.resource(res_path).write_to(
+                        BytesIO(content.encode("utf-8"))
+                    )
+                    return
+                buf = BytesIO()
+                await client.resource(res_path).read_from(buf)
+                try:
+                    existing = buf.getvalue().decode("utf-8")
+                except UnicodeDecodeError:
+                    raise ValueError("not a text file")
+                payload = existing + content
+                if existing and not existing.endswith("\n"):
+                    payload = existing + "\n" + content
+                if await self._conditional_put(
+                    client, res_path, payload.encode("utf-8"), etag
+                ):
+                    return
+                if attempt == 1:
+                    raise ValueError(
+                        "file kept changing during append; concurrent writer conflict"
+                    )
         finally:
             await client.close()
 
@@ -1665,7 +1701,8 @@ class Tools:
         __event_emitter__=None,
     ) -> None:
         """Exact string replacement. Requires unique match unless replace_all=True.
-        Uses WebDAV lock to prevent concurrent read-modify-write conflicts.
+        Uses optimistic concurrency (ETag + If-Match) to prevent concurrent
+        read-modify-write conflicts; retries once if the file changed mid-write.
         """
         if not old_string:
             raise ValueError("old_string cannot be empty")
@@ -1679,13 +1716,15 @@ class Tools:
         try:
             await self._ensure_sandbox(client)
             res_path = _webdav_path(full_path)
-            try:
-                lock = await client.lock(res_path, timeout=30)
-            except RemoteResourceNotFoundError:
-                raise ValueError("file not found")
-            async with lock as locked:
+            for attempt in range(2):
+                try:
+                    etag = await self._get_etag(client, res_path)
+                except RemoteResourceNotFoundError:
+                    etag = None
+                if etag is None:
+                    raise ValueError("file not found")
                 buf = BytesIO()
-                await locked.resource(res_path).read_from(buf)
+                await client.resource(res_path).read_from(buf)
                 try:
                     content = buf.getvalue().decode("utf-8")
                 except UnicodeDecodeError:
@@ -1699,9 +1738,14 @@ class Tools:
 
                 replacement_count = 1 if not replace_all else -1
                 modified = content.replace(old_string, new_string, replacement_count)
-                await locked.resource(res_path).write_to(
-                    BytesIO(modified.encode("utf-8"))
-                )
+                if await self._conditional_put(
+                    client, res_path, modified.encode("utf-8"), etag
+                ):
+                    return
+                if attempt == 1:
+                    raise ValueError(
+                        "file kept changing during edit; concurrent writer conflict"
+                    )
         finally:
             await client.close()
 

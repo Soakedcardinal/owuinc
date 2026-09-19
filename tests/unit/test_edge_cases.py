@@ -462,27 +462,29 @@ class TestMvAndCpOverwriteConsistency:
 # edit and append: race conditions
 # ============================================================
 class TestEditAppendRaceCondition:
-    """edit and append use WebDAV locking to prevent races."""
+    """edit and append use optimistic concurrency (ETag + If-Match), not locks."""
 
-    def test_edit_uses_lock(self):
-        """edit() must use client.lock() for safe read-modify-write."""
+    def test_edit_uses_if_match(self):
+        """edit() must guard writes with If-Match and must not use LOCK."""
         import inspect
 
         from owuinc.owuinc import Tools
 
         src = inspect.getsource(Tools.edit)
-        assert ".lock(" in src, "edit must use WebDAV lock"
-        assert "async with" in src, "lock must be used as async context manager"
+        assert "_conditional_put(" in src, "edit must write via _conditional_put"
+        assert ".lock(" not in src, "edit must not rely on WebDAV LOCK"
+        assert "attempt" in src, "edit must retry once on conflict"
 
-    def test_append_uses_lock(self):
-        """append() must use client.lock() for existing files."""
+    def test_append_uses_if_match(self):
+        """append() must guard writes with If-Match and must not use LOCK."""
         import inspect
 
         from owuinc.owuinc import Tools
 
         src = inspect.getsource(Tools.append)
-        assert ".lock(" in src, "append must use WebDAV lock"
-        assert "async with" in src, "lock must be used as async context manager"
+        assert "_conditional_put(" in src, "append must write via _conditional_put"
+        assert ".lock(" not in src, "append must not rely on WebDAV LOCK"
+        assert "attempt" in src, "append must retry once on conflict"
 
 
 # ============================================================

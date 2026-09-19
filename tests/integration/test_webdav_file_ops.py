@@ -883,11 +883,11 @@ class TestBinaryFileHandling:
         assert len(data["matches"]) >= 1
 
 
-class TestWebDavLocking:
-    """Test that edit() and append() use WebDAV locking."""
+class TestOptimisticConcurrency:
+    """edit()/append() use ETag + If-Match instead of WebDAV locking."""
 
     @pytest.mark.asyncio
-    async def test_edit_holds_lock_during_operation(self, webdav_tools):
+    async def test_edit_applies_change(self, webdav_tools):
         await webdav_tools.write("lockedit.txt", "original content here")
         result = await webdav_tools.edit("lockedit.txt", "original", "modified")
         assert result["result"] == "True"
@@ -895,7 +895,7 @@ class TestWebDavLocking:
         assert content["data"] == "modified content here"
 
     @pytest.mark.asyncio
-    async def test_append_holds_lock(self, webdav_tools):
+    async def test_append_appends(self, webdav_tools):
         await webdav_tools.write("lockappend.txt", "line1\n")
         result = await webdav_tools.append("lockappend.txt", "line2\n")
         assert result["result"] == "True"
@@ -910,21 +910,29 @@ class TestWebDavLocking:
         assert content["data"] == "first line"
 
     @pytest.mark.asyncio
-    async def test_edit_conflict_when_locked(self, webdav_tools):
-        await webdav_tools.write("lockconflict.txt", "a b c")
+    async def test_stale_etag_put_is_rejected(self, webdav_tools):
+        """The server must reject If-Match writes when the ETag is stale."""
+        from aiowebdav2.exceptions import ResponseErrorCodeError
+
         from owuinc.owuinc import _webdav_path, validate_path
 
+        await webdav_tools.write("etagrace.txt", "v1")
         client = webdav_tools._webdav_client()
         try:
-            res_path = _webdav_path(
-                validate_path("lockconflict.txt", webdav_tools.valves)
-            )
-            lock = await client.lock(res_path, timeout=10)
-            result = await webdav_tools.edit("lockconflict.txt", "a", "x")
-            assert result["result"] == "False"
-            assert "locked" in result["details"].lower()
-            # Release the lock
-            await lock.close()
+            res_path = _webdav_path(validate_path("etagrace.txt", webdav_tools.valves))
+            etag = await webdav_tools._get_etag(client, res_path)
+            assert etag, "server should expose a getetag"
+            await webdav_tools.write("etagrace.txt", "external")
+            with pytest.raises(ResponseErrorCodeError) as excinfo:
+                await client.execute_request(
+                    "upload",
+                    res_path,
+                    data=b"late write",
+                    headers_ext={"If-Match": etag},
+                )
+            assert excinfo.value.code == 412
+            content = await webdav_tools.cat("etagrace.txt")
+            assert content["data"] == "external"
         finally:
             await client.close()
 
