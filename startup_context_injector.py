@@ -66,6 +66,18 @@ def _is_turn_start(messages: list) -> bool:
     return bool(messages) and messages[-1].get("role") == "user"
 
 
+def _sanitize_content(content: str) -> str:
+    """Escape markup metacharacters in downloaded content.
+
+    The content is embedded verbatim inside a ``<file>`` wrapper in the system
+    prompt, so a literal ``</file>`` (or a forged ``<file ...>`` / context
+    marker) in a file could break out of the wrapper and corrupt the injected
+    prompt. Escaping ``&``, ``<`` and ``>`` keeps the wrapper structurally
+    intact and the path-tag semantics unchanged; the text is still readable.
+    """
+    return content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _try_inject(
     contexts: list[str],
     injected_info: list[dict],
@@ -80,8 +92,9 @@ def _try_inject(
         # Filenames may contain '/' (daily logs) or other characters that
         # make them invalid as raw tag names, so use an attribute instead.
         safe = filename.replace("<", "").replace(">", "").replace('"', "")
-        contexts.append(f'<file path="{safe}">\n{content}\n</file>')
-        info = {"name": filename, "tokens": _token_count(content)}
+        body = _sanitize_content(content)
+        contexts.append(f'<file path="{safe}">\n{body}\n</file>')
+        info = {"name": filename, "tokens": _token_count(body)}
         injected_info.append(info)
         return info
     return None

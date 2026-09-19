@@ -2497,8 +2497,17 @@ class Tools:
                     if inspect.isawaitable(result):
                         await result
                     return f"{label} (occurrence completed; series continues)"
-                except Exception:
-                    _logger.debug("recurring completion fell back to plain completion")
+                except (ValueError, NotImplementedError) as exc:
+                    # Only caldav's recognized "this recurrence cannot be
+                    # modeled" signals (malformed RRULE -> ValueError, exotic
+                    # recurrence shapes -> NotImplementedError) fall back to a
+                    # plain completion. Any other failure — network, auth, 5xx
+                    # or an unexpected bug — must surface; otherwise a transient
+                    # error would silently mark the whole series completed.
+                    _logger.warning(
+                        "recurring completion fell back to plain completion: %s",
+                        exc,
+                    )
 
             if "RRULE" in comp:
                 comp.pop("rrule", None)  # a completed series must not recur
@@ -2857,10 +2866,35 @@ class Tools:
                 expand=False,
                 event=True,
             )
-            if not events:
-                # Some servers (e.g. Radicale) mishandle time-range REPORTs
-                # and return nothing; refetch everything and let the
-                # client-side window checks below filter.
+
+            def _ignores_time_range(items) -> bool:
+                """True if a non-recurring result clearly lies outside the
+                requested window, proving the server did not honour the
+                time-range filter (recurring masters legitimately precede the
+                window, so they are not counted)."""
+                for it in items:
+                    cc = it.component
+                    if (
+                        cc.get("recurrence-id") is not None
+                        or cc.get("rrule") is not None
+                    ):
+                        continue
+                    ds = cc.get("dtstart")
+                    if ds is None:
+                        continue
+                    de = cc.get("dtend")
+                    ev_start = _to_aware(ds.dt, tz)
+                    ev_end = _to_aware(de.dt, tz) if de else ev_start
+                    if ev_end < window_start or ev_start > window_end:
+                        return True
+                return False
+
+            if not events or _ignores_time_range(events):
+                # Nothing back, or items outside the window: the server ignored
+                # or misapplied the time-range filter (Radicale is a known
+                # offender), so this set is untrustworthy and may even be
+                # partial. Refetch the authoritative full list and let the
+                # client-side window checks below do the filtering.
                 events = await cal.events()
 
             # Group components by uid so RECURRENCE-ID overrides render
