@@ -24,7 +24,7 @@ async def _get_calendar(caldav_tools, calendar_name: str):
     return await caldav_tools._get_calendar(principal, calendar_name)
 
 
-async def _make_calendar(principal, name: str, cal_id: str):
+async def _make_calendar(principal, name: str, cal_id: str, supported=None):
     """Idempotently create a calendar, deleting any leftover first."""
     for cal in await principal.get_calendars():
         try:
@@ -33,7 +33,9 @@ async def _make_calendar(principal, name: str, cal_id: str):
             dn = None
         if dn == name or cal.url.path.rstrip("/").endswith("/" + cal_id):
             await cal.delete()
-    return await principal.make_calendar(name=name, cal_id=cal_id)
+    return await principal.make_calendar(
+        name=name, cal_id=cal_id, supported_calendar_component_set=supported
+    )
 
 
 class TestServerHealth:
@@ -753,3 +755,142 @@ class TestEventOperations:
         cal = await _get_calendar(caldav_tools, "Personal")
         event_summaries = [e.component["summary"] for e in await cal.events()]
         assert summary not in event_summaries
+
+
+class TestTaskEventUsability:
+    """Batch E: due/start on tasks, all-day events, range + component filters."""
+
+    @pytest_asyncio.fixture
+    async def tasks_calendar(self, caldav_tools):
+        client = await caldav_tools._caldav_client()
+        principal = await client.principal()
+        cal = await _make_calendar(principal, name="Tasks", cal_id="tasks")
+        yield cal
+        try:
+            await cal.delete()
+        except Exception:
+            pass
+
+    @pytest_asyncio.fixture
+    async def personal_calendar(self, caldav_tools):
+        client = await caldav_tools._caldav_client()
+        principal = await client.principal()
+        cal = await _make_calendar(principal, name="Personal", cal_id="personal")
+        yield cal
+        try:
+            await cal.delete()
+        except Exception:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_add_task_due_and_status(self, caldav_tools, tasks_calendar):
+        result = await caldav_tools.add_task(
+            "Buy milk", list_name="Tasks", due="2026-10-01T09:00"
+        )
+        assert result["result"] == "True"
+        tasks = await caldav_tools.tasks(list_name="Tasks")
+        assert tasks["result"] == "True"
+        mine = [t for t in tasks["data"] if t.get("summary") == "Buy milk"]
+        assert mine, "task should appear in tasks()"
+        assert mine[0]["due"].startswith("2026-10-01")
+        assert "status" in mine[0]
+        assert "percent-complete" in mine[0]
+
+    @pytest.mark.asyncio
+    async def test_add_task_start_and_priority_clamped(
+        self, caldav_tools, tasks_calendar
+    ):
+        result = await caldav_tools.add_task(
+            "Starts soon", list_name="Tasks", priority=99, start="2026-10-01"
+        )
+        assert result["result"] == "True"
+        tasks = await caldav_tools.tasks(list_name="Tasks")
+        mine = [t for t in tasks["data"] if t.get("summary") == "Starts soon"]
+        assert mine and mine[0]["priority"] == "9"
+
+    @pytest.mark.asyncio
+    async def test_add_task_rejects_bad_due(self, caldav_tools, tasks_calendar):
+        result = await caldav_tools.add_task(
+            "Bad due", list_name="Tasks", due="tomorrow-ish"
+        )
+        assert result["result"] == "False"
+        assert "ISO 8601" in result["details"]
+
+    @pytest.mark.asyncio
+    async def test_all_day_event(self, caldav_tools, personal_calendar):
+        result = await caldav_tools.create_calendar_event(
+            "Holiday", calendar_name="Personal", start="2026-10-05", end="2026-10-07"
+        )
+        assert result["result"] == "True"
+        events = await caldav_tools.calendar_events(
+            calendar_name="Personal", start="2026-10-01", days=10
+        )
+        assert events["result"] == "True"
+        mine = [e for e in events["data"] if e.get("summary") == "Holiday"]
+        assert mine, "all-day event should appear"
+        assert mine[0]["dtstart"] == "2026-10-05"
+        assert mine[0]["dtend"] == "2026-10-08"
+
+    @pytest.mark.asyncio
+    async def test_event_end_before_start_rejected(
+        self, caldav_tools, personal_calendar
+    ):
+        result = await caldav_tools.create_calendar_event(
+            "Bad",
+            calendar_name="Personal",
+            start="2026-10-05T10:00",
+            end="2026-10-05T09:00",
+        )
+        assert result["result"] == "False"
+        assert "end must be after start" in result["details"]
+
+    @pytest.mark.asyncio
+    async def test_calendar_events_custom_range(self, caldav_tools, personal_calendar):
+        from datetime import datetime, timedelta
+
+        now = datetime.now()
+        far = (now + timedelta(days=200)).replace(
+            hour=10, minute=0, second=0, microsecond=0
+        )
+        window_start = (far - timedelta(days=4)).replace(hour=0, minute=0)
+        result = await caldav_tools.create_calendar_event(
+            "Later",
+            calendar_name="Personal",
+            start=far.isoformat(),
+            __user__={"timezone": "UTC"},
+        )
+        assert result["result"] == "True"
+        default_window = await caldav_tools.calendar_events(calendar_name="Personal")
+        assert not [e for e in default_window["data"] if e.get("summary") == "Later"]
+        wide = await caldav_tools.calendar_events(
+            calendar_name="Personal", start=window_start.isoformat(), days=10
+        )
+        assert [e for e in wide["data"] if e.get("summary") == "Later"]
+
+    @pytest.mark.asyncio
+    async def test_component_set_separates_calendars_and_task_lists(self, caldav_tools):
+        client = await caldav_tools._caldav_client()
+        principal = await client.principal()
+        event_only = await _make_calendar(
+            principal, name="EventOnly", cal_id="eventonly", supported=["VEVENT"]
+        )
+        todo_only = await _make_calendar(
+            principal, name="TodoOnly", cal_id="todoonly", supported=["VTODO"]
+        )
+        try:
+            caldav_tools.valves.CALENDAR_WHITELIST = "EventOnly,TodoOnly"
+            caldav_tools.valves.TASK_LIST_WHITELIST = "EventOnly,TodoOnly"
+            calendars = await caldav_tools.calendars()
+            lists = await caldav_tools.task_lists()
+            assert calendars["result"] == "True"
+            assert "EventOnly" in calendars["data"]
+            assert "TodoOnly" not in calendars["data"]
+            assert lists["result"] == "True"
+            assert "TodoOnly" in lists["data"]
+            assert "EventOnly" not in lists["data"]
+        finally:
+            for cal in (event_only, todo_only):
+                try:
+                    await cal.delete()
+                except Exception:
+                    pass

@@ -1,10 +1,9 @@
 """Unit tests for ETag + If-Match optimistic concurrency in append/edit."""
 
-import pytest
 from aiowebdav2.exceptions import RemoteResourceNotFoundError, ResponseErrorCodeError
 from aiowebdav2.models import Property
 
-from owuinc.owuinc import Tools, _GETETAG_REQ
+from owuinc.owuinc import _GETETAG_REQ, Tools
 
 
 class FakeResource:
@@ -39,9 +38,7 @@ class FakeClient:
         self._propfinds += 1
         if value is None:
             raise RemoteResourceNotFoundError(path=path)
-        return Property(
-            name=requested.name, namespace=requested.namespace, value=value
-        )
+        return Property(name=requested.name, namespace=requested.namespace, value=value)
 
     async def execute_request(self, action, path, data=None, headers_ext=None):
         assert action == "upload"

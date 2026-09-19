@@ -896,3 +896,71 @@ class TestCheckBlacklistedRecursive:
     async def test_empty_blacklist_skips_listing(self):
         t = self._tools("")
         await t._check_blacklisted_recursive(_FailingDavClient(), "owuinc/dir")
+
+
+class TestParseReminderUnits:
+    def test_weeks(self):
+        from owuinc.owuinc import parse_reminders
+
+        assert parse_reminders(["2w"])[0]["minutes"] == 20160
+        assert parse_reminders(["1week"])[0]["minutes"] == 10080
+
+    def test_non_string_raises_value_error_not_attribute_error(self):
+        from owuinc.owuinc import parse_reminders
+
+        with pytest.raises(ValueError):
+            parse_reminders([15])
+
+
+class TestGlobMatch:
+    def test_basename_pattern_matches_any_depth(self):
+        from owuinc.owuinc import _glob_match
+
+        assert _glob_match("c.py", "*.py")
+        assert _glob_match("a/b/c.py", "*.py")
+
+    def test_single_star_does_not_cross_directories(self):
+        from owuinc.owuinc import _glob_match
+
+        assert _glob_match("a/b.py", "*/b.py")
+        assert not _glob_match("a/b/c.py", "a/*.py")
+        assert _glob_match("a/b/c.py", "a/*/c.py")
+
+    def test_double_star_spans_any_depth(self):
+        from owuinc.owuinc import _glob_match
+
+        assert _glob_match("docs/deep/a.md", "docs/**/*.md")
+        assert _glob_match("docs/a.md", "docs/**/*.md")
+        assert _glob_match("a.md", "**/*.md")
+        assert _glob_match("x/a.md", "**/*.md")
+
+    def test_plain_slash_pattern_is_depth_exact(self):
+        from owuinc.owuinc import _glob_match
+
+        assert _glob_match("docs/a.md", "docs/*.md")
+        assert not _glob_match("docs/deep/a.md", "docs/*.md")
+
+    def test_character_class(self):
+        from owuinc.owuinc import _glob_match
+
+        assert _glob_match("f1.txt", "f[0-9].txt")
+        assert not _glob_match("fx.txt", "f[0-9].txt")
+        assert _glob_match("fx.txt", "f[!0-9].txt")
+
+
+class TestExpandBraces:
+    def test_single_group(self):
+        from owuinc.owuinc import _expand_braces
+
+        assert sorted(_expand_braces("*.{py,js}")) == ["*.js", "*.py"]
+
+    def test_multiple_groups(self):
+        from owuinc.owuinc import _expand_braces
+
+        assert sorted(_expand_braces("{a,b}.{1,2}")) == ["a.1", "a.2", "b.1", "b.2"]
+
+    def test_no_braces_is_identity(self):
+        from owuinc.owuinc import _expand_braces
+
+        assert _expand_braces("plain.txt") == ["plain.txt"]
+        assert _expand_braces("unclosed{") == ["unclosed{"]

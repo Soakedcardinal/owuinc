@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar,aiowebdav2
-version: 3.14.0
+version: 3.15.0
 license: MIT
 """
 
@@ -519,6 +519,65 @@ def _regex_line_hits(pattern: re.Pattern, content: str) -> list[tuple[int, str]]
     ]
 
 
+def _expand_braces(pattern: str) -> list[str]:
+    """Expand brace groups in a glob: '*.{py,js}' -> ['*.py', '*.js'].
+
+    Multiple groups per pattern work; nesting is not supported.
+    """
+    start = pattern.find("{")
+    if start == -1:
+        return [pattern]
+    end = pattern.find("}", start + 1)
+    if end == -1:
+        return [pattern]
+    prefix, suffix = pattern[:start], pattern[end + 1 :]
+    out: list[str] = []
+    for alt in pattern[start + 1 : end].split(","):
+        out.extend(_expand_braces(prefix + alt + suffix))
+    return out
+
+
+def _glob_match(rel_path: str, pattern: str) -> bool:
+    """Match a search-dir-relative path against a glob pattern.
+
+    A pattern without '/' matches the basename at any depth ('*.py' finds
+    everything). '**/' spans directories; '*' and '?' never cross '/'.
+    """
+    if "/" not in pattern:
+        return fnmatch.fnmatch(os.path.basename(rel_path), pattern)
+    parts: list[str] = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        if pattern.startswith("**/", i):
+            parts.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            parts.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            parts.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            parts.append("[^/]")
+            i += 1
+        elif pattern[i] == "[":
+            end = pattern.find("]", i + 1)
+            if end == -1:
+                parts.append(re.escape("["))
+                i += 1
+            else:
+                cls = pattern[i + 1 : end]
+                if cls.startswith("!"):
+                    cls = "^" + cls[1:]
+                parts.append("[" + cls + "]")
+                i = end + 1
+        else:
+            parts.append(re.escape(pattern[i]))
+            i += 1
+    return re.match("^" + "".join(parts) + "$", rel_path) is not None
+
+
 def _check_redos_risk(pattern: str) -> None:
     """Raise ValueError if pattern contains nested quantifiers that can cause ReDoS."""
     try:
@@ -643,17 +702,23 @@ def validate_path(path, valves):
 
 
 def parse_reminders(reminders: list | None = None) -> list:
-    """Parse reminder strings like '15min', '1h', '3d' into dicts."""
+    """Parse reminder strings like '15min', '1h', '3d', '2w' into dicts."""
     if not reminders:
         return []
 
     parsed = []
     for r in reminders:
+        r = str(r).strip().lower()
         minutes = 0
         matched = False
 
         if r in ("0", "0min", "0 min"):
             matched = True
+        elif r.endswith(("w", "wk", "wks", "week", "weeks")):
+            m = re.search(r"\d+", r)
+            if m is not None:
+                minutes = int(m.group()) * 10080
+                matched = True
         elif r.endswith(("min", "mins", "minutes")):
             m = re.search(r"\d+", r)
             if m is not None:
@@ -990,9 +1055,9 @@ class Tools:
                 raise Exception(f"task with uid {identifier!r} not found")
             return identifier
         summary_matches = []
-        norm_identifier = identifier.strip()
+        norm_identifier = identifier.strip().lower()
         for todo in todos:
-            if norm_identifier == str(todo.component["summary"]).strip():
+            if norm_identifier == str(todo.component["summary"]).strip().lower():
                 summary_matches.append(str(todo.component["uid"]))
         if len(summary_matches) > 1:
             raise Exception(f"Multiple matches for {identifier!r}: {summary_matches}")
@@ -1209,12 +1274,16 @@ class Tools:
             result = []
             for cal in calendars:
                 cal_name = await cal.get_display_name()
-                if cal_name and is_whitelisted(
+                if not cal_name or not is_whitelisted(
                     self.valves.CALENDAR_WHITELIST, cal_name
                 ):
-                    if cal_name not in seen:
-                        result.append(cal_name)
-                        seen.add(cal_name)
+                    continue
+                components = [c.upper() for c in await cal.get_supported_components()]
+                if components and "VEVENT" not in components:
+                    continue  # VTODO-only collection belongs to task_lists()
+                if cal_name not in seen:
+                    result.append(cal_name)
+                    seen.add(cal_name)
             return result
         finally:
             await client.close()
@@ -1230,10 +1299,14 @@ class Tools:
             result = []
             for cal in calendars:
                 tl = await cal.get_display_name()
-                if tl and is_whitelisted(self.valves.TASK_LIST_WHITELIST, tl):
-                    if tl not in seen:
-                        result.append(tl)
-                        seen.add(tl)
+                if not tl or not is_whitelisted(self.valves.TASK_LIST_WHITELIST, tl):
+                    continue
+                components = [c.upper() for c in await cal.get_supported_components()]
+                if components and "VTODO" not in components:
+                    continue  # VEVENT-only collection belongs to calendars()
+                if tl not in seen:
+                    result.append(tl)
+                    seen.add(tl)
             return result
         finally:
             await client.close()
@@ -1323,38 +1396,25 @@ class Tools:
     async def find(
         self, pattern: str, path: str | None = None, __event_emitter__=None
     ) -> list[str]:
-        """Find files by glob pattern (e.g. '**/*.py'). Supports brace expansion."""
+        """Find files by glob pattern, always recursive. Patterns match paths relative to the search dir: '*.py' matches anywhere, 'docs/*.md' is depth-exact, 'docs/**/*.md' any depth under docs. Brace expansion ok: '*.{py,js}'."""
         target_dir = validate_path(path if path else "", self.valves)
         rel_path = self._get_rel_path(target_dir)
         self._check_blacklisted(rel_path)
+        if len(pattern) > 200:
+            raise ValueError("pattern too long")
 
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
 
-            pattern_parts = pattern.split("/")
-            is_recursive = (
-                "**" in pattern_parts
-                or "/" in pattern
-                or (len(pattern_parts) == 1 and "*" in pattern_parts[0])
-            )
-
             all_files = await client.list_with_infos(
-                _webdav_path(target_dir), recursive=is_recursive
+                _webdav_path(target_dir), recursive=True
             )
             files_only = [
                 f for f in all_files if str(f.get("isdir", "False")).lower() != "true"
             ]
 
-            # Expand brace syntax: "foo.{py,js}" -> ["foo.py", "foo.js"]
-            patterns_to_match = [pattern]
-            if "{" in pattern and "}" in pattern:
-                start = pattern.find("{")
-                end = pattern.find("}", start)
-                if end != -1:
-                    prefix, suffix = pattern[:start], pattern[end + 1 :]
-                    alternatives = pattern[start + 1 : end].split(",")
-                    patterns_to_match = [prefix + alt + suffix for alt in alternatives]
+            patterns_to_match = _expand_braces(pattern)
 
             target_root = target_dir.rstrip("/")
             matched = []
@@ -1390,42 +1450,13 @@ class Tools:
                 else:
                     rel_to_target = sandbox_rel
 
-                for pat in patterns_to_match:
-                    # Split pattern into directory prefix and name pattern.
-                    if "/**/" in pat:
-                        dir_prefix, pattern_name = pat.split("/**/", 1)
-                    elif pat.startswith("**/"):
-                        dir_prefix = "**"
-                        pattern_name = pat[3:]
-                    elif "/" in pat:
-                        parts = pat.rsplit("/", 1)
-                        dir_prefix = parts[0]
-                        pattern_name = parts[1]
-                    else:
-                        dir_prefix = ""
-                        pattern_name = pat
-
-                    # Enforce directory scope from pattern.
-                    if dir_prefix and dir_prefix != "**":
-                        if "/**" in dir_prefix:
-                            base = dir_prefix.split("/**")[0]
-                            if not rel_to_target.startswith(base + "/"):
-                                continue
-                        else:
-                            if not rel_to_target.startswith(dir_prefix + "/"):
-                                continue
-                            remaining = rel_to_target[len(dir_prefix) + 1 :]
-                            if "/" in remaining:
-                                continue
-
-                    if fnmatch.fnmatch(filename, pattern_name):
-                        matched.append(
-                            {
-                                "path": full_path,
-                                "modified": file_info.get("modified", ""),
-                            }
-                        )
-                        break
+                if any(_glob_match(rel_to_target, pat) for pat in patterns_to_match):
+                    matched.append(
+                        {
+                            "path": full_path,
+                            "modified": file_info.get("modified", ""),
+                        }
+                    )
 
             try:
                 matched.sort(key=lambda x: x.get("modified", ""))
@@ -1899,15 +1930,22 @@ class Tools:
                     "exists": False,
                     "isdir": False,
                     "size": None,
+                    "size_bytes": None,
                     "modified": None,
                     "created": None,
                 }
             info = await client.info(res_path)
+            raw_size = info.get("size")
+            try:
+                size_bytes: int | None = int(raw_size)
+            except (TypeError, ValueError):
+                size_bytes = None
             return {
                 "path": rel,
                 "exists": True,
                 "isdir": await client.is_dir(res_path),
                 "size": self._format_size(info.get("size", "0")),
+                "size_bytes": size_bytes,
                 "modified": self._format_datetime(info.get("modified", "")),
                 "created": self._format_datetime(info.get("created", "")),
             }
@@ -1988,18 +2026,25 @@ class Tools:
                 uid = str(todo.component["uid"])
                 parent_id = _get_parent_uid(todo.component)
 
+                def _task_val(comp, key: str):
+                    v = comp.get(key)
+                    if v is None:
+                        return None
+                    if key == "due":
+                        return v.dt.isoformat() if hasattr(v, "dt") else str(v)
+                    return str(v)
+
                 task_map[uid] = {
-                    key: (
-                        str(todo.component.get(key))
-                        if todo.component.get(key) is not None
-                        else None
-                    )
+                    key: _task_val(todo.component, key)
                     for key in [
                         "summary",
                         "description",
                         "location",
                         "url",
                         "priority",
+                        "status",
+                        "percent-complete",
+                        "due",
                     ]
                 }
                 if parent_id is not None:
@@ -2020,7 +2065,7 @@ class Tools:
                 _visited = _visited | {task_id}
                 task_data = task_map.get(task_id)
                 if not task_data:
-                    return []
+                    return {"uid": task_id, "missing": True}
                 node = {k: v for k, v in task_data.items() if k != "related-to"}
                 if task_id in subtasks_map:
                     node["subtasks"] = [
@@ -2052,12 +2097,28 @@ class Tools:
         url: str | None = None,
         location: str | None = None,
         parent: str | None = None,
+        due: str | None = None,
+        start: str | None = None,
+        __user__: dict = {},
         __event_emitter__=None,
     ) -> str:
-        """Add a task. priority: 0-9 (lower = more urgent, 0 = none). Use parent (summary or uid) to make a subtask."""
+        """Add a task. priority: 0-9 (lower = more urgent, 0 = none). Use parent (summary or uid) to make a subtask.
+        due/start: ISO 8601 date or datetime (naive = user's timezone).
+        """
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
+
+        zi = _resolve_timezone(__user__, self.valves.DEFAULT_TIMEZONE)
+
+        def _iso_to_dt(value: str, label: str) -> datetime:
+            try:
+                dt = datetime.fromisoformat(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"{label} must be an ISO 8601 date or datetime")
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=zi)
+            return dt
 
         uid = str(uuid.uuid4())
         client = await self._caldav_client()
@@ -2067,12 +2128,16 @@ class Tools:
             kwargs = {
                 "uid": uid,
                 "summary": summary,
-                "priority": priority,
+                "priority": max(0, min(9, int(priority or 0))),
                 "description": description,
                 "categories": categories,
                 "url": url,
                 "location": location,
             }
+            if due:
+                kwargs["due"] = _iso_to_dt(due, "due")
+            if start:
+                kwargs["dtstart"] = _iso_to_dt(start, "start")
             if parent:
                 kwargs["parent"] = [await self._resolve_task_uid(cal, parent)]
             await cal.save_todo(**kwargs)
@@ -2275,7 +2340,8 @@ class Tools:
         __event_emitter__=None,
     ) -> str:
         """Create an event. start/end: ISO 8601 (naive = user's timezone; default now→now+1h).
-        alarms: relative offsets like ['0min', '15min', '1h', '3d'] ('0min' = at start).
+        A date-only start like '2026-09-20' creates an all-day event; end must then also be date-only (inclusive, e.g. '2026-09-22' spans 3 days).
+        alarms: relative offsets like ['0min', '15min', '1h', '3d', '2w'] ('0min' = at start).
         rrule: RRULE string for recurrence, e.g. 'FREQ=WEEKLY;BYDAY=MO,WE,FR'; omit for one-off.
         """
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
@@ -2299,17 +2365,42 @@ class Tools:
             e.add("created", now)
             e.add("last-modified", now)
 
-            # Start/end: default to now / now+1h; apply user timezone if naive.
-            dtstart = datetime.fromisoformat(start) if start else now
-            if dtstart.tzinfo is None:
-                dtstart = dtstart.replace(tzinfo=zi)
-            dtend = (
-                datetime.fromisoformat(end) if end else dtstart + timedelta(hours=1.0)
-            )
-            if dtend.tzinfo is None:
-                dtend = dtend.replace(tzinfo=zi)
-            e.add("dtstart", dtstart)
-            e.add("dtend", dtend)
+            # Start/end: default now/now+1h; apply user timezone if naive.
+            # Date-only values create all-day events (DTSTART;VALUE=DATE).
+            date_only = r"\d{4}-\d{2}-\d{2}"
+            start_s = start.strip() if start else ""
+            end_s = end.strip() if end else ""
+            if start_s and re.fullmatch(date_only, start_s):
+                if end_s and not re.fullmatch(date_only, end_s):
+                    raise ValueError(
+                        "all-day start (date-only) requires a date-only end"
+                    )
+                day_start = date.fromisoformat(start_s)
+                day_end = (
+                    date.fromisoformat(end_s)
+                    if end_s
+                    else day_start + timedelta(days=1)
+                )
+                if day_end < day_start:
+                    raise ValueError("end must not be before start")
+                e.add("dtstart", day_start)
+                # DTEND is exclusive for all-day events; inclusive user intent.
+                e.add("dtend", day_end + timedelta(days=1))
+            else:
+                dtstart = datetime.fromisoformat(start) if start else now
+                if dtstart.tzinfo is None:
+                    dtstart = dtstart.replace(tzinfo=zi)
+                dtend = (
+                    datetime.fromisoformat(end)
+                    if end
+                    else dtstart + timedelta(hours=1.0)
+                )
+                if dtend.tzinfo is None:
+                    dtend = dtend.replace(tzinfo=zi)
+                if dtend <= dtstart:
+                    raise ValueError("end must be after start")
+                e.add("dtstart", dtstart)
+                e.add("dtend", dtend)
 
             if description:
                 e.add("description", description)
@@ -2428,10 +2519,13 @@ class Tools:
     async def calendar_events(
         self,
         calendar_name: str | None = None,
+        start: str | None = None,
+        days: int = 30,
         __user__: dict = {},
         __event_emitter__=None,
     ) -> list[dict]:
-        """Retrieve upcoming events from a calendar (next 30 days).
+        """Retrieve events from a calendar (next 30 days by default).
+        start: ISO 8601 date/datetime to open the window earlier (naive = user's timezone); days: window length (1-365).
 
         Recurring events expand into one entry per occurrence within the
         window; EXDATE exclusions and RECURRENCE-ID overrides are applied.
@@ -2439,6 +2533,7 @@ class Tools:
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             raise Exception(f"{calendar_name!r} not in whitelist")
+        days = max(1, min(int(days), 365))
 
         event_data = []
         client = await self._caldav_client()
@@ -2446,10 +2541,18 @@ class Tools:
             principal = await client.principal()
             cal = await self._get_calendar(principal, calendar_name)
             tz = _resolve_timezone(__user__, self.valves.DEFAULT_TIMEZONE)
-            now = datetime.now(tz)
-            window_end = now + timedelta(days=30)
+            if start:
+                try:
+                    window_start: datetime = datetime.fromisoformat(start)
+                except (TypeError, ValueError):
+                    raise ValueError("start must be an ISO 8601 date or datetime")
+                if window_start.tzinfo is None:
+                    window_start = window_start.replace(tzinfo=tz)
+            else:
+                window_start = datetime.now(tz)
+            window_end = window_start + timedelta(days=days)
             events = await cal.search(
-                start=now,
+                start=window_start,
                 end=window_end,
                 expand=False,
                 event=True,
@@ -2495,7 +2598,7 @@ class Tools:
                     if dtstart_val:
                         ev_start = _to_aware(dtstart_val.dt, tz)
                         ev_end = _to_aware(dtend_val.dt, tz) if dtend_val else ev_start
-                        if ev_end < now or ev_start > window_end:
+                        if ev_end < window_start or ev_start > window_end:
                             continue
                         event_dict["dtstart"] = dtstart_val.dt.isoformat()
                     if dtend_val:
@@ -2538,17 +2641,17 @@ class Tools:
                         overrides[orig] = _to_aware(sc["dtstart"].dt, tz)
                     override_comps[orig] = sc
 
-                for start, replaced in _expand_occurrences(
+                for occ_start, replaced in _expand_occurrences(
                     rrule_value,
                     master_start,
-                    now,
+                    window_start,
                     window_end,
                     exdates=exdates,
                     overrides=overrides,
                 ):
                     occ = dict(event_dict)
                     occ["rrule"] = rrule_value
-                    end = start + duration
+                    end = occ_start + duration
                     if (
                         replaced is not None
                         and (oc := override_comps.get(replaced)) is not None
@@ -2564,7 +2667,7 @@ class Tools:
                                 occ[field] = str(val)
                         if oc.get("dtend") is not None:
                             end = _to_aware(oc["dtend"].dt, tz)
-                    occ["dtstart"] = start.isoformat()
+                    occ["dtstart"] = occ_start.isoformat()
                     occ["dtend"] = end.isoformat()
                     event_data.append(occ)
 

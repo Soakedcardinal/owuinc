@@ -385,13 +385,24 @@ class TestGetCalendarEventsDateBounds:
         assert "end=" in src, "cal.search must have end= parameter"
 
     def test_end_is_30_days_ahead(self):
-        """Default end is 30 days from now."""
+        """Default window is 30 days from the window start."""
         import inspect
 
         from owuinc.owuinc import Tools
 
         src = inspect.getsource(Tools.calendar_events)
-        assert "timedelta(days=30)" in src
+        assert "days: int = 30" in src
+        assert "timedelta(days=days)" in src
+
+    def test_start_parameter_opens_window_earlier(self):
+        """start accepts an ISO date/datetime for the window start."""
+        import inspect
+
+        from owuinc.owuinc import Tools
+
+        src = inspect.getsource(Tools.calendar_events)
+        assert "datetime.fromisoformat(start)" in src
+        assert "window_start" in src
 
 
 # ============================================================
