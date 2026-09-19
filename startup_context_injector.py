@@ -3,8 +3,8 @@ title: startup_context_injector
 author: Soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Injects files from nextcloud as system instructions on every request.
-requirements: aiowebdav2,tiktoken
-version: 1.7.0
+requirements: aiowebdav2>=0.6,tiktoken>=0.5
+version: 1.7.1
 license: MIT
 """
 
@@ -153,7 +153,9 @@ def validate_path(path, valves):
         prev = path
         path = urllib.parse.unquote(path)
 
-    if ".." in path:
+    # Only actual parent-directory SEGMENTS traverse; names like "..hidden"
+    # or "a..b" are legitimate filenames.
+    if any(seg == ".." for seg in path.split("/")):
         raise Exception("Invalid Path: traversal not allowed")
 
     if any(ord(c) < 32 for c in path):
