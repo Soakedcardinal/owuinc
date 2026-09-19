@@ -4,9 +4,11 @@ import pytest
 
 import startup_context_injector
 from startup_context_injector import (
+    _ETAG_CACHE,
     _is_turn_start,
     _token_count,
     _try_inject,
+    is_blacklisted,
     validate_path,
 )
 
@@ -53,10 +55,23 @@ class TestTryInject:
         assert info["name"] == "test.md"
         assert info["tokens"] == _token_count("hello world")
         assert len(contexts) == 1
-        assert "<test.md>" in contexts[0]
-        assert "</test.md>" in contexts[0]
+        assert '<file path="test.md">' in contexts[0]
+        assert "</file>" in contexts[0]
         assert "hello world" in contexts[0]
         assert len(injected_info) == 1
+
+    def test_filename_with_slash_is_a_valid_tag(self):
+        """Daily logs contain '/' which is illegal in a raw tag name."""
+        contexts = []
+        _try_inject(contexts, [], "memory/2026-09-18.md", "log body")
+        assert '<file path="memory/2026-09-18.md">' in contexts[0]
+        assert "</file>" in contexts[0]
+
+    def test_filename_metacharacters_are_sanitized(self):
+        contexts = []
+        _try_inject(contexts, [], 'a"><evil', "body")
+        first_line = contexts[0].splitlines()[0]
+        assert first_line == '<file path="aevil">'
 
     def test_skips_none_content(self):
         contexts = []
@@ -201,7 +216,7 @@ class TestRequestMerge:
     async def test_request_merges_into_existing_system(self, monkeypatch):
         f = startup_context_injector.Filter()
 
-        async def fake_build():
+        async def fake_build(user=None):
             return ["INJECTED"], [{"name": "x", "tokens": 1}]
 
         monkeypatch.setattr(f, "_build_context", fake_build)
@@ -214,7 +229,7 @@ class TestRequestMerge:
     async def test_request_inserts_system_when_absent(self, monkeypatch):
         f = startup_context_injector.Filter()
 
-        async def fake_build():
+        async def fake_build(user=None):
             return ["INJECTED"], [{"name": "x", "tokens": 1}]
 
         monkeypatch.setattr(f, "_build_context", fake_build)
@@ -252,7 +267,7 @@ class TestRequestStatusEmission:
     def _filter(monkeypatch):
         f = startup_context_injector.Filter()
 
-        async def fake_build():
+        async def fake_build(user=None):
             return ["INJECTED"], [{"name": "x", "tokens": 1}]
 
         monkeypatch.setattr(f, "_build_context", fake_build)
@@ -289,7 +304,7 @@ class TestRequestStatusEmission:
     async def test_error_emits_only_on_turn_start(self, monkeypatch):
         f = startup_context_injector.Filter()
 
-        async def boom():
+        async def boom(user=None):
             raise RuntimeError("webdav down")
 
         monkeypatch.setattr(f, "_build_context", boom)
@@ -313,3 +328,111 @@ class TestRequestStatusEmission:
             __event_emitter__=self._emitter(cont_events),
         )
         assert cont_events == []
+
+
+class TestInjectorBlacklist:
+    def test_exact_and_prefix_match(self):
+        assert is_blacklisted("SOUL.md,memory", "SOUL.md")
+        assert is_blacklisted("SOUL.md,memory", "memory/2026-09-18.md")
+        assert not is_blacklisted("SOUL.md", "MEMORY.md")
+        assert not is_blacklisted("secret", "mysecret/x")
+        assert not is_blacklisted("", "anything")
+
+    def test_plan_skips_blacklisted(self):
+        f = startup_context_injector.Filter()
+        f.valves.FILES_TO_INJECT = "AGENTS.md,SOUL.md,MEMORY.md"
+        f.valves.FILE_BLACKLIST = "SOUL.md,memory"
+        f.valves.INJECT_TODAY = True
+        labels = [name for name, _ in f._plan_file_paths()]
+        assert labels == ["AGENTS.md", "MEMORY.md"]
+
+    def test_plan_includes_daily_after_memory(self):
+        f = startup_context_injector.Filter()
+        f.valves.FILES_TO_INJECT = "MEMORY.md"
+        f.valves.INJECT_TODAY = True
+        labels = [name for name, _ in f._plan_file_paths()]
+        assert len(labels) == 2
+        assert labels[0] == "MEMORY.md"
+        assert labels[1].startswith("memory/")
+
+    def test_plan_daily_uses_user_timezone(self):
+        f = startup_context_injector.Filter()
+        f.valves.FILES_TO_INJECT = ""
+        f.valves.INJECT_TODAY = True
+        labels = [
+            name for name, _ in f._plan_file_paths({"timezone": "Pacific/Kiritimati"})
+        ]
+        assert len(labels) == 1
+
+
+class TestEtagConditionalDownload:
+    class Resp:
+        def __init__(self, status, body=b"", etag=None):
+            self.status = status
+            self._body = body
+            self.headers = {"ETag": etag} if etag else {}
+
+        async def read(self):
+            return self._body
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def get_url(self, p):
+            return "http://srv/base"
+
+        async def execute_request(self, action, path, headers_ext=None):
+            self.calls.append(dict(headers_ext or {}))
+            if len(self.calls) == 1:
+                return TestEtagConditionalDownload.Resp(200, b"hello", '"E1"')
+            if (headers_ext or {}).get("If-None-Match") == '"E1"':
+                return TestEtagConditionalDownload.Resp(304)
+            return TestEtagConditionalDownload.Resp(200, b"changed", '"E2"')
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        _ETAG_CACHE.clear()
+        yield
+        _ETAG_CACHE.clear()
+
+    async def test_second_call_uses_if_none_match_and_304_cache(self):
+        f = startup_context_injector.Filter()
+        client = self.FakeClient()
+        assert await f._download_file(client, "AGENTS.md") == "hello"
+        assert await f._download_file(client, "AGENTS.md") == "hello"
+        assert client.calls[0] == {}
+        assert client.calls[1] == {"If-None-Match": '"E1"'}
+
+    async def test_missing_file_returns_none_and_pops_cache(self):
+        from aiowebdav2.exceptions import RemoteResourceNotFoundError
+
+        f = startup_context_injector.Filter()
+
+        class GoneClient(self.FakeClient):
+            async def execute_request(self, action, path, headers_ext=None):
+                raise RemoteResourceNotFoundError(path=path)
+
+        assert await f._download_file(GoneClient(), "AGENTS.md") is None
+        assert _ETAG_CACHE == {}
+
+
+class TestInjectorValveAdditions:
+    def test_priority_and_blacklist_defaults(self):
+        f = startup_context_injector.Filter()
+        assert f.valves.priority == 0
+        assert f.valves.FILE_BLACKLIST == ""
+
+
+class TestRequestPassesUser:
+    async def test_user_forwarded_to_build_context(self, monkeypatch):
+        f = startup_context_injector.Filter()
+        seen = {}
+
+        async def fake_build(user=None):
+            seen["user"] = user
+            return ["INJECTED"], [{"name": "x", "tokens": 1}]
+
+        monkeypatch.setattr(f, "_build_context", fake_build)
+        await f.request({"messages": []}, __user__={"timezone": "UTC"})
+        assert seen["user"] == {"timezone": "UTC"}

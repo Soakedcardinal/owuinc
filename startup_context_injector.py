@@ -4,17 +4,19 @@ author: Soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Injects files from nextcloud as system instructions on every request.
 requirements: aiowebdav2,tiktoken
-version: 1.6.1
+version: 1.7.0
 license: MIT
 """
 
 import asyncio
+import logging
 import os
 import re
 import urllib.parse
+from collections import OrderedDict
 from datetime import date, datetime, timedelta
-from io import BytesIO
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 import tiktoken
 from aiohttp import ClientTimeout
@@ -26,7 +28,20 @@ from aiowebdav2.exceptions import (
 )
 from pydantic import BaseModel, Field
 
+_logger = logging.getLogger("owuinc.injector")
+if not _logger.handlers:
+    _logger.addHandler(logging.StreamHandler())
+_logger.propagate = False
+_logger.setLevel(logging.INFO)
+
+# tiktoken ships with OpenWebUI, so the encoder is always available here.
 _tokenizer = tiktoken.get_encoding("cl100k_base")
+
+# path -> (etag, content). Freshness is always decided by the server via
+# If-None-Match conditional GETs — a changed file is re-downloaded in full on
+# the very next call; only re-transmission of unchanged bytes is skipped.
+_ETAG_CACHE: "OrderedDict[tuple[str, str], tuple[str, str]]" = OrderedDict()
+_ETAG_CACHE_MAX = 256
 
 
 def _token_count(text: str) -> int:
@@ -62,11 +77,31 @@ def _try_inject(
     Returns a dict with name/tokens if injected, None otherwise.
     """
     if content:
-        contexts.append(f"<{filename}>\n{content}\n</{filename}>")
+        # Filenames may contain '/' (daily logs) or other characters that
+        # make them invalid as raw tag names, so use an attribute instead.
+        safe = filename.replace("<", "").replace(">", "").replace('"', "")
+        contexts.append(f'<file path="{safe}">\n{content}\n</file>')
         info = {"name": filename, "tokens": _token_count(content)}
         injected_info.append(info)
         return info
     return None
+
+
+def is_blacklisted(blacklist: str, path: str) -> bool:
+    """Check if path is under any blacklisted directory prefix.
+
+    Mirrors the owuinc tool's FILE_BLACKLIST semantics exactly: entries are
+    normalized (stripped), and matching is boundary-safe (path == prefix or
+    path starts with prefix + "/").
+    """
+    if not blacklist:
+        return False
+    cleaned = {s.strip().strip("/") for s in blacklist.split(",") if s.strip()}
+    cleaned.discard("")
+    for prefix in cleaned:
+        if path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
 
 
 def _webdav_path(p: str) -> str:
@@ -159,6 +194,16 @@ class Filter:
                 "Directory containing system files on Nextcloud. Leading / will be stripped. Must match owuinc tool's SANDBOX_DIR."
             ),
         )
+        FILE_BLACKLIST: str = Field(
+            default="",
+            description=(
+                "Comma-separated sandbox-relative paths that must never be read or injected. Must match the owuinc tool's FILE_BLACKLIST."
+            ),
+        )
+        priority: int = Field(
+            default=0,
+            description="Filter ordering against other OWUI filters (deterministic).",
+        )
         FILES_TO_INJECT: str = Field(
             default="AGENTS.md,SOUL.md,IDENTITY.md,TOOLS.md,STYLE.md,USER.md,MEMORY.md",
             description=(
@@ -208,15 +253,46 @@ class Filter:
         self.valves = self.Valves()
 
     async def _download_file(self, client: WebDAVClient, path: str) -> Optional[str]:
-        try:
-            buf = BytesIO()
-            await client.resource(_webdav_path(path)).read_from(buf)
-            return buf.getvalue().decode("utf-8")
-        except (RemoteResourceNotFoundError, WebDavError, UnicodeDecodeError):
-            return None
+        """Fetch a file with a conditional GET (If-None-Match).
 
-    def _get_log_filename(self, days_ago: int) -> str:
-        return (date.today() - timedelta(days=days_ago)).strftime("%Y-%m-%d") + ".md"
+        The server revalidates the cached ETag on every call: unchanged files
+        return 304 with no body (content taken from cache), changed files are
+        re-downloaded in full. Never serves stale content.
+        """
+        wp = _webdav_path(path)
+        key = (str(client.get_url("")), wp)
+        cached = _ETAG_CACHE.get(key)
+        headers = {"If-None-Match": cached[0]} if cached else {}
+        try:
+            response = await client.execute_request("download", wp, headers_ext=headers)
+            if response.status == 304 and cached is not None:
+                _ETAG_CACHE.move_to_end(key)
+                return cached[1]
+            data = await response.read()
+            text = data.decode("utf-8")
+        except (RemoteResourceNotFoundError, WebDavError, UnicodeDecodeError):
+            _ETAG_CACHE.pop(key, None)
+            return None
+        etag = response.headers.get("ETag")
+        if etag:
+            _ETAG_CACHE[key] = (etag, text)
+            _ETAG_CACHE.move_to_end(key)
+            while len(_ETAG_CACHE) > _ETAG_CACHE_MAX:
+                _ETAG_CACHE.popitem(last=False)
+        return text
+
+    def _user_tz(self, user: dict | None):
+        """Timezone from OpenWebUI's __user__, or None for server-local."""
+        if user and user.get("timezone"):
+            try:
+                return ZoneInfo(user["timezone"])
+            except Exception:
+                _logger.debug("unknown user timezone %r", user["timezone"])
+        return None
+
+    def _get_log_filename(self, days_ago: int, tz=None) -> str:
+        today = datetime.now(tz).date() if tz is not None else date.today()
+        return (today - timedelta(days=days_ago)).strftime("%Y-%m-%d") + ".md"
 
     async def _emit_status(self, emitter, description: str, done: bool):
         """Emit a UI status event."""
@@ -231,7 +307,58 @@ class Filter:
                 }
             )
 
-    async def _build_context(self) -> tuple[list[str], list[dict]]:
+    def _plan_file_paths(self, user: dict | None = None) -> list[tuple[str, str]]:
+        """Ordered (label, webdav-path) pairs, honoring FILE_BLACKLIST.
+
+        Daily logs are inserted after MEMORY.md (or appended when absent).
+        """
+        files_to_inject = [
+            f.strip() for f in self.valves.FILES_TO_INJECT.split(",") if f.strip()
+        ]
+        sandbox_prefix = validate_path("", self.valves)
+        user_tz = self._user_tz(user)
+
+        file_paths: list[tuple[str, str]] = []
+        for filename in files_to_inject:
+            try:
+                validated = validate_path(filename, self.valves)
+            except Exception:
+                continue
+            rel = validated[len(sandbox_prefix) :].strip("/")
+            if is_blacklisted(self.valves.FILE_BLACKLIST, rel):
+                _logger.info("skipping blacklisted file %r", rel)
+                continue
+            file_paths.append((filename, validated.rstrip("/")))
+        memory_base = validate_path("memory", self.valves).rstrip("/")
+        daily_paths: list[tuple[str, str]] = []
+        for days_ago, enabled in [
+            (0, self.valves.INJECT_TODAY),
+            (1, self.valves.INJECT_YESTERDAY),
+            (2, self.valves.INJECT_2_DAYS_AGO),
+            (3, self.valves.INJECT_3_DAYS_AGO),
+        ]:
+            if not enabled:
+                continue
+            log_file = self._get_log_filename(days_ago, user_tz)
+            log_rel = f"memory/{log_file}"
+            if is_blacklisted(self.valves.FILE_BLACKLIST, log_rel):
+                continue
+            daily_paths.append((log_rel, f"{memory_base}/{log_file}"))
+
+        insert_at = next(
+            (
+                i + 1
+                for i, (f, _) in enumerate(file_paths)
+                if f.rsplit("/", 1)[-1].lower() == "memory.md"
+            ),
+            len(file_paths),
+        )
+        file_paths[insert_at:insert_at] = daily_paths
+        return file_paths
+
+    async def _build_context(
+        self, user: dict | None = None
+    ) -> tuple[list[str], list[dict]]:
         base = self.valves.NEXTCLOUD_BASE_URL.rstrip("/")
         wd_user = self.valves.WEBDAV_USERNAME.strip()
         nc_url = f"{base}/remote.php/dav/files/{wd_user}/"
@@ -246,40 +373,8 @@ class Filter:
         )
 
         try:
-            files_to_inject = [
-                f.strip() for f in self.valves.FILES_TO_INJECT.split(",") if f.strip()
-            ]
-
-            # Build path map.
-            file_paths: list[tuple[str, str]] = []
-            for filename in files_to_inject:
-                try:
-                    validated = validate_path(filename, self.valves)
-                    file_paths.append((filename, validated.rstrip("/")))
-                except Exception:
-                    continue
-            memory_base = validate_path("memory", self.valves).rstrip("/")
-            daily_paths: list[tuple[str, str]] = []
-            for days_ago, enabled in [
-                (0, self.valves.INJECT_TODAY),
-                (1, self.valves.INJECT_YESTERDAY),
-                (2, self.valves.INJECT_2_DAYS_AGO),
-                (3, self.valves.INJECT_3_DAYS_AGO),
-            ]:
-                if not enabled:
-                    continue
-                log_file = self._get_log_filename(days_ago)
-                daily_paths.append((f"memory/{log_file}", f"{memory_base}/{log_file}"))
-
-            insert_at = next(
-                (
-                    i + 1
-                    for i, (f, _) in enumerate(file_paths)
-                    if f.rsplit("/", 1)[-1].lower() == "memory.md"
-                ),
-                len(file_paths),
-            )
-            file_paths[insert_at:insert_at] = daily_paths
+            file_paths = self._plan_file_paths(user)
+            user_tz = self._user_tz(user)
 
             # Download all content.
             content_map = dict(
@@ -296,7 +391,7 @@ class Filter:
 
             if self.valves.INJECT_TIME:
                 session_start = (
-                    datetime.now().astimezone().isoformat(timespec="minutes")
+                    datetime.now(user_tz).astimezone().isoformat(timespec="minutes")
                 )
                 time_ctx = "<session_start>\n" f"{session_start}\n" "</session_start>"
                 time_tokens = _token_count(time_ctx)
@@ -326,14 +421,16 @@ class Filter:
             return f"{block}\n\n{existing}"
         return f"{existing}\n\n{block}"
 
-    async def request(self, body: dict, __event_emitter__=None) -> dict:
+    async def request(
+        self, body: dict, __user__: dict = {}, __event_emitter__=None
+    ) -> dict:
         # Background jobs (title, tag, autocomplete generation) go through this
         # hook too and don't need the memory context — skip the fetch entirely.
         if (body.get("metadata") or {}).get("task"):
             return body
 
         try:
-            contexts, injected_info = await self._build_context()
+            contexts, injected_info = await self._build_context(__user__)
             if not contexts:
                 return body
 
@@ -371,6 +468,7 @@ class Filter:
             return body
 
         except Exception:
+            _logger.exception("context injection failed")
             if _is_turn_start(body.get("messages") or []):
                 await self._emit_status(
                     __event_emitter__,
