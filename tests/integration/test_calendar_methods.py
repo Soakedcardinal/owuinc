@@ -832,6 +832,40 @@ class TestTaskEventUsability:
         assert mine[0]["dtend"] == "2026-10-08"
 
     @pytest.mark.asyncio
+    async def test_all_day_default_is_single_day(self, caldav_tools, personal_calendar):
+        """No explicit end must yield a one-day event: DTEND = start + 1 (exclusive)."""
+        result = await caldav_tools.create_calendar_event(
+            "Solo", calendar_name="Personal", start="2026-10-05"
+        )
+        assert result["result"] == "True"
+        events = await caldav_tools.calendar_events(
+            calendar_name="Personal", start="2026-10-01", days=10
+        )
+        mine = [e for e in events["data"] if e.get("summary") == "Solo"]
+        assert mine, "all-day event should appear"
+        assert mine[0]["dtstart"] == "2026-10-05"
+        assert mine[0]["dtend"] == "2026-10-06"
+
+    @pytest.mark.asyncio
+    async def test_all_day_default_duration_is_one_day(
+        self, caldav_tools, personal_calendar
+    ):
+        """Serialized span for a no-end all-day event must be exactly one day."""
+        from datetime import date as _date
+
+        await caldav_tools.create_calendar_event(
+            "OneNight", calendar_name="Personal", start="2026-10-15"
+        )
+        events = await caldav_tools.calendar_events(
+            calendar_name="Personal", start="2026-10-01", days=30
+        )
+        mine = [e for e in events["data"] if e.get("summary") == "OneNight"]
+        assert mine, "all-day event should appear"
+        s = _date.fromisoformat(mine[0]["dtstart"])
+        e = _date.fromisoformat(mine[0]["dtend"])
+        assert (e - s).days == 1  # DTEND exclusive => one-day event
+
+    @pytest.mark.asyncio
     async def test_event_end_before_start_rejected(
         self, caldav_tools, personal_calendar
     ):

@@ -895,6 +895,109 @@ class TestCheckBlacklistedRecursive:
         await t._check_blacklisted_recursive(_FailingDavClient(), "owuinc/dir")
 
 
+class _ROFileClient:
+    """is_dir -> False, so the recursive read-only scan must skip listing."""
+
+    def __init__(self):
+        self.list_called = False
+
+    async def is_dir(self, path):
+        return False
+
+    async def list_files(self, path, recursive=False):
+        self.list_called = True
+        return []
+
+
+class _ROStaticClient:
+    def __init__(self, is_dir=True, files=None):
+        self._is_dir = is_dir
+        self._files = files or []
+
+    async def is_dir(self, path):
+        return self._is_dir
+
+    async def list_files(self, path, recursive=False):
+        return self._files
+
+
+class _ROFailingClient:
+    async def is_dir(self, path):
+        return True
+
+    async def list_files(self, path, recursive=False):
+        raise RuntimeError("server exploded")
+
+
+class _ROMissingClient:
+    async def is_dir(self, path):
+        from aiowebdav2.exceptions import RemoteResourceNotFoundError
+
+        raise RemoteResourceNotFoundError(path=path)
+
+
+class TestCheckReadOnlyRecursive:
+    def _tools(self, read_only):
+        t = Tools()
+        t.valves.SANDBOX_DIR = "owuinc"
+        t.valves.READ_ONLY_PATHS = read_only
+        return t
+
+    async def test_protected_target_denies(self):
+        t = self._tools("vault/MEMORY.md")
+        with pytest.raises(ValueError, match="read-only"):
+            await t._check_read_only_recursive(
+                _ROStaticClient(), "owuinc/vault/MEMORY.md"
+            )
+
+    async def test_protected_descendant_denies(self):
+        t = self._tools("vault/MEMORY.md")
+        client = _ROStaticClient(
+            files=[
+                "/owuinc/vault",
+                "/owuinc/vault/notes.txt",
+                "/owuinc/vault/MEMORY.md",
+            ]
+        )
+        with pytest.raises(ValueError, match="read-only"):
+            await t._check_read_only_recursive(client, "owuinc/vault")
+
+    async def test_nested_protected_path_denies(self):
+        t = self._tools("vault/sub/inner.txt")
+        client = _ROStaticClient(
+            files=["/owuinc/vault/sub/", "/owuinc/vault/sub/inner.txt"]
+        )
+        with pytest.raises(ValueError, match="read-only"):
+            await t._check_read_only_recursive(client, "owuinc/vault")
+
+    async def test_clean_tree_allowed(self):
+        t = self._tools("vault/MEMORY.md")
+        client = _ROStaticClient(files=["/owuinc/vault", "/owuinc/vault/notes.txt"])
+        await t._check_read_only_recursive(client, "owuinc/vault")
+
+    async def test_file_target_skips_listing(self):
+        t = self._tools("other.md")
+        client = _ROFileClient()
+        await t._check_read_only_recursive(client, "owuinc/vault/notes.txt")
+        assert client.list_called is False
+
+    async def test_listing_error_fails_closed(self):
+        t = self._tools("vault/MEMORY.md")
+        with pytest.raises(ValueError, match="read-only"):
+            await t._check_read_only_recursive(_ROFailingClient(), "owuinc/vault")
+
+    async def test_not_found_propagates(self):
+        from aiowebdav2.exceptions import RemoteResourceNotFoundError
+
+        t = self._tools("vault/MEMORY.md")
+        with pytest.raises(RemoteResourceNotFoundError):
+            await t._check_read_only_recursive(_ROMissingClient(), "owuinc/vault")
+
+    async def test_empty_read_only_skips_listing(self):
+        t = self._tools("")
+        await t._check_read_only_recursive(_ROFailingClient(), "owuinc/vault")
+
+
 class TestParseReminderUnits:
     def test_weeks(self):
         from owuinc.owuinc import parse_reminders

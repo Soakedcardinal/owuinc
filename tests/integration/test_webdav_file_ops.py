@@ -1054,3 +1054,64 @@ class TestSandboxSelfProtection:
 
         cat = await webdav_tools.cat("locked.md")
         assert cat["data"] == "secret soul"
+
+
+class TestReadOnlyRecursiveProtection:
+    """Destructive ops must not reach a protected file nested under the target.
+
+    _check_read_only only guards the exact target path, so without recursive
+    enforcement rm/mv could delete or relocate a directory that contains a
+    protected file (e.g. an injected MEMORY.md). These tests use a nested
+    protected path so the directory itself is not on the list, only its child.
+    """
+
+    async def _seed(self, webdav_tools):
+        webdav_tools.valves.READ_ONLY_PATHS = ""
+        await webdav_tools.mkdir("vault")
+        await webdav_tools.write("vault/MEMORY.md", "core")
+        await webdav_tools.write("vault/notes.txt", "scratch")
+        webdav_tools.valves.READ_ONLY_PATHS = "vault/MEMORY.md"
+
+    @pytest.mark.asyncio
+    async def test_rm_dir_containing_protected_child_denied(self, webdav_tools):
+        await self._seed(webdav_tools)
+        res = await webdav_tools.rm(["vault"])
+        assert res["data"][0]["result"] == "False"
+        assert "read-only" in res["data"][0]["details"]
+        keep = await webdav_tools.cat("vault/MEMORY.md")
+        assert keep["data"] == "core"
+
+    @pytest.mark.asyncio
+    async def test_mv_dir_containing_protected_child_denied(self, webdav_tools):
+        await self._seed(webdav_tools)
+        res = await webdav_tools.mv("vault", "vault_renamed")
+        assert res["result"] == "False"
+        assert "read-only" in res["details"]
+        keep = await webdav_tools.cat("vault/MEMORY.md")
+        assert keep["data"] == "core"
+
+    @pytest.mark.asyncio
+    async def test_rm_protected_file_directly_still_denied(self, webdav_tools):
+        await self._seed(webdav_tools)
+        res = await webdav_tools.rm(["vault/MEMORY.md"])
+        assert res["data"][0]["result"] == "False"
+        assert "read-only" in res["data"][0]["details"]
+
+    @pytest.mark.asyncio
+    async def test_rm_dir_without_protected_child_allowed(self, webdav_tools):
+        await self._seed(webdav_tools)
+        await webdav_tools.mkdir("clean")
+        await webdav_tools.write("clean/scratch.txt", "x")
+        res = await webdav_tools.rm(["clean"])
+        assert res["data"][0]["result"] == "True"
+        gone = await webdav_tools.cat("clean/scratch.txt")
+        assert gone["result"] == "False"
+
+    @pytest.mark.asyncio
+    async def test_rm_empty_read_only_allows_deletion(self, webdav_tools):
+        await self._seed(webdav_tools)
+        webdav_tools.valves.READ_ONLY_PATHS = ""
+        res = await webdav_tools.rm(["vault"])
+        assert res["data"][0]["result"] == "True"
+        gone = await webdav_tools.cat("vault/MEMORY.md")
+        assert gone["result"] == "False"

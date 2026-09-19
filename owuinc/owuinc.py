@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar>=6.0,aiowebdav2>=0.6,pydantic>=2,tiktoken>=0.5,aiohttp>=3.9,python-dateutil>=2.8.2
-version: 3.18.0
+version: 3.19.0
 license: MIT
 """
 
@@ -1359,6 +1359,40 @@ class Tools:
         if rel_path and is_blacklisted(self.valves.READ_ONLY_PATHS, rel_path):
             raise ValueError("path is read-only")
 
+    async def _check_read_only_recursive(self, client, full_path: str) -> None:
+        """Raise ValueError if full_path or any descendant is read-only.
+
+        Protects destructive operations (rm/mv): a directory cannot be removed
+        or moved out from under a protected file it contains (e.g. a folder
+        holding an injected MEMORY.md). The target itself is checked first, then
+        descendants via a recursive listing. A plain file has no descendants, so
+        the root check already covers it and the listing is skipped.
+
+        Fail-closed: if the tree cannot be listed the operation is denied; only a
+        genuine 404 propagates so the caller reports the path as missing.
+        """
+        self._check_read_only(self._get_rel_path(full_path))
+        if not self.valves.READ_ONLY_PATHS:
+            return
+        target = _webdav_path(full_path)
+        try:
+            if not await client.is_dir(target):
+                return
+            paths = await client.list_files(target, recursive=True)
+        except RemoteResourceNotFoundError:
+            raise
+        except Exception:
+            raise ValueError("path is read-only")
+        root = _strip_leading_slash(full_path).rstrip("/")
+        for path in paths:
+            item_path = _strip_leading_slash(str(path)).rstrip("/")
+            if not item_path or item_path == root:
+                continue
+            if is_blacklisted(
+                self.valves.READ_ONLY_PATHS, self._get_rel_path(item_path)
+            ):
+                raise ValueError("path is read-only")
+
     def _secrets(self) -> tuple[str, ...]:
         return tuple(
             s
@@ -1975,7 +2009,7 @@ class Tools:
                 try:
                     full_path = validate_path(p, self.valves)
                     self._check_not_sandbox_root(full_path)
-                    self._check_read_only(self._get_rel_path(full_path))
+                    await self._check_read_only_recursive(client, full_path)
                     await self._check_blacklisted_recursive(client, full_path)
                     await client.clean(_webdav_path(full_path))
                     results.append({"path": p, "result": "True"})
@@ -2050,7 +2084,6 @@ class Tools:
 
         self._check_not_sandbox_root(src_full)
         self._check_not_sandbox_root(dst_full)
-        self._check_read_only(self._get_rel_path(src_full))
         self._check_read_only(self._get_rel_path(dst_full))
 
         if self._dst_inside_src(src_full, dst_full):
@@ -2059,6 +2092,7 @@ class Tools:
         client = self._webdav_client()
         try:
             await self._ensure_sandbox(client)
+            await self._check_read_only_recursive(client, src_full)
             await self._check_blacklisted_recursive(client, src_full)
             self._check_blacklisted(self._get_rel_path(dst_full))
             await client.move(
@@ -2529,7 +2563,7 @@ class Tools:
         __event_emitter__=None,
     ) -> str:
         """Create an event. start/end: ISO 8601 (naive = user's timezone; default now→now+1h).
-        A date-only start like '2026-09-20' creates an all-day event; end must then also be date-only (inclusive, e.g. '2026-09-22' spans 3 days).
+        A date-only start like '2026-09-20' creates an all-day event; end must then also be date-only (inclusive, e.g. '2026-09-22' spans 3 days). With no end, the all-day event lasts a single day.
         alarms: relative offsets like ['0min', '15min', '1h', '3d', '2w'] ('0min' = at start; default at-start alarm).
         rrule: RRULE string for recurrence, e.g. 'FREQ=WEEKLY;BYDAY=MO,WE,FR'; omit for one-off.
         """
@@ -2567,15 +2601,13 @@ class Tools:
                         "all-day start (date-only) requires a date-only end"
                     )
                 day_start = date.fromisoformat(start_s)
-                day_end = (
-                    date.fromisoformat(end_s)
-                    if end_s
-                    else day_start + timedelta(days=1)
-                )
+                # Omitted end means a single day (inclusive end == start day).
+                day_end = date.fromisoformat(end_s) if end_s else day_start
                 if day_end < day_start:
                     raise ValueError("end must not be before start")
                 e.add("dtstart", day_start)
                 # DTEND is exclusive for all-day events; inclusive user intent.
+                # A one-day event (start==day_end) serializes DTEND = start + 1.
                 e.add("dtend", day_end + timedelta(days=1))
             else:
                 dtstart = datetime.fromisoformat(start) if start else now
