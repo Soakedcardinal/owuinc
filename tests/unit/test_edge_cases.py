@@ -133,6 +133,40 @@ class TestCompleteTaskSetsAllFields:
 
 
 # ============================================================
+# complete_task: recurring tasks complete one occurrence
+# ============================================================
+class TestCompleteTaskRecurring:
+    """complete_task must not end a whole recurring series by default."""
+
+    def test_delegates_recurring_to_caldav_complete(self):
+        """Recurring tasks use caldav complete(handle_rrule=True) so the
+        series continues instead of being marked COMPLETED outright."""
+        import inspect
+
+        from owuinc.owuinc import Tools
+
+        src = inspect.getsource(Tools.complete_task)
+        assert '"RRULE" in comp' in src
+        assert "handle_rrule=True" in src
+        assert 'rrule_mode="safe"' in src
+
+    def test_plain_path_pops_rrule_only_on_series_end(self):
+        """The master COMPLETED path must drop RRULE; the per-occurrence
+        path (which returns before it) must not touch the master's RRULE."""
+        import inspect
+
+        from owuinc.owuinc import Tools
+
+        src = inspect.getsource(Tools.complete_task)
+        # RRULE is removed on the plain/series-end path...
+        assert 'comp.pop("rrule", None)' in src
+        # ...but the per-occurrence delegate happens earlier and returns.
+        delegate_idx = src.index("handle_rrule=True")
+        pop_idx = src.index('comp.pop("rrule", None)')
+        assert delegate_idx < pop_idx
+
+
+# ============================================================
 # edit_calendar_event: dtstart/dtend mutation safety
 # ============================================================
 class TestDatetimePropertyMutationSafety:

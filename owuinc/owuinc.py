@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar,aiowebdav2
-version: 3.9.0
+version: 3.10.0
 license: MIT
 """
 
@@ -1819,10 +1819,16 @@ class Tools:
         summary: str | None = None,
         uid: str | None = None,
         list_name: str | None = None,
+        entire_series: bool = False,
         __user__: dict = {},
         __event_emitter__=None,
     ) -> str:
-        """Mark a task as completed by summary or uid. Safe to repeat."""
+        """Mark a task as completed by summary or uid. Safe to repeat.
+
+        Recurring tasks complete one occurrence at a time: the done instance
+        is filed off as completed and the series reschedules itself. Pass
+        entire_series=True to complete the task and end the whole series.
+        """
         list_name = list_name or self.valves.DEFAULT_TASK_LIST
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
@@ -1845,6 +1851,28 @@ class Tools:
                 return f"{label} (already completed)"
 
             now = datetime.now(timezone.utc).replace(microsecond=0)
+
+            # Marking a recurring master COMPLETED ends the entire series,
+            # because STATUS applies to the series. Default to completing just
+            # the current occurrence: caldav files an independent completed
+            # copy and advances the master to its next occurrence. If the
+            # series is exhausted (COUNT down to one, UNTIL in the past) or
+            # malformed, fall through to a plain completion.
+            if "RRULE" in comp and not entire_series:
+                try:
+                    result = todo.complete(
+                        completion_timestamp=now,
+                        handle_rrule=True,
+                        rrule_mode="safe",
+                    )
+                    if inspect.isawaitable(result):
+                        await result
+                    return f"{label} (occurrence completed; series continues)"
+                except Exception:
+                    _logger.debug("recurring completion fell back to plain completion")
+
+            if "RRULE" in comp:
+                comp.pop("rrule", None)  # a completed series must not recur
             for key, value in (
                 ("status", "COMPLETED"),
                 ("percent-complete", 100),
@@ -1855,6 +1883,8 @@ class Tools:
                 comp.add(key, value)
 
             await todo.save()
+            if entire_series:
+                return f"{label} (series ended)"
             return label
         finally:
             await client.close()

@@ -429,6 +429,84 @@ class TestTaskOperations:
             summary not in summaries_after
         ), "Completed task should not appear in tasks"
 
+    @staticmethod
+    async def _seed_recurring_task(cal, summary: str, count: int = 5) -> str:
+        """Create a recurring VTODO (FREQ=DAILY;COUNT=count) directly; return uid."""
+        import uuid as uuid_mod
+
+        zi = ZoneInfo("UTC")
+        now = datetime.now(zi)
+        stamp = now.strftime("%Y%m%dT%H%M%SZ")
+        dtstart = (now - timedelta(days=1)).strftime("%Y%m%dT%H%M%SZ")
+        due = (now + timedelta(days=1)).strftime("%Y%m%dT%H%M%SZ")
+        uid = str(uuid_mod.uuid4())
+        ical = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//owuinc-test//EN\r\n"
+            "BEGIN:VTODO\r\n"
+            f"UID:{uid}\r\nSUMMARY:{summary}\r\nDTSTAMP:{stamp}\r\n"
+            f"DTSTART:{dtstart}\r\nDUE:{due}\r\n"
+            f"RRULE:FREQ=DAILY;COUNT={count}\r\n"
+            "END:VTODO\r\nEND:VCALENDAR\r\n"
+        )
+        await cal.save_todo(ical=ical)
+        return uid
+
+    @pytest.mark.asyncio
+    async def test_complete_recurring_task_continues_series(
+        self, caldav_tools, tasks_calendar
+    ):
+        """Completing a recurring task files the done occurrence as a
+        completed copy and keeps the master series alive (does NOT end it)."""
+        uid = await self._seed_recurring_task(tasks_calendar, "Standup", count=5)
+
+        result = await caldav_tools.complete_task(
+            summary="Standup", list_name="Tasks", __user__={"timezone": "UTC"}
+        )
+        assert result["result"] == "True"
+        assert "series continues" in result["data"]
+
+        master = await tasks_calendar.todo_by_uid(uid)
+        comp = master.component
+        assert str(comp.get("status") or "").upper() != "COMPLETED"
+        assert "COMPLETED" not in comp
+        assert "RRULE" in comp
+        assert int(comp["RRULE"]["COUNT"][0]) == 4, "COUNT should decrement"
+
+        all_todos = await tasks_calendar.todos(include_completed=True)
+        done_copies = [
+            t
+            for t in all_todos
+            if str(t.component.get("summary")) == "Standup"
+            and str(t.component.get("status") or "").upper() == "COMPLETED"
+        ]
+        assert len(done_copies) == 1, "one completed copy should be filed off"
+        assert "RRULE" not in done_copies[0].component
+
+    @pytest.mark.asyncio
+    async def test_complete_recurring_task_entire_series(
+        self, caldav_tools, tasks_calendar
+    ):
+        """entire_series=True completes the master and drops its RRULE."""
+        uid = await self._seed_recurring_task(tasks_calendar, "Audit", count=3)
+
+        result = await caldav_tools.complete_task(
+            summary="Audit",
+            list_name="Tasks",
+            entire_series=True,
+            __user__={"timezone": "UTC"},
+        )
+        assert result["result"] == "True"
+        assert "series ended" in result["data"]
+
+        master = await tasks_calendar.todo_by_uid(uid)
+        comp = master.component
+        assert str(comp.get("status") or "").upper() == "COMPLETED"
+        assert "RRULE" not in comp
+
+        all_todos = await tasks_calendar.todos(include_completed=True)
+        audits = [t for t in all_todos if str(t.component.get("summary")) == "Audit"]
+        assert len(audits) == 1, "no extra completed copy should be filed"
+
     @pytest.mark.asyncio
     async def test_delete_task(self, caldav_tools, tasks_calendar):
         """Verify delete_task removes a task from the list."""
