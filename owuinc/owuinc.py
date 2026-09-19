@@ -4,7 +4,7 @@ author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.0.0,icalendar>=6.0,aiowebdav2>=0.6,pydantic>=2,tiktoken>=0.5,aiohttp>=3.9,python-dateutil>=2.8.2
-version: 3.17.1
+version: 3.18.0
 license: MIT
 """
 
@@ -1233,12 +1233,32 @@ class Tools:
             await client.mkdir(_webdav_path(sandbox))
         _SANDBOX_VERIFIED.add(key)
 
-    async def _get_etag(self, client, res_path: str) -> str | None:
-        """Fetch the current ETag of a resource, or None if it has none."""
-        prop = await client.get_property(res_path, _GETETAG_REQ)
+    async def _get_etag_state(self, client, res_path: str) -> tuple[bool, str | None]:
+        """Resolve (exists, etag) for a resource, keeping every state distinct.
+
+        - ``(False, None)``: 404 — the resource is absent.
+        - ``(True, None)``:  the resource exists but the server exposes no usable
+          getetag (no ETag support, or a provider that omits it).
+        - ``(True, etag)``:  the resource exists and has a usable getetag.
+
+        Existence is decided with ``client.check()`` (same Depth-0 PROPFIND that
+        stat() relies on), which maps only a genuine 404 to "missing" and lets any
+        other DAV/connection error propagate. A bare ``get_property`` returning
+        ``None`` cannot tell "missing" from "present but untagged"; conflating them
+        is exactly what made append clobber an untagged file, so the states are
+        returned separately and every caller branches on both.
+        """
+        if not await client.check(res_path):
+            return (False, None)
+        try:
+            prop = await client.get_property(res_path, _GETETAG_REQ)
+        except RemoteResourceNotFoundError:
+            # Vanished in the gap between check() and the PROPFIND: it is missing
+            # now. Genuine 404 only — connection/server errors are other types.
+            return (False, None)
         if prop is None or not prop.value:
-            return None
-        return str(prop.value)
+            return (True, None)
+        return (True, str(prop.value))
 
     async def _conditional_put(
         self, client, res_path: str, payload: bytes, etag: str | None
@@ -1255,6 +1275,32 @@ class Tools:
         try:
             await client.execute_request(
                 "upload", res_path, data=payload, headers_ext=headers
+            )
+        except ResponseErrorCodeError as e:
+            if e.code == 412:
+                return False
+            raise
+        return True
+
+    async def _conditional_create(self, client, res_path: str, payload: bytes) -> bool:
+        """Create a resource only if it does not already exist (If-None-Match: *).
+
+        Returns True on create, False when the server reports a precondition
+        failure (412) meaning the file appeared between the existence check and
+        this write — the caller then re-reads and appends under If-Match instead
+        of clobbering the winner.
+
+        Limitation (documented, not silently assumed): a conditional create only
+        protects the race when the server enforces If-None-Match on PUT. Nextcloud
+        and WsgiDAV ignore the header for a genuinely-missing resource (there is
+        nothing to match, so the create proceeds) but answer 412 when the resource
+        exists at write time — which is exactly the concurrent-creation race we
+        guard. A server that ignores If-None-Match on PUT unconditionally offers no
+        protection here; that is best-effort, not full optimistic concurrency.
+        """
+        try:
+            await client.execute_request(
+                "upload", res_path, data=payload, headers_ext={"If-None-Match": "*"}
             )
         except ResponseErrorCodeError as e:
             if e.code == 412:
@@ -1791,9 +1837,23 @@ class Tools:
     async def append(
         self, path: str, content: str | None = None, __event_emitter__=None
     ) -> None:
-        """Append content to a file. Creates if missing.
-        Uses optimistic concurrency (ETag + If-Match) to prevent concurrent
-        read-modify-write conflicts; retries once if the file changed mid-write.
+        """Append content to a file, creating it if missing.
+
+        Optimistic concurrency (ETag + If-Match) prevents lost updates from
+        concurrent read-modify-write; retries once if the file changed mid-write.
+        The three resource states are handled distinctly:
+
+        - missing: conditional create (If-None-Match: *) so a racing creator is
+          detected (412) and re-appended instead of clobbered (see
+          _conditional_create for the server-support caveat).
+        - exists with an ETag: read, append, write under If-Match; on 412 re-read
+          and retry once, then report a conflict instead of overwriting.
+        - exists with no ETag: fail closed. Without an ETag there is no way to
+          detect a concurrent writer, and appending would risk silently replacing
+          content — the opposite of this tool's purpose.
+
+        If the existing content does not end in a newline, one is inserted before
+        the appended text.
         """
         if content is None:
             content = ""
@@ -1804,33 +1864,35 @@ class Tools:
         try:
             await self._ensure_sandbox(client)
             res_path = _webdav_path(full_path)
+            payload = content.encode("utf-8")
             for attempt in range(2):
-                try:
-                    etag = await self._get_etag(client, res_path)
-                except RemoteResourceNotFoundError:
-                    etag = None
+                exists, etag = await self._get_etag_state(client, res_path)
+                if not exists:
+                    if await self._conditional_create(client, res_path, payload):
+                        return
+                    continue
                 if etag is None:
-                    await client.resource(res_path).write_to(
-                        BytesIO(content.encode("utf-8"))
+                    raise ValueError(
+                        "server does not provide an ETag for this resource; "
+                        "append cannot be performed safely"
                     )
-                    return
                 buf = BytesIO()
                 await client.resource(res_path).read_from(buf)
                 try:
                     existing = buf.getvalue().decode("utf-8")
                 except UnicodeDecodeError:
                     raise ValueError("not a text file")
-                payload = existing + content
                 if existing and not existing.endswith("\n"):
-                    payload = existing + "\n" + content
+                    merged = existing + "\n" + content
+                else:
+                    merged = existing + content
                 if await self._conditional_put(
-                    client, res_path, payload.encode("utf-8"), etag
+                    client, res_path, merged.encode("utf-8"), etag
                 ):
                     return
-                if attempt == 1:
-                    raise ValueError(
-                        "file kept changing during append; concurrent writer conflict"
-                    )
+            raise ValueError(
+                "file kept changing during append; concurrent writer conflict"
+            )
         finally:
             await client.close()
 
@@ -1844,8 +1906,17 @@ class Tools:
         __event_emitter__=None,
     ) -> None:
         """Exact string replacement. Requires unique match unless replace_all=True.
-        Uses optimistic concurrency (ETag + If-Match) to prevent concurrent
-        read-modify-write conflicts; retries once if the file changed mid-write.
+
+        Optimistic concurrency (ETag + If-Match) prevents lost updates from
+        concurrent read-modify-write; retries once if the file changed mid-write.
+        The three resource states are handled distinctly:
+
+        - missing: reported as "file not found".
+        - exists with an ETag: read, replace, write under If-Match; on 412 re-read
+          and retry once, then report a conflict instead of overwriting.
+        - exists with no ETag: fail closed. Without an ETag there is no way to
+          detect a concurrent writer, so an in-place edit could silently clobber
+          the file — the opposite of this tool's purpose.
         """
         if not old_string:
             raise ValueError("old_string cannot be empty")
@@ -1860,12 +1931,14 @@ class Tools:
             await self._ensure_sandbox(client)
             res_path = _webdav_path(full_path)
             for attempt in range(2):
-                try:
-                    etag = await self._get_etag(client, res_path)
-                except RemoteResourceNotFoundError:
-                    etag = None
-                if etag is None:
+                exists, etag = await self._get_etag_state(client, res_path)
+                if not exists:
                     raise ValueError("file not found")
+                if etag is None:
+                    raise ValueError(
+                        "server does not provide an ETag for this resource; "
+                        "edit cannot be performed safely"
+                    )
                 buf = BytesIO()
                 await client.resource(res_path).read_from(buf)
                 try:
@@ -1885,10 +1958,9 @@ class Tools:
                     client, res_path, modified.encode("utf-8"), etag
                 ):
                     return
-                if attempt == 1:
-                    raise ValueError(
-                        "file kept changing during edit; concurrent writer conflict"
-                    )
+            raise ValueError(
+                "file kept changing during edit; concurrent writer conflict"
+            )
         finally:
             await client.close()
 

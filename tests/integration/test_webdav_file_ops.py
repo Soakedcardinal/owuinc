@@ -910,6 +910,44 @@ class TestOptimisticConcurrency:
         assert content["data"] == "first line"
 
     @pytest.mark.asyncio
+    async def test_append_existing_preserves_content_and_inserts_newline(
+        self, webdav_tools
+    ):
+        """Append against the real server keeps prior bytes and separates lines."""
+        await webdav_tools.write("lockappend_keep.txt", "keep-me")
+        result = await webdav_tools.append("lockappend_keep.txt", "two")
+        assert result["result"] == "True"
+        content = await webdav_tools.cat("lockappend_keep.txt")
+        assert content["data"] == "keep-me\ntwo"
+
+    @pytest.mark.asyncio
+    async def test_conditional_create_rejects_existing(self, webdav_tools):
+        """_conditional_create must 412 (False) when the target already exists,
+        proving the If-None-Match create guard is enforced by the server."""
+        from owuinc.owuinc import _webdav_path, validate_path
+
+        await webdav_tools.write("lockrace_create.txt", "winner")
+        client = webdav_tools._webdav_client()
+        try:
+            res_path = _webdav_path(
+                validate_path("lockrace_create.txt", webdav_tools.valves)
+            )
+            assert (
+                await webdav_tools._conditional_create(client, res_path, b"loser")
+                is False
+            )
+            content = await webdav_tools.cat("lockrace_create.txt")
+            assert content["data"] == "winner"
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_edit_missing_file_is_not_found(self, webdav_tools):
+        result = await webdav_tools.edit("lock_missing_edit.txt", "a", "b")
+        assert result["result"] == "False"
+        assert "file not found" in result["details"]
+
+    @pytest.mark.asyncio
     async def test_stale_etag_put_is_rejected(self, webdav_tools):
         """The server must reject If-Match writes when the ETag is stale."""
         from aiowebdav2.exceptions import ResponseErrorCodeError
@@ -920,7 +958,8 @@ class TestOptimisticConcurrency:
         client = webdav_tools._webdav_client()
         try:
             res_path = _webdav_path(validate_path("etagrace.txt", webdav_tools.valves))
-            etag = await webdav_tools._get_etag(client, res_path)
+            exists, etag = await webdav_tools._get_etag_state(client, res_path)
+            assert exists, "server should report the resource as present"
             assert etag, "server should expose a getetag"
             await webdav_tools.write("etagrace.txt", "external")
             with pytest.raises(ResponseErrorCodeError) as excinfo:
