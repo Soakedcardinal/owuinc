@@ -4,6 +4,7 @@ import pytest
 
 import startup_context_injector
 from startup_context_injector import (
+    _is_turn_start,
     _token_count,
     _try_inject,
     validate_path,
@@ -221,3 +222,94 @@ class TestRequestMerge:
         out = await f.request(body)
         assert out["messages"][0]["role"] == "system"
         assert "INJECTED" in out["messages"][0]["content"]
+
+
+class TestIsTurnStart:
+    """_is_turn_start gates status to the first provider call of a turn."""
+
+    def test_user_last_message_is_turn_start(self):
+        assert _is_turn_start([{"role": "system"}, {"role": "user"}])
+
+    def test_tool_result_is_continuation(self):
+        msgs = [
+            {"role": "user"},
+            {"role": "assistant", "tool_calls": [{"id": "1"}]},
+            {"role": "tool", "tool_call_id": "1"},
+        ]
+        assert not _is_turn_start(msgs)
+
+    def test_assistant_last_message_is_continuation(self):
+        assert not _is_turn_start([{"role": "user"}, {"role": "assistant"}])
+
+    def test_empty_messages(self):
+        assert not _is_turn_start([])
+
+
+class TestRequestStatusEmission:
+    """Status events fire once per turn, not once per provider call."""
+
+    @staticmethod
+    def _filter(monkeypatch):
+        f = startup_context_injector.Filter()
+
+        async def fake_build():
+            return ["INJECTED"], [{"name": "x", "tokens": 1}]
+
+        monkeypatch.setattr(f, "_build_context", fake_build)
+        return f
+
+    @staticmethod
+    def _emitter(events):
+        async def emitter(event):
+            events.append(event)
+
+        return emitter
+
+    async def test_emits_on_turn_start(self, monkeypatch):
+        f = self._filter(monkeypatch)
+        events = []
+        body = {"messages": [{"role": "user", "content": "hi"}]}
+        await f.request(body, __event_emitter__=self._emitter(events))
+        assert any("Context injected" in e["data"]["description"] for e in events)
+
+    async def test_silent_on_tool_continuation(self, monkeypatch):
+        f = self._filter(monkeypatch)
+        events = []
+        body = {
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "tool_calls": [{"id": "1"}]},
+                {"role": "tool", "tool_call_id": "1", "content": "{}"},
+            ]
+        }
+        out = await f.request(body, __event_emitter__=self._emitter(events))
+        assert events == []
+        assert "INJECTED" in out["messages"][0]["content"]
+
+    async def test_error_emits_only_on_turn_start(self, monkeypatch):
+        f = startup_context_injector.Filter()
+
+        async def boom():
+            raise RuntimeError("webdav down")
+
+        monkeypatch.setattr(f, "_build_context", boom)
+
+        events = []
+        await f.request(
+            {"messages": [{"role": "user"}]},
+            __event_emitter__=self._emitter(events),
+        )
+        assert any("failed" in e["data"]["description"] for e in events)
+
+        cont_events = []
+        await f.request(
+            {
+                "messages": [
+                    {"role": "user"},
+                    {"role": "assistant", "tool_calls": [{"id": "1"}]},
+                    {"role": "tool", "tool_call_id": "1"},
+                ]
+            },
+            __event_emitter__=self._emitter(cont_events),
+        )
+        assert cont_events == []

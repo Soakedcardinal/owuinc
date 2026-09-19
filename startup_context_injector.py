@@ -4,7 +4,7 @@ author: Soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Injects files from nextcloud as system instructions on every request.
 requirements: aiowebdav2,tiktoken
-version: 1.6.0
+version: 1.6.1
 license: MIT
 """
 
@@ -39,6 +39,16 @@ _CTX_END = "<!-- owuinc:context:end -->"
 _CTX_BLOCK_RE = re.compile(
     re.escape(_CTX_BEGIN) + r".*?" + re.escape(_CTX_END), re.DOTALL
 )
+
+
+def _is_turn_start(messages: list) -> bool:
+    """True only for the first provider call of a user turn.
+
+    OpenWebUI re-runs the request hook once per provider call in a
+    tool-calling loop; continuation calls end with an assistant or tool
+    message instead of the user message.
+    """
+    return bool(messages) and messages[-1].get("role") == "user"
 
 
 def _try_inject(
@@ -329,20 +339,26 @@ class Filter:
 
             content = "\n\n".join(contexts)
 
+            # OpenWebUI re-runs this hook once per provider call in a tool-calling
+            # loop. Inject every time (each call needs the context), but emit status
+            # only on the first call of a turn, otherwise the injection status block
+            # is replayed before every tool call and buries the tool's own status.
+            messages = body.setdefault("messages", [])
+            emit = __event_emitter__ if _is_turn_start(messages) else None
+
             for info in injected_info:
                 await self._emit_status(
-                    __event_emitter__,
+                    emit,
                     f"{info['name']} ({info['tokens']} tokens)",
                     done=False,
                 )
             total = sum(f["tokens"] for f in injected_info)
             await self._emit_status(
-                __event_emitter__,
+                emit,
                 f"Context injected: {total} tokens ({len(injected_info)} files)",
                 True,
             )
 
-            messages = body.setdefault("messages", [])
             if messages and messages[0].get("role") == "system":
                 messages[0]["content"] = self._merge_system(
                     messages[0].get("content") or "", content
@@ -355,9 +371,10 @@ class Filter:
             return body
 
         except Exception:
-            await self._emit_status(
-                __event_emitter__,
-                "Context injection failed: error",
-                done=True,
-            )
+            if _is_turn_start(body.get("messages") or []):
+                await self._emit_status(
+                    __event_emitter__,
+                    "Context injection failed: error",
+                    done=True,
+                )
         return body
