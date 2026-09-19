@@ -87,24 +87,24 @@ class TestValidatePathAdditional:
         result = validate_path("foo.", valves)
         assert result == "owuinc/foo."
 
-    def test_double_dots_in_filename_blocked(self, valves):
-        """KNOWN LIMITATION: 'a..b' is blocked because '..' substring
-        matches. This is overly aggressive but intentional for security."""
-        with pytest.raises(Exception, match="traversal not allowed"):
-            validate_path("a..b/file.txt", valves)
+    def test_double_dots_in_filename_allowed(self, valves):
+        """'a..b' is a legitimate filename; only '..' SEGMENTS traverse."""
+        result = validate_path("a..b/file.txt", valves)
+        assert result == "owuinc/a..b/file.txt"
 
-    def test_three_dots_is_blocked(self, valves):
-        """'...' contains '..' so must be blocked."""
-        with pytest.raises(Exception, match="traversal not allowed"):
-            validate_path("...", valves)
+    def test_dotted_names_are_valid(self, valves):
+        """A file literally named '...' or '....' is legal."""
+        assert validate_path("...", valves) == "owuinc/..."
+        assert validate_path("....", valves) == "owuinc/...."
+        assert validate_path("..hidden", valves) == "owuinc/..hidden"
 
-    def test_four_dots_blocked(self, valves):
-        with pytest.raises(Exception, match="traversal not allowed"):
-            validate_path("....", valves)
+    def test_dotted_directory_allowed(self, valves):
+        """'.../' is a legal (if odd) directory name, not traversal."""
+        assert validate_path(".../file", valves) == "owuinc/.../file"
 
-    def test_only_dot_dots_blocked(self, valves):
+    def test_parent_segment_still_blocked(self, valves):
         with pytest.raises(Exception, match="traversal not allowed"):
-            validate_path(".../file", valves)
+            validate_path(".../file/../../etc", valves)
 
     def test_encoded_dot_dot_blocked(self, valves):
         """URL-encoded '..' should still be blocked."""

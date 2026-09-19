@@ -3,8 +3,8 @@ title: owuinc
 author: soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
-requirements: caldav>=3.0.0,icalendar,aiowebdav2
-version: 3.15.0
+requirements: caldav>=3.0.0,icalendar>=6.0,aiowebdav2>=0.6,pydantic>=2,tiktoken>=0.5,aiohttp>=3.9,python-dateutil>=2.8.2
+version: 3.15.1
 license: MIT
 """
 
@@ -677,7 +677,9 @@ def validate_path(path, valves):
         prev = path
         path = urllib.parse.unquote(path)
 
-    if ".." in path:
+    # Only actual parent-directory SEGMENTS traverse; names like "..hidden"
+    # or "a..b" are legitimate filenames.
+    if any(seg == ".." for seg in path.split("/")):
         raise Exception("Invalid Path: traversal not allowed")
 
     if any(ord(c) < 32 for c in path):
@@ -2334,16 +2336,18 @@ class Tools:
         end: str | None = None,
         description: str | None = None,
         location: str | None = None,
-        alarms: list[str] = ["0min"],
+        alarms: list[str] | None = None,
         rrule: str | None = None,
         __user__: dict = {},
         __event_emitter__=None,
     ) -> str:
         """Create an event. start/end: ISO 8601 (naive = user's timezone; default now→now+1h).
         A date-only start like '2026-09-20' creates an all-day event; end must then also be date-only (inclusive, e.g. '2026-09-22' spans 3 days).
-        alarms: relative offsets like ['0min', '15min', '1h', '3d', '2w'] ('0min' = at start).
+        alarms: relative offsets like ['0min', '15min', '1h', '3d', '2w'] ('0min' = at start; default at-start alarm).
         rrule: RRULE string for recurrence, e.g. 'FREQ=WEEKLY;BYDAY=MO,WE,FR'; omit for one-off.
         """
+        if alarms is None:
+            alarms = ["0min"]
         calendar_name = calendar_name or self.valves.DEFAULT_CALENDAR
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             raise Exception(f"{calendar_name!r} not in whitelist")

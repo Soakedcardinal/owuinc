@@ -239,16 +239,13 @@ class TestValidatePathSecurityEdgeCases:
         valves = MockValves()
         assert validate_path("Documents/file.py", valves) == "owuinc/Documents/file.py"
 
-    def test_only_dot_dots_blocked(self, valves):
-        """Multiple consecutive dots should be blocked if they contain .."""
-        # ".../file" contains ".." so it's blocked
-        with pytest.raises(Exception, match="traversal not allowed"):
-            validate_path(".../file", valves)
+    def test_only_dot_dots_allowed(self, valves):
+        """'...' is a legal name; only '..' segments are traversal."""
+        assert validate_path(".../file", valves) == "/test/sandbox/.../file"
 
-    def test_four_dots_blocked(self, valves):
-        """Four dots contain .. and should be blocked"""
-        with pytest.raises(Exception, match="traversal not allowed"):
-            validate_path("....", valves)
+    def test_four_dots_allowed(self, valves):
+        """A file literally named '....' is legal."""
+        assert validate_path("....", valves) == "/test/sandbox/...."
 
 
 class TestIsBlacklisted:
