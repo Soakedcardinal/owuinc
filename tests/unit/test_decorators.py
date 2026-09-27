@@ -1,4 +1,4 @@
-"""Unit tests for decorator error handling, sanitization, and DEBUG_MODE."""
+"""Unit tests for decorator error handling and sanitization."""
 
 import asyncio
 from unittest.mock import AsyncMock
@@ -13,7 +13,7 @@ from owuinc.owuinc import (
 
 
 class MockValves:
-    DEBUG_MODE: bool = False
+    pass
 
 
 class MockTools:
@@ -44,6 +44,47 @@ class TestSanitize:
 
     def test_preserves_plain_message(self):
         assert _sanitize("not whitelisted") == "not whitelisted"
+
+    def test_redacts_literal_secrets(self):
+        msg = "Basic auth failed for ncuser / sup3rsecret"
+        out = _sanitize(msg, ("sup3rsecret", "ncuser"))
+        assert "sup3rsecret" not in out
+        assert "ncuser" not in out
+        assert "<redacted>" in out
+
+    def test_empty_secret_ignored(self):
+        assert _sanitize("user ncuser", ("",)) == "user ncuser"
+
+    def test_strips_collection_404_trailing_slash(self):
+        # aiowebdav2 PROPFINDs "<path>/" for listings, so its 404 text carries a
+        # slash that is not part of the requested path.
+        msg = "Remote resource: owuinc/notes/missing.txt/ not found"
+        assert _sanitize(msg) == "Remote resource: owuinc/notes/missing.txt not found"
+
+    def test_keeps_slash_of_a_path_not_followed_by_not_found(self):
+        assert _sanitize("listed owuinc/dir/ entries") == "listed owuinc/dir/ entries"
+
+
+class TestSafeDecoratorSecrets:
+    class CredValves:
+        NEXTCLOUD_APP_PASSWORD = "sup3rsecret"
+        NEXTCLOUD_USERNAME = "ncuser"
+
+    class CredTools:
+        def __init__(self):
+            self.valves = TestSafeDecoratorSecrets.CredValves()
+
+    async def test_error_details_redact_credentials(self):
+        tool = self.CredTools()
+
+        @webdav_safe
+        async def boom(self):
+            raise ValueError("auth failed: sup3rsecret")
+
+        res = await boom(tool)
+        assert res["result"] == "False"
+        assert "sup3rsecret" not in res["details"]
+        assert "<redacted>" in res["details"]
 
 
 # ---------------------------------------------------------------------------
@@ -77,20 +118,44 @@ class TestSafeDecorator:
 
         @webdav_safe
         async def fail(self) -> None:
-            raise ConnectionExceptionError("timeout")
+            raise ConnectionExceptionError(Exception("timeout"))
 
         res = await fail(tool)
         assert res["result"] == "False"
-        assert res["details"] == "connection error"
+        assert res["details"] == "connection error (ConnectionExceptionError)"
 
     async def test_timeout_error_never_raises(self, tool):
+        """A client timeout is not a plain connection error: the request
+        may have completed server-side, so the details must say to verify
+        before retrying (a blind retry of a timed-out write double-applies)."""
+
         @caldav_safe
         async def fail(self) -> None:
             raise TimeoutError("timed out")
 
         res = await fail(tool)
         assert res["result"] == "False"
-        assert res["details"] == "connection error"
+        assert res["details"] == (
+            "timed out — the request may still have completed on the server; "
+            "verify before retrying"
+        )
+
+    async def test_niquests_timeout_carries_verify_hint(self, tool):
+        """caldav.aio's default backend (niquests) raises its own timeout
+        class; it must get the same verify-before-retrying treatment."""
+        from niquests.exceptions import ReadTimeout
+
+        @caldav_safe
+        async def fail(self) -> None:
+            raise ReadTimeout("Read timed out. (read timeout=30)")
+
+        res = await fail(tool)
+        assert res["result"] == "False"
+        assert res["details"].startswith("Read timed out. (read timeout=30)")
+        assert res["details"].endswith(
+            "the request may still have completed on the server; "
+            "verify before retrying"
+        )
 
     async def test_connection_error_connection_error(self, tool):
         @caldav_safe
@@ -99,7 +164,7 @@ class TestSafeDecorator:
 
         res = await fail(tool)
         assert res["result"] == "False"
-        assert res["details"] == "connection error"
+        assert res["details"] == "connection error (ConnectionError)"
 
     async def test_value_error_surfaces_message(self, tool):
         @webdav_safe
@@ -145,23 +210,21 @@ class TestSafeDecorator:
 
 
 # ---------------------------------------------------------------------------
-# DEBUG_MODE behavior
+# Error detail surfacing
 # ---------------------------------------------------------------------------
 
 
-class TestDebugMode:
+class TestErrorDetails:
     @pytest.fixture
     def tool(self):
-        t = MockTools()
-        t.valves.DEBUG_MODE = True
-        return t
+        return MockTools()
 
     async def test_connection_error_includes_type(self, tool):
         from aiowebdav2.exceptions import ConnectionExceptionError
 
         @webdav_safe
         async def fail(self) -> None:
-            raise ConnectionExceptionError("timeout")
+            raise ConnectionExceptionError(Exception("timeout"))
 
         res = await fail(tool)
         assert "ConnectionExceptionError" in res["details"]
@@ -189,16 +252,15 @@ class TestDebugMode:
 
         @webdav_safe
         async def fail(self, __event_emitter__=None) -> None:
-            raise NoConnectionError()
+            raise NoConnectionError("oc.example")
 
         await fail(tool, __event_emitter__=emitter)
         await asyncio.sleep(0.1)
         assert emitter.called
 
     async def test_status_event_always_emitted(self):
-        """Status events fire regardless of DEBUG_MODE (user-facing)."""
+        """Status events are user-facing and always fire."""
         t = MockTools()
-        t.valves.DEBUG_MODE = False
         emitter = AsyncMock()
 
         @webdav_safe
@@ -209,7 +271,7 @@ class TestDebugMode:
         await asyncio.sleep(0.1)
         assert emitter.called
 
-    async def test_value_error_details_surfaces_in_debug(self, tool):
+    async def test_value_error_details_surfaces(self, tool):
         @webdav_safe
         async def fail(self) -> None:
             raise ValueError("string not found")

@@ -3,29 +3,43 @@ title: startup_context_injector
 author: Soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Injects files from nextcloud as system instructions on every request.
-requirements: aiowebdav2,tiktoken
-version: 1.5.0
+requirements: aiowebdav2>=0.6.2,aiohttp>=3.14,tiktoken>=0.13,tzdata>=2026.4,pydantic>=2
+version: 4.0.0
 license: MIT
 """
 
 import asyncio
+import logging
 import os
+import re
 import urllib.parse
+from collections import OrderedDict
 from datetime import date, datetime, timedelta
-from io import BytesIO
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 import tiktoken
 from aiohttp import ClientTimeout
 from aiowebdav2 import Client as WebDAVClient
 from aiowebdav2.client import ClientOptions
-from aiowebdav2.exceptions import (
-    RemoteResourceNotFoundError,
-    WebDavError,
-)
+from aiowebdav2.exceptions import WebDavError
 from pydantic import BaseModel, Field
 
+logger = logging.getLogger(__name__)
+
+# tiktoken ships with OpenWebUI, so the encoder is always available here.
 _tokenizer = tiktoken.get_encoding("cl100k_base")
+
+# Invalid TIMEZONE values already warned about: the valve is operator
+# configuration, a typo would otherwise be invisible (wrong daily-log date)
+# and would log once per request without this.
+_TZ_WARNED: set[str] = set()
+
+# path -> (etag, content). Freshness is always decided by the server via
+# If-None-Match conditional GETs — a changed file is re-downloaded in full on
+# the very next call; only re-transmission of unchanged bytes is skipped.
+_ETAG_CACHE: "OrderedDict[tuple[str, str], tuple[str, str]]" = OrderedDict()
+_ETAG_CACHE_MAX = 256
 
 
 def _token_count(text: str) -> int:
@@ -33,22 +47,93 @@ def _token_count(text: str) -> int:
     return len(_tokenizer.encode(text))
 
 
+# The marker pair names the injected block so a re-run replaces it instead
+# of stacking. The token makes it effectively impossible for an operator's
+# system prompt to contain the pair by accident; the legacy pair (pre-token)
+# is still recognized so blocks left behind by an earlier version are
+# replaced instead of stacked when the injector is upgraded.
+_CTX_TOKEN = "7f3c9ab2d41e"
+_CTX_BEGIN = f"<!-- owuinc:context:begin:{_CTX_TOKEN} -->"
+_CTX_END = f"<!-- owuinc:context:end:{_CTX_TOKEN} -->"
+_CTX_BEGIN_LEGACY = "<!-- owuinc:context:begin -->"
+_CTX_END_LEGACY = "<!-- owuinc:context:end -->"
+_CTX_BLOCK_RE = re.compile(
+    re.escape(_CTX_BEGIN)
+    + r".*?"
+    + re.escape(_CTX_END)
+    + "|"
+    + re.escape(_CTX_BEGIN_LEGACY)
+    + r".*?"
+    + re.escape(_CTX_END_LEGACY),
+    re.DOTALL,
+)
+
+
+def _is_turn_start(messages: list) -> bool:
+    """True only for the first provider call of a user turn.
+
+    OpenWebUI re-runs the request hook once per provider call in a
+    tool-calling loop; continuation calls end with an assistant or tool
+    message instead of the user message.
+    """
+    return bool(messages) and messages[-1].get("role") == "user"
+
+
+def _sanitize_content(content: str) -> str:
+    """Escape markup metacharacters in downloaded content.
+
+    The content is embedded verbatim inside a ``<file>`` wrapper in the system
+    prompt, so a literal ``</file>`` (or a forged ``<file ...>`` / context
+    marker) in a file could break out of the wrapper and corrupt the injected
+    prompt. Escaping ``&``, ``<`` and ``>`` keeps the wrapper structurally
+    intact and the path-tag semantics unchanged; the text is still readable.
+    """
+    return content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _try_inject(
     contexts: list[str],
     injected_info: list[dict],
     filename: str,
     content: Optional[str],
+    count_tokens: bool = True,
 ):
     """Wrap downloaded content in XML tags and append to contexts.
 
-    Returns a dict with name/tokens if injected, None otherwise.
+    Returns a dict with name/tokens if injected, None otherwise. The token
+    count feeds the UI status line only, so callers that will not emit a
+    status may pass count_tokens=False and skip the (CPU-costly) encode.
     """
     if content:
-        contexts.append(f"<{filename}>\n{content}\n</{filename}>")
-        info = {"name": filename, "tokens": _token_count(content)}
+        # Filenames may contain '/' (daily logs) or other characters that
+        # make them invalid as raw tag names, so use an attribute instead.
+        safe = filename.replace("<", "").replace(">", "").replace('"', "")
+        body = _sanitize_content(content)
+        contexts.append(f'<file path="{safe}">\n{body}\n</file>')
+        info = {
+            "name": filename,
+            "tokens": _token_count(body) if count_tokens else 0,
+        }
         injected_info.append(info)
         return info
     return None
+
+
+def is_blacklisted(blacklist: str, path: str) -> bool:
+    """Check if path is under any blacklisted directory prefix.
+
+    Mirrors the owuinc tool's FILE_BLACKLIST semantics exactly: entries are
+    normalized (stripped), and matching is boundary-safe (path == prefix or
+    path starts with prefix + "/").
+    """
+    if not blacklist:
+        return False
+    cleaned = {s.strip().strip("/") for s in blacklist.split(",") if s.strip()}
+    cleaned.discard("")
+    for prefix in cleaned:
+        if path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
 
 
 def _webdav_path(p: str) -> str:
@@ -100,7 +185,9 @@ def validate_path(path, valves):
         prev = path
         path = urllib.parse.unquote(path)
 
-    if ".." in path:
+    # Only actual parent-directory SEGMENTS traverse; names like "..hidden"
+    # or "a..b" are legitimate filenames.
+    if any(seg == ".." for seg in path.split("/")):
         raise Exception("Invalid Path: traversal not allowed")
 
     if any(ord(c) < 32 for c in path):
@@ -141,6 +228,16 @@ class Filter:
                 "Directory containing system files on Nextcloud. Leading / will be stripped. Must match owuinc tool's SANDBOX_DIR."
             ),
         )
+        FILE_BLACKLIST: str = Field(
+            default="",
+            description=(
+                "Comma-separated sandbox-relative paths that must never be read or injected. Must match the owuinc tool's FILE_BLACKLIST."
+            ),
+        )
+        priority: int = Field(
+            default=0,
+            description="Filter ordering against other OWUI filters (deterministic).",
+        )
         FILES_TO_INJECT: str = Field(
             default="AGENTS.md,SOUL.md,IDENTITY.md,TOOLS.md,STYLE.md,USER.md,MEMORY.md",
             description=(
@@ -163,13 +260,25 @@ class Filter:
             False,
             description="Inject the daily log from 3 days ago.",
         )
+        TIMEZONE: str = Field(
+            default="",
+            description=(
+                'IANA timezone that decides what "today" means for the daily logs '
+                'and the injected time line, e.g. "America/Los_Angeles". '
+                "Takes precedence over the per-user timezone OpenWebUI reports. Leave "
+                "empty to use that, and if neither resolves, the container's own clock "
+                "decides — which names the wrong log file for any user behind UTC "
+                "during their evening, silently, because a missing file is skipped."
+            ),
+        )
         INJECT_TIME: bool = Field(
             True,
             description=(
-                "Inject the session start time (full timestamp) as the first system "
-                "context line, so the model knows the date and time of session start "
-                "without calling get_current_time. Stale within long sessions; the "
-                "tool remains available for live time."
+                "Inject the current time as the last line of the injected context, so "
+                "the model knows the date and time without calling get_current_time. "
+                "Recomputed on every provider call, which is why it goes last: any line "
+                "placed ahead of the files invalidates the engine's prefix cache for the "
+                "whole injected set. The tool remains available for live time."
             ),
         )
         REQUEST_TIMEOUT: int = Field(
@@ -183,15 +292,75 @@ class Filter:
         self.valves = self.Valves()
 
     async def _download_file(self, client: WebDAVClient, path: str) -> Optional[str]:
-        try:
-            buf = BytesIO()
-            await client.resource(_webdav_path(path)).read_from(buf)
-            return buf.getvalue().decode("utf-8")
-        except (RemoteResourceNotFoundError, WebDavError, UnicodeDecodeError):
-            return None
+        """Fetch a file with a conditional GET (If-None-Match).
 
-    def _get_log_filename(self, days_ago: int) -> str:
-        return (date.today() - timedelta(days=days_ago)).strftime("%Y-%m-%d") + ".md"
+        The server revalidates the cached ETag on every call: unchanged files
+        return 304 with no body (content taken from cache), changed files are
+        re-downloaded in full. Never serves stale content.
+        """
+        wp = _webdav_path(path)
+        key = (str(client.get_url("")), wp)
+        cached = _ETAG_CACHE.get(key)
+        headers = {"If-None-Match": cached[0]} if cached else {}
+        try:
+            response = await client.execute_request("download", wp, headers_ext=headers)
+            try:
+                if response.status == 304 and cached is not None:
+                    _ETAG_CACHE.move_to_end(key)
+                    return cached[1]
+                data = await response.read()
+            finally:
+                # Return the connection to the pool. Left alone, the response is
+                # only cleaned up at GC time, which older aiohttp versions log
+                # as an "Unclosed connection" error for every stale connection.
+                response.release()
+            text = data.decode("utf-8")
+        except (WebDavError, UnicodeDecodeError):
+            # RemoteResourceNotFoundError is a WebDavError subclass; a 404 here
+            # just means "nothing to inject" and drops the cache entry.
+            _ETAG_CACHE.pop(key, None)
+            return None
+        etag = response.headers.get("ETag")
+        if etag:
+            _ETAG_CACHE[key] = (etag, text)
+            _ETAG_CACHE.move_to_end(key)
+            while len(_ETAG_CACHE) > _ETAG_CACHE_MAX:
+                _ETAG_CACHE.popitem(last=False)
+        return text
+
+    def _user_tz(self, user: dict | None):
+        """Timezone for date math: TIMEZONE valve, then __user__, else server-local.
+
+        The valve wins because it exists to correct a container clock that is not the
+        user's local date; OpenWebUI does not always report a user timezone at all.
+        An unparseable valve value falls back instead of failing, so a typo degrades
+        to the previous behavior rather than losing the whole injection — but it logs
+        a one-shot warning, because a typo otherwise silently dates the daily memory
+        log with the wrong timezone.
+        """
+        tz_name = self.valves.TIMEZONE.strip()
+        if tz_name:
+            try:
+                return ZoneInfo(tz_name)
+            except Exception:
+                if tz_name not in _TZ_WARNED:
+                    _TZ_WARNED.add(tz_name)
+                    logger.warning(
+                        "TIMEZONE valve %r is not a valid IANA timezone; falling "
+                        "back to the user/server timezone (daily log dates may "
+                        "be wrong)",
+                        tz_name,
+                    )
+        if user and user.get("timezone"):
+            try:
+                return ZoneInfo(user["timezone"])
+            except Exception:
+                pass
+        return None
+
+    def _get_log_filename(self, days_ago: int, tz=None) -> str:
+        today = datetime.now(tz).date() if tz is not None else date.today()
+        return (today - timedelta(days=days_ago)).strftime("%Y-%m-%d") + ".md"
 
     async def _emit_status(self, emitter, description: str, done: bool):
         """Emit a UI status event."""
@@ -206,7 +375,60 @@ class Filter:
                 }
             )
 
-    async def _build_context(self) -> tuple[list[str], list[dict]]:
+    def _plan_file_paths(self, user: dict | None = None) -> list[tuple[str, str]]:
+        """Ordered (label, webdav-path) pairs, honoring FILE_BLACKLIST.
+
+        Daily logs are inserted after MEMORY.md (or appended when absent).
+        """
+        files_to_inject = [
+            f.strip() for f in self.valves.FILES_TO_INJECT.split(",") if f.strip()
+        ]
+        sandbox_prefix = validate_path("", self.valves)
+        user_tz = self._user_tz(user)
+
+        file_paths: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for filename in files_to_inject:
+            # A duplicate entry (or a daily log also listed explicitly) would
+            # otherwise be downloaded and injected twice.
+            if filename in seen:
+                continue
+            seen.add(filename)
+            try:
+                validated = validate_path(filename, self.valves)
+            except Exception:
+                continue
+            rel = validated[len(sandbox_prefix) :].strip("/")
+            if is_blacklisted(self.valves.FILE_BLACKLIST, rel):
+                continue
+            file_paths.append((filename, validated.rstrip("/")))
+        memory_base = validate_path("memory", self.valves).rstrip("/")
+        daily_paths: list[tuple[str, str]] = []
+        for days_ago, enabled in [
+            (0, self.valves.INJECT_TODAY),
+            (1, self.valves.INJECT_YESTERDAY),
+            (2, self.valves.INJECT_2_DAYS_AGO),
+            (3, self.valves.INJECT_3_DAYS_AGO),
+        ]:
+            if not enabled:
+                continue
+            log_file = self._get_log_filename(days_ago, user_tz)
+            log_rel = f"memory/{log_file}"
+            if is_blacklisted(self.valves.FILE_BLACKLIST, log_rel) or log_rel in seen:
+                continue
+            seen.add(log_rel)
+            daily_paths.append((log_rel, f"{memory_base}/{log_file}"))
+
+        # Daily logs go last, not beside MEMORY.md. They are the only injected
+        # files that change during the day, since the agent appends to them, so
+        # placed early every append invalidates the prefix cache for every static
+        # file behind them. At the tail an append costs only its own new tokens.
+        file_paths.extend(daily_paths)
+        return file_paths
+
+    async def _build_context(
+        self, user: dict | None = None, count_tokens: bool = True
+    ) -> tuple[list[str], list[dict]]:
         base = self.valves.NEXTCLOUD_BASE_URL.rstrip("/")
         wd_user = self.valves.WEBDAV_USERNAME.strip()
         nc_url = f"{base}/remote.php/dav/files/{wd_user}/"
@@ -221,40 +443,8 @@ class Filter:
         )
 
         try:
-            files_to_inject = [
-                f.strip() for f in self.valves.FILES_TO_INJECT.split(",") if f.strip()
-            ]
-
-            # Build path map.
-            file_paths: list[tuple[str, str]] = []
-            for filename in files_to_inject:
-                try:
-                    validated = validate_path(filename, self.valves)
-                    file_paths.append((filename, validated.rstrip("/")))
-                except Exception:
-                    continue
-            memory_base = validate_path("memory", self.valves).rstrip("/")
-            daily_paths: list[tuple[str, str]] = []
-            for days_ago, enabled in [
-                (0, self.valves.INJECT_TODAY),
-                (1, self.valves.INJECT_YESTERDAY),
-                (2, self.valves.INJECT_2_DAYS_AGO),
-                (3, self.valves.INJECT_3_DAYS_AGO),
-            ]:
-                if not enabled:
-                    continue
-                log_file = self._get_log_filename(days_ago)
-                daily_paths.append((f"memory/{log_file}", f"{memory_base}/{log_file}"))
-
-            insert_at = next(
-                (
-                    i + 1
-                    for i, (f, _) in enumerate(file_paths)
-                    if f.rsplit("/", 1)[-1].lower() == "memory.md"
-                ),
-                len(file_paths),
-            )
-            file_paths[insert_at:insert_at] = daily_paths
+            file_paths = self._plan_file_paths(user)
+            user_tz = self._user_tz(user)
 
             # Download all content.
             content_map = dict(
@@ -269,26 +459,70 @@ class Filter:
             contexts: List[str] = []
             injected_info: list[dict] = []
 
-            if self.valves.INJECT_TIME:
-                session_start = (
-                    datetime.now().astimezone().isoformat(timespec="minutes")
-                )
-                time_ctx = "<session_start>\n" f"{session_start}\n" "</session_start>"
-                time_tokens = _token_count(time_ctx)
-                contexts.append(time_ctx)
-                injected_info.append({"name": "session_start", "tokens": time_tokens})
-
             for filename, _wpath in file_paths:
                 content = content_map.get(filename)
-                _try_inject(contexts, injected_info, filename, content)
+                _try_inject(contexts, injected_info, filename, content, count_tokens)
+
+            # Emitted last, deliberately. Every byte ahead of this line is stable for
+            # as long as the files are, so the engine's prefix cache (sglang radix,
+            # vLLM APC) keeps hitting across every turn of the day. Ahead of the
+            # files, this one line changes every minute and re-prefilled the entire
+            # injected set on every provider call.
+            if self.valves.INJECT_TIME:
+                session_start = (
+                    datetime.now(user_tz).astimezone().isoformat(timespec="minutes")
+                )
+                time_ctx = "<session_start>\n" f"{session_start}\n" "</session_start>"
+                contexts.append(time_ctx)
+                injected_info.append(
+                    {
+                        "name": "session_start",
+                        "tokens": _token_count(time_ctx) if count_tokens else 0,
+                    }
+                )
 
             return contexts, injected_info
         finally:
             await client.close()
 
-    async def request(self, body: dict, __event_emitter__=None) -> dict:
+    def _merge_system(self, existing: str, injected: str) -> str:
+        """Merge injected context into an existing system prompt.
+
+        Never discards the operator's system prompt, and is idempotent: a block
+        left by a previous call is replaced rather than stacked, since `request`
+        runs once per provider call (several times in a tool-calling turn).
+
+        The block always goes last. The operator's prompt is static per model, so
+        putting it first keeps it inside the cached prefix; appending it instead
+        would put a stable line behind the volatile tail and defeat the ordering
+        inside the block.
+        """
+        block = f"{_CTX_BEGIN}\n{injected}\n{_CTX_END}"
+        existing = _CTX_BLOCK_RE.sub("", existing or "").strip()
+        if not existing:
+            return block
+        return f"{existing}\n\n{block}"
+
+    async def request(
+        self, body: dict, __user__: dict = {}, __event_emitter__=None
+    ) -> dict:
+        # Background jobs (title, tag, autocomplete generation) go through this
+        # hook too and don't need the memory context — skip the fetch entirely.
+        if (body.get("metadata") or {}).get("task"):
+            return body
+
         try:
-            contexts, injected_info = await self._build_context()
+            messages = body.setdefault("messages", [])
+            # OpenWebUI re-runs this hook once per provider call in a tool-calling
+            # loop. Inject every time (each call needs the context), but emit status
+            # only on the first call of a turn, otherwise the injection status block
+            # is replayed before every tool call and buries the tool's own status.
+            emit = __event_emitter__ if _is_turn_start(messages) else None
+            # Token counts feed only the status lines, so the (CPU-costly)
+            # tiktoken encode runs only when a status is actually emitted.
+            contexts, injected_info = await self._build_context(
+                __user__, count_tokens=emit is not None
+            )
             if not contexts:
                 return body
 
@@ -296,29 +530,33 @@ class Filter:
 
             for info in injected_info:
                 await self._emit_status(
-                    __event_emitter__,
+                    emit,
                     f"{info['name']} ({info['tokens']} tokens)",
                     done=False,
                 )
             total = sum(f["tokens"] for f in injected_info)
             await self._emit_status(
-                __event_emitter__,
+                emit,
                 f"Context injected: {total} tokens ({len(injected_info)} files)",
                 True,
             )
 
-            messages = body.setdefault("messages", [])
             if messages and messages[0].get("role") == "system":
-                messages[0]["content"] = content
+                messages[0]["content"] = self._merge_system(
+                    messages[0].get("content") or "", content
+                )
             else:
-                messages.insert(0, {"role": "system", "content": content})
+                messages.insert(
+                    0, {"role": "system", "content": self._merge_system("", content)}
+                )
 
             return body
 
         except Exception:
-            await self._emit_status(
-                __event_emitter__,
-                "Context injection failed: error",
-                done=True,
-            )
+            if _is_turn_start(body.get("messages") or []):
+                await self._emit_status(
+                    __event_emitter__,
+                    "Context injection failed: error",
+                    done=True,
+                )
         return body

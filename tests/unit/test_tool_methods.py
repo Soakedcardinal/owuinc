@@ -87,24 +87,24 @@ class TestValidatePathAdditional:
         result = validate_path("foo.", valves)
         assert result == "owuinc/foo."
 
-    def test_double_dots_in_filename_blocked(self, valves):
-        """KNOWN LIMITATION: 'a..b' is blocked because '..' substring
-        matches. This is overly aggressive but intentional for security."""
-        with pytest.raises(Exception, match="traversal not allowed"):
-            validate_path("a..b/file.txt", valves)
+    def test_double_dots_in_filename_allowed(self, valves):
+        """'a..b' is a legitimate filename; only '..' SEGMENTS traverse."""
+        result = validate_path("a..b/file.txt", valves)
+        assert result == "owuinc/a..b/file.txt"
 
-    def test_three_dots_is_blocked(self, valves):
-        """'...' contains '..' so must be blocked."""
-        with pytest.raises(Exception, match="traversal not allowed"):
-            validate_path("...", valves)
+    def test_dotted_names_are_valid(self, valves):
+        """A file literally named '...' or '....' is legal."""
+        assert validate_path("...", valves) == "owuinc/..."
+        assert validate_path("....", valves) == "owuinc/...."
+        assert validate_path("..hidden", valves) == "owuinc/..hidden"
 
-    def test_four_dots_blocked(self, valves):
-        with pytest.raises(Exception, match="traversal not allowed"):
-            validate_path("....", valves)
+    def test_dotted_directory_allowed(self, valves):
+        """'.../' is a legal (if odd) directory name, not traversal."""
+        assert validate_path(".../file", valves) == "owuinc/.../file"
 
-    def test_only_dot_dots_blocked(self, valves):
+    def test_parent_segment_still_blocked(self, valves):
         with pytest.raises(Exception, match="traversal not allowed"):
-            validate_path(".../file", valves)
+            validate_path(".../file/../../etc", valves)
 
     def test_encoded_dot_dot_blocked(self, valves):
         """URL-encoded '..' should still be blocked."""
@@ -378,8 +378,11 @@ class TestTimeoutValveDefaults:
         assert t.valves.WEBDAV_TIMEOUT == 10
 
     def test_caldav_timeout_default(self):
+        # CalDAV writes on a loaded Nextcloud take 10-20s+ while reads stay
+        # fast, so the default is 30s (10s timed out client-side while the
+        # mutation still committed server-side).
         t = Tools()
-        assert t.valves.CALDAV_TIMEOUT == 10
+        assert t.valves.CALDAV_TIMEOUT == 30
 
     def test_webdav_timeout_in_range(self):
         t = Tools()
@@ -409,16 +412,17 @@ class TestCheckBlacklistedRecursive:
         c = MagicMock()
         c.is_dir = AsyncMock()
         c.list_files = AsyncMock()
+        c.list_with_infos = AsyncMock()
         c.close = AsyncMock()
         return c
 
     @pytest.mark.asyncio
     async def test_raises_for_blacklisted_child_dir(self, tool, valves, mock_client):
         valves.FILE_BLACKLIST = "secret"
-        mock_client.is_dir.return_value = True
-        mock_client.list_files.return_value = [
-            "/owuinc/secret",
-            "/owuinc/public",
+        mock_client.list_with_infos.return_value = [
+            {"path": "/owuinc"},
+            {"path": "/owuinc/secret"},
+            {"path": "/owuinc/public"},
         ]
         with pytest.raises(ValueError, match="Access denied"):
             await tool._check_blacklisted_recursive(mock_client, "owuinc")
@@ -428,74 +432,49 @@ class TestCheckBlacklistedRecursive:
         self, tool, valves, mock_client
     ):
         valves.FILE_BLACKLIST = "secret"
-        call_count = 0
-
-        async def is_dir_side_effect(path):
-            nonlocal call_count
-            call_count += 1
-            return True
-
-        mock_client.is_dir.side_effect = is_dir_side_effect
-        mock_client.list_files.return_value = [
-            "/owuinc/readme.txt",
-            "/owuinc/secret",
+        mock_client.list_with_infos.return_value = [
+            {"path": "/owuinc"},
+            {"path": "/owuinc/readme.txt"},
+            {"path": "/owuinc/secret"},
         ]
         with pytest.raises(ValueError, match="Access denied"):
             await tool._check_blacklisted_recursive(mock_client, "owuinc")
-        assert call_count >= 2
 
     @pytest.mark.asyncio
-    async def test_is_dir_exception_does_not_stop_sibling_check(
-        self, tool, valves, mock_client
-    ):
+    async def test_listing_exception_denies(self, tool, valves, mock_client):
+        """Fail closed: an unreadable tree is denied, reported as a
+        verification failure rather than a policy denial."""
         valves.FILE_BLACKLIST = "secret"
-
-        call_count = 0
-
-        async def is_dir_side_effect(path):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 2:
-                raise Exception("network error")
-            return True
-
-        mock_client.is_dir.side_effect = is_dir_side_effect
-        mock_client.list_files.return_value = [
-            "/owuinc/problematic",
-            "/owuinc/secret",
-        ]
-        with pytest.raises(ValueError, match="Access denied"):
+        mock_client.list_with_infos.side_effect = Exception("network error")
+        with pytest.raises(ValueError, match="unable to verify protection state"):
             await tool._check_blacklisted_recursive(mock_client, "owuinc")
-        assert call_count >= 2
 
     @pytest.mark.asyncio
     async def test_no_raise_when_no_blacklisted_descendants(
         self, tool, valves, mock_client
     ):
         valves.FILE_BLACKLIST = "secret"
-        mock_client.is_dir.return_value = False
-        mock_client.list_files.return_value = [
-            "/owuinc/readme.txt",
-            "/owuinc/notes.md",
+        mock_client.list_with_infos.return_value = [
+            {"path": "/owuinc"},
+            {"path": "/owuinc/readme.txt"},
+            {"path": "/owuinc/notes.md"},
         ]
         await tool._check_blacklisted_recursive(mock_client, "owuinc")
 
     @pytest.mark.asyncio
     async def test_empty_blacklist_skips_recursion(self, tool, valves, mock_client):
         valves.FILE_BLACKLIST = ""
-        mock_client.list_files.return_value = ["/owuinc/anything"]
         await tool._check_blacklisted_recursive(mock_client, "owuinc")
-        mock_client.list_files.assert_not_called()
+        mock_client.list_with_infos.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_recursive_blacklisted_deeply_nested(self, tool, valves, mock_client):
-        """Blacklisted subdir at any depth is caught via recursion."""
+        """A blacklisted path at any depth in the recursive listing is caught."""
         valves.FILE_BLACKLIST = "subdir/secret"
-        mock_client.is_dir.return_value = True
-        mock_client.list_files.side_effect = [
-            ["/owuinc/subdir"],
-            ["/owuinc/subdir/secret"],
-            [],
+        mock_client.list_with_infos.return_value = [
+            {"path": "/owuinc/subdir"},
+            {"path": "/owuinc/subdir/secret"},
+            {"path": "/owuinc/subdir/secret/token.txt"},
         ]
         with pytest.raises(ValueError, match="Access denied"):
             await tool._check_blacklisted_recursive(mock_client, "owuinc")
