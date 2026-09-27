@@ -18,6 +18,7 @@ jobs:
       with:
         python-version: '3.11'
         cache: 'pip'
+    - uses: astral-sh/setup-uv@v10.2.0
     - uses: pre-commit/action@v3.0.1
 
   test:

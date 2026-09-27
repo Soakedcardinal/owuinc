@@ -7,17 +7,21 @@ Connect OpenWebUI Models to Nextcloud.
 ## Features
 
 ### File Operations
-*   `mkdir`, `ls`, `find`, `stat`, `tree`, `grep`, `edit`, `mv`, `cp`, `rm`
+*   `mkdir`, `ls`, `find`, `stat`, `grep`, `edit`, `mv`, `cp`, `rm`
 *   `write`, `cat`, `append`
 
 ### Task Management
 *   Create, read, edit, delete, & complete tasks
 *   Support sub-tasks
+*   Target a task by its `uid` (exact) or by `summary`
 
 ### Calendar Events
 *   Create, read, edit, & delete events
 *   Support for recurring events
 *   Support Alarms
+*   Target an event by its `uid` (exact) or by `summary`
+
+> **UIDs**: `add_task` and `create_calendar_event` always return the new item's `uid` along with its summary; `tasks` and `calendar_events` accept `include_uid=True` to surface each item's `uid` (hidden by default). The edit/delete/complete tools then take that `uid` to act on a specific item, instead of disambiguating by summary + due/start date.
 
 ## Security
 *   **Configurable Sandbox**: Prevent the model from accessing unauthorized directories.
@@ -81,9 +85,6 @@ The [`startup_context_injector`](./startup_context_injector.py) filter auto-inje
 
 To use, paste the file into OpenWebUI Admin Panel > Functions > + New Function and configure the Valves (similar to `owuinc`) and define what files to inject. The filter handles automatic daily memory log injection from `memory/`. For a starting point, refer to [OpenClaw templates](https://docs.openclaw.ai/reference/templates/AGENTS).
 
-## Contributing
-
-Contributions are welcome. Fork the repo and open a PR against the `staging` branch — every PR requires maintainer review and green CI before merging to `main`. See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup and house rules.
 
 <br>
 
