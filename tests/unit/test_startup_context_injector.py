@@ -189,6 +189,26 @@ class TestValidatePath:
         # With empty sandbox, prefix is "/"
         assert result == "/AGENTS.md"
 
+    def test_dot_sandbox_dir(self):
+        """'.' is the UI-reachable root selector: same paths as empty."""
+        from pydantic import BaseModel
+
+        class MockValves(BaseModel):
+            SANDBOX_DIR: str = "."
+
+        result = validate_path("AGENTS.md", MockValves())
+        assert result == "/AGENTS.md"
+
+    def test_dot_sandbox_dir_no_traversal(self):
+        """Verify path traversal is still blocked with '.' SANDBOX_DIR."""
+        from pydantic import BaseModel
+
+        class MockValves(BaseModel):
+            SANDBOX_DIR: str = "."
+
+        with pytest.raises(Exception, match="traversal not allowed"):
+            validate_path("../etc/passwd", MockValves())
+
     def test_empty_sandbox_dir_no_traversal(self):
         """Verify path traversal is still blocked even with empty SANDBOX_DIR."""
         from pydantic import BaseModel

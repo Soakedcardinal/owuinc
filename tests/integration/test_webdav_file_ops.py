@@ -500,6 +500,66 @@ class TestFileBlacklist:
         webdav_tools.valves.FILE_BLACKLIST = ""
 
 
+class TestDescendantProtection:
+    """rm/mv of a directory must be denied when a blacklisted descendant is
+    inside it. Real servers report full WebDAV hrefs ('remote.php/dav/...')
+    in listings, so these regression tests pin the protection against the
+    un-anchored href shape, not just sandbox-anchored mock listings."""
+
+    @pytest.mark.asyncio
+    async def test_rm_denied_when_blacklisted_descendant_inside(self, webdav_tools):
+        await webdav_tools.mkdir("dp_norm")
+        await webdav_tools.mkdir("dp_norm/secretdir")
+        await webdav_tools.write("dp_norm/secretdir/token.txt", "x")
+        webdav_tools.valves.FILE_BLACKLIST = "dp_norm/secretdir"
+        try:
+            result = await webdav_tools.rm(["dp_norm"])
+            entry = result["data"][0]
+            assert entry["result"] == "False"
+            assert entry["details"] == "Access denied"
+        finally:
+            webdav_tools.valves.FILE_BLACKLIST = ""
+        # The tree must still be intact (cat the blacklisted file with the
+        # blacklist cleared, since cat on a blacklisted path is itself denied).
+        left = await webdav_tools.cat("dp_norm/secretdir/token.txt")
+        assert left["result"] == "True"
+
+    @pytest.mark.asyncio
+    async def test_mv_denied_when_blacklisted_descendant_inside(self, webdav_tools):
+        await webdav_tools.mkdir("dp_mv")
+        await webdav_tools.mkdir("dp_mv/secretdir")
+        await webdav_tools.write("dp_mv/secretdir/token.txt", "x")
+        webdav_tools.valves.FILE_BLACKLIST = "dp_mv/secretdir"
+        try:
+            result = await webdav_tools.mv("dp_mv", "dp_mv_moved")
+            assert result["result"] == "False"
+        finally:
+            webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_rm_denied_when_blacklisted_descendant_inside_root_sandbox(
+        self, webdav_tools
+    ):
+        original = webdav_tools.valves.SANDBOX_DIR
+        webdav_tools.valves.SANDBOX_DIR = "."
+        try:
+            await webdav_tools.mkdir("dp_rootbox")
+            await webdav_tools.mkdir("dp_rootbox/secretdir")
+            await webdav_tools.write("dp_rootbox/secretdir/token.txt", "x")
+            webdav_tools.valves.FILE_BLACKLIST = "dp_rootbox/secretdir"
+            try:
+                result = await webdav_tools.rm(["dp_rootbox"])
+                entry = result["data"][0]
+                assert entry["result"] == "False"
+                assert entry["details"] == "Access denied"
+            finally:
+                webdav_tools.valves.FILE_BLACKLIST = ""
+            left = await webdav_tools.cat("dp_rootbox/secretdir/token.txt")
+            assert left["result"] == "True"
+        finally:
+            webdav_tools.valves.SANDBOX_DIR = original
+
+
 class TestNestedWriteWithoutParent:
     """Test write to deeply nested path when parent dirs don't exist."""
 
@@ -824,6 +884,73 @@ class TestEmptySandbox:
             await webdav_tools.write("nobox_file.txt", "data")
             result = await webdav_tools.ls("")
             assert result["result"] == "True"
+        finally:
+            webdav_tools.valves.SANDBOX_DIR = original
+
+
+class TestDotSandbox:
+    """'.' is the UI-reachable way to select the Nextcloud root (the valve
+    UI will not save a blank value). It must behave exactly like an empty
+    SANDBOX_DIR against a real WebDAV server."""
+
+    @pytest.mark.asyncio
+    async def test_dot_sandbox_write_and_read(self, webdav_tools):
+        original = webdav_tools.valves.SANDBOX_DIR
+        webdav_tools.valves.SANDBOX_DIR = "."
+        try:
+            result = await webdav_tools.write("dotbox_test.txt", "root sandbox")
+            assert result["result"] == "True"
+            read_result = await webdav_tools.cat("dotbox_test.txt")
+            assert read_result["result"] == "True"
+            assert read_result["data"] == "root sandbox"
+        finally:
+            webdav_tools.valves.SANDBOX_DIR = original
+
+    @pytest.mark.asyncio
+    async def test_dot_sandbox_ls_root(self, webdav_tools):
+        original = webdav_tools.valves.SANDBOX_DIR
+        webdav_tools.valves.SANDBOX_DIR = "."
+        try:
+            await webdav_tools.write("dotbox_file.txt", "data")
+            result = await webdav_tools.ls("")
+            assert result["result"] == "True"
+            assert "dotbox_file.txt" in result["data"]
+        finally:
+            webdav_tools.valves.SANDBOX_DIR = original
+
+    @pytest.mark.asyncio
+    async def test_dot_sandbox_ls_hides_blacklisted(self, webdav_tools):
+        original = webdav_tools.valves.SANDBOX_DIR
+        webdav_tools.valves.SANDBOX_DIR = "."
+        try:
+            await webdav_tools.mkdir("dotbox_bl")
+            await webdav_tools.write("dotbox_bl/hidden.txt", "nope")
+            await webdav_tools.write("dotbox_visible.txt", "ok")
+            webdav_tools.valves.FILE_BLACKLIST = "dotbox_bl"
+            try:
+                listing = await webdav_tools.ls("", detail=True)
+                assert listing["result"] == "True"
+                assert any("dotbox_visible.txt" in e for e in listing["data"])
+                assert not any("dotbox_bl" in e for e in listing["data"])
+            finally:
+                webdav_tools.valves.FILE_BLACKLIST = ""
+        finally:
+            webdav_tools.valves.SANDBOX_DIR = original
+
+    @pytest.mark.asyncio
+    async def test_dot_sandbox_mkdir_find_rm(self, webdav_tools):
+        original = webdav_tools.valves.SANDBOX_DIR
+        webdav_tools.valves.SANDBOX_DIR = "."
+        try:
+            mkdir_result = await webdav_tools.mkdir("dotbox_dir")
+            assert mkdir_result["result"] == "True"
+            await webdav_tools.write("dotbox_dir/inner.txt", "inner")
+            find_result = await webdav_tools.find("inner.txt")
+            assert find_result["result"] == "True"
+            assert "dotbox_dir/inner.txt" in find_result["data"]
+            rm_result = await webdav_tools.rm(["dotbox_dir"])
+            assert rm_result["result"] == "True"
+            assert all(r["result"] == "True" for r in rm_result["data"])
         finally:
             webdav_tools.valves.SANDBOX_DIR = original
 

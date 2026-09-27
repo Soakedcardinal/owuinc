@@ -23,7 +23,7 @@ def valves():
     from pydantic import BaseModel
 
     class MockValves(BaseModel):
-        SANDBOX_DIR: str = "/test/sandbox"
+        SANDBOX_DIR: str = "test/sandbox"
 
     return MockValves()
 
@@ -32,29 +32,29 @@ class TestValidatePathSanitization:
     """Test path normalization and whitespace handling"""
 
     def test_empty_path_returns_prefix(self, valves):
-        assert validate_path("", valves) == "/test/sandbox/"
+        assert validate_path("", valves) == "test/sandbox/"
 
     def test_whitespace_only_path_strips_to_empty(self, valves):
-        assert validate_path("   ", valves) == "/test/sandbox/"
+        assert validate_path("   ", valves) == "test/sandbox/"
 
     def test_path_with_trailing_slash(self, valves):
-        assert validate_path("foo/", valves) == "/test/sandbox/foo"
+        assert validate_path("foo/", valves) == "test/sandbox/foo"
 
     def test_path_with_leading_slash(self, valves):
         # Leading slash is stripped and treated as relative to sandbox
-        assert validate_path("/foo", valves) == "/test/sandbox/foo"
+        assert validate_path("/foo", valves) == "test/sandbox/foo"
 
     def test_dot_returns_prefix(self, valves):
-        assert validate_path(".", valves) == "/test/sandbox/"
+        assert validate_path(".", valves) == "test/sandbox/"
 
     def test_root_returns_prefix(self, valves):
-        assert validate_path("/", valves) == "/test/sandbox/"
+        assert validate_path("/", valves) == "test/sandbox/"
 
     def test_double_slashes_normalize(self, valves):
-        assert validate_path("foo//bar", valves) == "/test/sandbox/foo/bar"
+        assert validate_path("foo//bar", valves) == "test/sandbox/foo/bar"
 
     def test_dot_slash_resolves(self, valves):
-        assert validate_path("foo/./bar", valves) == "/test/sandbox/foo/bar"
+        assert validate_path("foo/./bar", valves) == "test/sandbox/foo/bar"
 
     def test_multiple_dots_slash_resolves_blocked(self, valves):
         # Note: Current implementation blocks "foo/../bar" because ".." is checked
@@ -68,7 +68,7 @@ class TestValidatePathSanitization:
             validate_path("foo/../../bar", valves)
 
     def test_path_with_trailing_whitespace(self, valves):
-        assert validate_path("foo  ", valves) == "/test/sandbox/foo"
+        assert validate_path("foo  ", valves) == "test/sandbox/foo"
 
 
 class TestValidatePathTraversalPrevention:
@@ -92,7 +92,7 @@ class TestValidatePathTraversalPrevention:
 
     def test_traversal_with_encoded_slash_returns_valid_path(self, valves):
         # %2F is URL-encoded slash, doesn't contain ".."
-        assert validate_path("foo%2F%2Fbar", valves) == "/test/sandbox/foo/bar"
+        assert validate_path("foo%2F%2Fbar", valves) == "test/sandbox/foo/bar"
 
 
 class TestValidatePathSandboxBoundary:
@@ -118,21 +118,21 @@ class TestValidatePathUrlEncoding:
     """Test URL encoding is properly decoded before validation"""
 
     def test_encoded_slash_decodes(self, valves):
-        assert validate_path("foo%2Fbar", valves) == "/test/sandbox/foo/bar"
+        assert validate_path("foo%2Fbar", valves) == "test/sandbox/foo/bar"
 
     def test_encoded_percent_decodes(self, valves):
         # %252F decodes to %2F, then normpath resolves to /
-        assert validate_path("foo%252Fbar", valves) == "/test/sandbox/foo/bar"
+        assert validate_path("foo%252Fbar", valves) == "test/sandbox/foo/bar"
 
     def test_encoded_dot_does_not_bypass_traversal(self, valves):
         with pytest.raises(Exception, match="traversal not allowed"):
             validate_path("%2e%2e%2fetc", valves)
 
     def test_encoded_space_in_path(self, valves):
-        assert validate_path("foo%20bar", valves) == "/test/sandbox/foo bar"
+        assert validate_path("foo%20bar", valves) == "test/sandbox/foo bar"
 
     def test_encoded_ampersand_in_path(self, valves):
-        assert validate_path("foo%26bar", valves) == "/test/sandbox/foo&bar"
+        assert validate_path("foo%26bar", valves) == "test/sandbox/foo&bar"
 
 
 class TestValidatePathComplexScenarios:
@@ -149,25 +149,25 @@ class TestValidatePathComplexScenarios:
             validate_path("a/b/c/../../d", valves)
 
     def test_multiple_encoded_segments(self, valves):
-        assert validate_path("a%2Fb%2Fc", valves) == "/test/sandbox/a/b/c"
+        assert validate_path("a%2Fb%2Fc", valves) == "test/sandbox/a/b/c"
 
     def test_path_with_special_characters(self, valves):
         assert (
-            validate_path("foo-bar_baz.txt", valves) == "/test/sandbox/foo-bar_baz.txt"
+            validate_path("foo-bar_baz.txt", valves) == "test/sandbox/foo-bar_baz.txt"
         )
 
     def test_long_nested_path(self, valves):
-        assert validate_path("a/b/c/d/e/f/g", valves) == "/test/sandbox/a/b/c/d/e/f/g"
+        assert validate_path("a/b/c/d/e/f/g", valves) == "test/sandbox/a/b/c/d/e/f/g"
 
     def test_path_at_sandbox_root(self, valves):
-        assert validate_path("sandbox", valves) == "/test/sandbox/sandbox"
+        assert validate_path("sandbox", valves) == "test/sandbox/sandbox"
 
     def test_path_with_multiple_trailing_slashes(self, valves):
         # normpath removes trailing slashes
-        assert validate_path("foo///", valves) == "/test/sandbox/foo"
+        assert validate_path("foo///", valves) == "test/sandbox/foo"
 
     def test_path_with_leading_and_trailing_whitespace(self, valves):
-        assert validate_path("  foo/bar  ", valves) == "/test/sandbox/foo/bar"
+        assert validate_path("  foo/bar  ", valves) == "test/sandbox/foo/bar"
 
 
 class TestIsWhitelisted:
@@ -196,24 +196,22 @@ class TestValidatePathLeadingSlash:
     """Test that leading slashes are stripped for sandbox confinement"""
 
     def test_absolute_path_strips_leading_slash(self, valves):
-        # /etc/passwd should map to /test/sandbox/etc/passwd, not system root
-        assert validate_path("/etc/passwd", valves) == "/test/sandbox/etc/passwd"
+        # /etc/passwd should map to test/sandbox/etc/passwd, not system root
+        assert validate_path("/etc/passwd", valves) == "test/sandbox/etc/passwd"
 
     def test_root_slash_returns_sandbox_root(self, valves):
         # "/" maps to sandbox root
-        assert validate_path("/", valves) == "/test/sandbox/"
+        assert validate_path("/", valves) == "test/sandbox/"
 
     def test_deep_absolute_path_strips_leading_slash(self, valves):
-        # /var/log/syslog should map to /test/sandbox/var/log/syslog
-        assert (
-            validate_path("/var/log/syslog", valves) == "/test/sandbox/var/log/syslog"
-        )
+        # /var/log/syslog should map to test/sandbox/var/log/syslog
+        assert validate_path("/var/log/syslog", valves) == "test/sandbox/var/log/syslog"
 
     def test_nested_absolute_path_strips_leading_slash(self, valves):
-        # /Documents/src/main.py should map to /test/sandbox/Documents/src/main.py
+        # /Documents/src/main.py should map to test/sandbox/Documents/src/main.py
         assert (
             validate_path("/Documents/src/main.py", valves)
-            == "/test/sandbox/Documents/src/main.py"
+            == "test/sandbox/Documents/src/main.py"
         )
 
 
@@ -242,11 +240,11 @@ class TestValidatePathSecurityEdgeCases:
 
     def test_only_dot_dots_allowed(self, valves):
         """'...' is a legal name; only '..' segments are traversal."""
-        assert validate_path(".../file", valves) == "/test/sandbox/.../file"
+        assert validate_path(".../file", valves) == "test/sandbox/.../file"
 
     def test_four_dots_allowed(self, valves):
         """A file literally named '....' is legal."""
-        assert validate_path("....", valves) == "/test/sandbox/...."
+        assert validate_path("....", valves) == "test/sandbox/...."
 
 
 class TestIsBlacklisted:
@@ -528,6 +526,82 @@ class TestValidatePathEmptySandbox:
         assert validate_path("", valves) == "/"
         assert validate_path(".", valves) == "/"
         assert validate_path("/", valves) == "/"
+
+
+class TestNormalizeSandboxDir:
+    """_normalize_sandbox_dir collapses root-equivalent valve values to ''."""
+
+    def test_root_equivalent_values(self):
+        from owuinc.owuinc import _normalize_sandbox_dir
+
+        for raw in ("", "  ", ".", " . ", "/", "./", "/./", "/.", "//"):
+            assert _normalize_sandbox_dir(raw) == "", raw
+
+    def test_none_is_root(self):
+        from owuinc.owuinc import _normalize_sandbox_dir
+
+        assert _normalize_sandbox_dir(None) == ""
+
+    def test_regular_dirs_unchanged(self):
+        from owuinc.owuinc import _normalize_sandbox_dir
+
+        assert _normalize_sandbox_dir("owuinc") == "owuinc"
+        assert _normalize_sandbox_dir("owuinc/") == "owuinc"
+        assert _normalize_sandbox_dir("/owuinc") == "owuinc"
+        assert _normalize_sandbox_dir("  owuinc  ") == "owuinc"
+
+    def test_dot_segments_collapsed(self):
+        from owuinc.owuinc import _normalize_sandbox_dir
+
+        assert _normalize_sandbox_dir("./owuinc") == "owuinc"
+        assert _normalize_sandbox_dir("owuinc/./sub") == "owuinc/sub"
+
+    def test_dotfile_names_not_root(self):
+        from owuinc.owuinc import _normalize_sandbox_dir
+
+        # Dots inside a name are not the root; only a bare '.' is.
+        assert _normalize_sandbox_dir("...") == "..."
+        assert _normalize_sandbox_dir("..hidden") == "..hidden"
+
+
+class TestValidatePathDotSandbox:
+    """A SANDBOX_DIR of '.' (the UI-reachable root selector) behaves
+    exactly like an empty SANDBOX_DIR: clean root paths, traversal blocked."""
+
+    def _valves(self, sandbox: str):
+        from pydantic import BaseModel
+
+        class MockValves(BaseModel):
+            SANDBOX_DIR: str = sandbox
+
+        return MockValves()
+
+    def test_dot_sandbox_path_returns_root_path(self):
+        result = validate_path("file.txt", self._valves("."))
+        assert result == "/file.txt"
+
+    def test_dot_sandbox_nested_path(self):
+        result = validate_path("a/b/c.txt", self._valves("."))
+        assert result == "/a/b/c.txt"
+
+    def test_dot_sandbox_no_dot_segment_in_prefix(self):
+        # Regression: '.' must not leak into the URL as a './' segment.
+        assert validate_path("file.txt", self._valves(".")) == "/file.txt"
+        assert validate_path("", self._valves(".")) == "/"
+
+    def test_dot_sandbox_root_forms(self):
+        valves = self._valves(".")
+        assert validate_path("", valves) == "/"
+        assert validate_path(".", valves) == "/"
+        assert validate_path("/", valves) == "/"
+
+    def test_dot_sandbox_traversal_still_blocked(self):
+        with pytest.raises(Exception, match="traversal not allowed"):
+            validate_path("../etc/passwd", self._valves("."))
+
+    def test_slash_sandbox_same_as_empty(self):
+        # '/' is another root-equivalent spelling (e.g. saved via API).
+        assert validate_path("file.txt", self._valves("/")) == "/file.txt"
 
 
 # ============================================================
@@ -1078,6 +1152,47 @@ class TestCheckBlacklistedRecursive:
         )
         await t._check_blacklisted_recursive(client, "owuinc/dir")
 
+    async def test_blacklisted_descendant_denies_full_webdav_href(self):
+        # Real servers return full WebDAV hrefs as listing paths, not
+        # sandbox-anchored ones. Protection must still fire on them.
+        t = self._tools("dir/secret")
+        client = _StaticDavClient(
+            [
+                {"path": "remote.php/dav/files/u/owuinc/dir"},
+                {"path": "remote.php/dav/files/u/owuinc/dir/ok.txt"},
+                {"path": "remote.php/dav/files/u/owuinc/dir/secret/token.txt"},
+            ]
+        )
+        with pytest.raises(ValueError, match="Access denied"):
+            await t._check_blacklisted_recursive(client, "owuinc/dir")
+
+    async def test_clean_tree_allowed_full_webdav_href(self):
+        t = self._tools("dir/secret")
+        client = _StaticDavClient(
+            [
+                {"path": "remote.php/dav/files/u/owuinc/dir"},
+                {"path": "remote.php/dav/files/u/owuinc/dir/ok.txt"},
+            ]
+        )
+        await t._check_blacklisted_recursive(client, "owuinc/dir")
+
+    async def test_blacklisted_descendant_denies_root_sandbox_full_href(self):
+        # Root sandbox ('.'): the files root is the anchor, and a blacklisted
+        # descendant anywhere in the account tree must still be denied.
+        t = Tools()
+        t.valves.SANDBOX_DIR = "."
+        t.valves.WEBDAV_USERNAME = "u"
+        t.valves.FILE_BLACKLIST = "box/secretdir"
+        client = _StaticDavClient(
+            [
+                {"path": "remote.php/dav/files/u/box"},
+                {"path": "remote.php/dav/files/u/box/ok.txt"},
+                {"path": "remote.php/dav/files/u/box/secretdir/token.txt"},
+            ]
+        )
+        with pytest.raises(ValueError, match="Access denied"):
+            await t._check_blacklisted_recursive(client, "box")
+
     async def test_empty_blacklist_skips_listing(self):
         t = self._tools("")
         await t._check_blacklisted_recursive(_FailingDavClient(), "owuinc/dir")
@@ -1311,4 +1426,32 @@ class TestHrefRel:
 
     def test_plain_name_is_identity(self):
         t = self._tools()
+        assert t._href_rel("a.md") == "a.md"
+
+    def _root_tools(self):
+        from owuinc.owuinc import Tools
+
+        t = Tools()
+        t.valves.SANDBOX_DIR = "."
+        t.valves.WEBDAV_USERNAME = "u"
+        return t
+
+    def test_root_sandbox_anchors_on_webdav_files_root(self):
+        t = self._root_tools()
+        # The sandbox is the whole user file root, so the WebDAV files root is
+        # the anchor, not the (empty) sandbox prefix.
+        assert t._href_rel("remote.php/dav/files/u/docs/a.md") == "docs/a.md"
+        assert t._href_rel("/remote.php/dav/files/u/a.md") == "a.md"
+
+    def test_root_sandbox_does_not_strip_a_segment(self):
+        t = self._root_tools()
+        # Regression: with prefix '/' a naive split on '/' would strip a real
+        # segment ('remote.php'). The files-root anchor must be used instead.
+        assert (
+            t._href_rel("remote.php/dav/files/u/dotbox/inner.txt") == "dotbox/inner.txt"
+        )
+
+    def test_root_sandbox_relative_passthrough(self):
+        t = self._root_tools()
+        assert t._href_rel("dotbox/inner.txt") == "dotbox/inner.txt"
         assert t._href_rel("a.md") == "a.md"

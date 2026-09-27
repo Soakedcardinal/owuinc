@@ -141,6 +141,29 @@ def _webdav_path(p: str) -> str:
     return p if p.startswith("/") else "/" + p
 
 
+def _normalize_sandbox_dir(raw: str) -> str:
+    """Normalize the SANDBOX_DIR valve value for path prefixing.
+
+    Strips surrounding whitespace, collapses dot segments and redundant
+    slashes, and drops the leading slash (the valve docs already call it
+    optional). Values that name the Nextcloud root ("", ".", "/", "./",
+    "/./", ...) normalize to "" — the single "no sandbox" representation —
+    so root access yields clean "/file.txt" paths instead of "./"-segment
+    URLs whose resolution depends on the WebDAV server's dot-segment
+    handling.
+
+    The OpenWebUI valve UI renders plain-string valves as a required text
+    field, so a blank value cannot be saved from there; and the "Default"
+    button resets to the pydantic default ("owuinc"), not the root. "." is
+    therefore the UI-reachable way to select the root and is treated
+    identically to an empty value.
+    """
+    value = os.path.normpath(str(raw or "").strip()).strip("/")
+    if value in ("", "."):
+        return ""
+    return value
+
+
 def validate_path(path, valves):
     """Validate and normalize file paths for WebDAV operations.
 
@@ -151,7 +174,8 @@ def validate_path(path, valves):
       to sandbox root ("/etc/passwd" -> "owuinc/etc/passwd")
 
     NOTE: Read-only here — paths are used only to download files from WebDAV,
-    so SANDBOX_DIR is never created.
+    so SANDBOX_DIR is never created. A SANDBOX_DIR of "" or "." means the
+    Nextcloud root (prefix "/").
 
     Args:
         path: User-provided path (can be relative, absolute, or empty)
@@ -172,7 +196,7 @@ def validate_path(path, valves):
         validate_path("/etc", valves)       # -> "owuinc/etc" (strips leading /)
         validate_path("../etc", valves)     # -> Exception (traversal blocked)
     """
-    prefix = valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+    prefix = _normalize_sandbox_dir(valves.SANDBOX_DIR) + "/"
 
     if not path:
         return prefix
@@ -225,7 +249,7 @@ class Filter:
         SANDBOX_DIR: str = Field(
             default="owuinc",
             description=(
-                "Directory containing system files on Nextcloud. Leading / will be stripped. Must match owuinc tool's SANDBOX_DIR."
+                "Directory containing system files on Nextcloud. Leading / will be stripped. Must match owuinc tool's SANDBOX_DIR. Use '.' for the Nextcloud root: the valve UI cannot save a blank value."
             ),
         )
         FILE_BLACKLIST: str = Field(

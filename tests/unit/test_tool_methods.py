@@ -271,6 +271,28 @@ class TestSandboxPrefix:
         t.valves = MockValves()
         assert t.sandbox_prefix == "/"
 
+    def test_dot_sandbox_prefix_is_root(self):
+        from pydantic import BaseModel
+
+        class MockValves(BaseModel):
+            SANDBOX_DIR: str = "."
+            FILE_BLACKLIST: str = ""
+
+        t = object.__new__(Tools)
+        t.valves = MockValves()
+        assert t.sandbox_prefix == "/"
+
+    def test_slash_sandbox_prefix_is_root(self):
+        from pydantic import BaseModel
+
+        class MockValves(BaseModel):
+            SANDBOX_DIR: str = "/"
+            FILE_BLACKLIST: str = ""
+
+        t = object.__new__(Tools)
+        t.valves = MockValves()
+        assert t.sandbox_prefix == "/"
+
 
 # ---------------------------------------------------------------------------
 # is_blacklisted — additional edge cases

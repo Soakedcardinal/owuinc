@@ -349,7 +349,7 @@ def _invalidate_caches(valves) -> None:
         return
     base = getattr(valves, "NEXTCLOUD_BASE_URL", "")
     _CALENDAR_URL_CACHE.pop((base, getattr(valves, "NEXTCLOUD_USERNAME", "")), None)
-    sandbox = str(getattr(valves, "SANDBOX_DIR", "")).strip().rstrip("/")
+    sandbox = _normalize_sandbox_dir(getattr(valves, "SANDBOX_DIR", ""))
     _SANDBOX_VERIFIED.discard((base, getattr(valves, "WEBDAV_USERNAME", ""), sandbox))
 
 
@@ -585,6 +585,29 @@ def _strip_leading_slash(p: str) -> str:
     return p.lstrip("/") if p else p
 
 
+def _normalize_sandbox_dir(raw: str) -> str:
+    """Normalize the SANDBOX_DIR valve value for path prefixing.
+
+    Strips surrounding whitespace, collapses dot segments and redundant
+    slashes, and drops the leading slash (the valve docs already call it
+    optional). Values that name the Nextcloud root ("", ".", "/", "./",
+    "/./", ...) normalize to "" — the single "no sandbox" representation —
+    so root access yields clean "/file.txt" paths instead of "./"-segment
+    URLs whose resolution depends on the WebDAV server's dot-segment
+    handling.
+
+    The OpenWebUI valve UI renders plain-string valves as a required text
+    field, so a blank value cannot be saved from there; and the "Default"
+    button resets to the pydantic default ("owuinc"), not the root. "." is
+    therefore the UI-reachable way to select the root and is treated
+    identically to an empty value.
+    """
+    value = os.path.normpath(str(raw or "").strip()).strip("/")
+    if value in ("", "."):
+        return ""
+    return value
+
+
 def validate_path(path, valves):
     """Validate and normalize file paths for WebDAV operations.
 
@@ -595,6 +618,8 @@ def validate_path(path, valves):
       to sandbox root ("/etc/passwd" -> "owuinc/etc/passwd")
 
     NOTE: SANDBOX_DIR is auto-created on first use if it doesn't exist.
+    A SANDBOX_DIR of "" or "." means the Nextcloud root: the prefix is
+    "/" and no directory is created.
 
     Args:
         path: User-provided path (can be relative, absolute, or empty)
@@ -615,7 +640,7 @@ def validate_path(path, valves):
         validate_path("/etc", valves)     # -> "owuinc/etc" (strips leading /)
         validate_path("../etc", valves)   # -> Exception (traversal blocked)
     """
-    prefix = valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+    prefix = _normalize_sandbox_dir(valves.SANDBOX_DIR) + "/"
 
     if not path:
         return prefix
@@ -962,7 +987,11 @@ class Tools:
         SANDBOX_DIR: str = Field(
             default="owuinc",
             description=(
-                "Directory for all file operations. Leading `/` is optional and will be stripped. Directory is auto-created if missing. Leave empty to use Nextcloud root."
+                "Directory for all file operations. Leading `/` is optional and "
+                "will be stripped. Directory is auto-created if missing. Set to "
+                "'.' to operate on the Nextcloud root (no sandbox): the valve UI "
+                "cannot save a blank value, and 'Default' resets to 'owuinc', "
+                "not the root."
             ),
         )
         DEFAULT_CALENDAR: str = Field(
@@ -1287,7 +1316,7 @@ class Tools:
 
     async def _ensure_sandbox(self, client):
         """Ensure sandbox directory exists (must be called within webdav context)."""
-        sandbox = self.valves.SANDBOX_DIR.strip().rstrip("/")
+        sandbox = _normalize_sandbox_dir(self.valves.SANDBOX_DIR)
         if not sandbox:
             return
         key = (
@@ -1416,12 +1445,18 @@ class Tools:
         slash paths; those are skipped. Any other descendant whose
         sandbox-relative path matches an entry of ``paths`` raises
         ValueError(deny).
+
+        Real servers return full WebDAV hrefs ('remote.php/dav/files/...')
+        as listing paths, which _get_rel_path cannot anchor — so both the
+        root and each item are converted with _href_rel, which resolves
+        full hrefs, sandbox-anchored paths, and plain names alike.
         """
+        root_rel = self._href_rel(root)
         for item_path in item_paths:
-            item = _strip_leading_slash(str(item_path)).rstrip("/")
-            if not item or item == root:
+            item = self._href_rel(item_path)
+            if not item or item == root_rel:
                 continue
-            if is_blacklisted(paths, self._get_rel_path(item)):
+            if is_blacklisted(paths, item):
                 raise ValueError(deny)
 
     async def _check_blacklisted_recursive(self, client, full_path: str) -> None:
@@ -1533,14 +1568,24 @@ class Tools:
 
     @property
     def sandbox_prefix(self) -> str:
-        """Return the sandbox prefix string (e.g., 'owuinc/')."""
-        return self.valves.SANDBOX_DIR.strip().rstrip("/") + "/"
+        """Return the sandbox prefix string (e.g., 'owuinc/'; '/' for the root)."""
+        return _normalize_sandbox_dir(self.valves.SANDBOX_DIR) + "/"
 
     def _get_rel_path(self, full_path: str) -> str:
         """Convert a sandbox-prefixed full_path to a relative path."""
         if full_path.startswith(self.sandbox_prefix):
             return full_path[len(self.sandbox_prefix) :]
         return full_path
+
+    def _webdav_files_root(self) -> str:
+        """The WebDAV files root for this user, as an href anchor.
+
+        This is the path a full WebDAV href ('remote.php/dav/files/<user>/...')
+        must be split on to recover the user-file-root-relative path. It is the
+        meaningful anchor for the root sandbox, where the sandbox prefix is just
+        '/' and carries no position of its own.
+        """
+        return f"remote.php/dav/files/{self.valves.WEBDAV_USERNAME}/"
 
     def _href_rel(self, href: str) -> str:
         """Convert a WebDAV listing href to a sandbox-relative path.
@@ -1557,9 +1602,20 @@ class Tools:
         href that cannot be proven to live under the sandbox degrades to an
         odd-looking name rather than to a plausible one. Trailing slashes
         are removed.
+
+        For the root sandbox (prefix '/'), the anchor is the WebDAV files root
+        instead: '/' appears in every href, so splitting on it would strip a
+        real path segment rather than the sandbox.
         """
         raw = _strip_leading_slash(str(href)).rstrip("/")
         prefix = self.sandbox_prefix
+        if prefix == "/":
+            anchor = self._webdav_files_root()
+            if raw.startswith(anchor):
+                return raw[len(anchor) :]
+            if anchor in raw:
+                return raw.split(anchor, 1)[1]
+            return raw
         if raw.startswith(prefix):
             return raw[len(prefix) :]
         if prefix in raw:
@@ -1834,7 +1890,7 @@ class Tools:
             # The listing returns full hrefs (rooted at
             # /remote.php/dav/files/<user>/), so fetch the listed
             # path itself instead of re-deriving it from rel.
-            root_prefix = f"remote.php/dav/files/{self.valves.WEBDAV_USERNAME}/"
+            root_prefix = self._webdav_files_root()
 
             async def search_one(full_path: str) -> None:
                 rel = self._href_rel(full_path)
