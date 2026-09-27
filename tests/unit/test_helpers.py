@@ -3,6 +3,9 @@ Helper function tests
 Tests sandbox security, path traversal prevention, and normalization
 """
 
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
 import pytest
 
 from owuinc.owuinc import (
@@ -237,16 +240,13 @@ class TestValidatePathSecurityEdgeCases:
         valves = MockValves()
         assert validate_path("Documents/file.py", valves) == "owuinc/Documents/file.py"
 
-    def test_only_dot_dots_blocked(self, valves):
-        """Multiple consecutive dots should be blocked if they contain .."""
-        # ".../file" contains ".." so it's blocked
-        with pytest.raises(Exception, match="traversal not allowed"):
-            validate_path(".../file", valves)
+    def test_only_dot_dots_allowed(self, valves):
+        """'...' is a legal name; only '..' segments are traversal."""
+        assert validate_path(".../file", valves) == "/test/sandbox/.../file"
 
-    def test_four_dots_blocked(self, valves):
-        """Four dots contain .. and should be blocked"""
-        with pytest.raises(Exception, match="traversal not allowed"):
-            validate_path("....", valves)
+    def test_four_dots_allowed(self, valves):
+        """A file literally named '....' is legal."""
+        assert validate_path("....", valves) == "/test/sandbox/...."
 
 
 class TestIsBlacklisted:
@@ -344,6 +344,13 @@ class TestFormatSize:
     def test_none_input(self, tools):
         assert tools._format_size(None) == "n/a"  # type: ignore
 
+    def test_empty_size_is_na(self, tools):
+        # Collections carry no getcontentlength; the server returns "".
+        assert tools._format_size("") == "n/a"
+
+    def test_whitespace_size_is_na(self, tools):
+        assert tools._format_size("   ") == "n/a"
+
 
 class TestFormatDatetime:
     """Test _format_datetime helper"""
@@ -426,6 +433,58 @@ class TestParseReminders:
         assert result[2] == {"minutes": 60, "action": "DISPLAY"}
 
 
+class TestParseRrule:
+    """Test _parse_rrule validation and round-trip serialization"""
+
+    def test_valid_weekly_rule(self):
+        from owuinc.owuinc import _parse_rrule
+
+        parsed = _parse_rrule("FREQ=WEEKLY;BYDAY=MO")
+        assert parsed["FREQ"] in ("WEEKLY", ["WEEKLY"])
+
+    def test_strips_rrule_prefix(self):
+        from owuinc.owuinc import _parse_rrule
+
+        parsed = _parse_rrule("RRULE:FREQ=DAILY;COUNT=3")
+        assert parsed["FREQ"] in ("DAILY", ["DAILY"])
+
+    def test_missing_freq_raises(self):
+        import pytest
+
+        from owuinc.owuinc import _parse_rrule
+
+        with pytest.raises(ValueError, match="FREQ"):
+            _parse_rrule("BYDAY=MO")
+
+    def test_garbage_freq_raises(self):
+        import pytest
+
+        from owuinc.owuinc import _parse_rrule
+
+        with pytest.raises(ValueError):
+            _parse_rrule("FREQ=WEEKLYLY")
+
+    def test_empty_raises(self):
+        import pytest
+
+        from owuinc.owuinc import _parse_rrule
+
+        with pytest.raises(ValueError, match="empty RRULE"):
+            _parse_rrule("   ")
+
+    def test_round_trip_serializes_unescaped(self):
+        """Parsed vRecur serializes via add() without escaped separators."""
+        from icalendar import Event
+
+        from owuinc.owuinc import _parse_rrule
+
+        e = Event()
+        e.add("rrule", _parse_rrule("FREQ=WEEKLY;BYDAY=MO"))
+        ical = e.to_ical().decode()
+        assert "RRULE:FREQ=WEEKLY;BYDAY=MO" in ical
+        assert "\\;" not in ical
+
+
 class TestValidatePathEmptySandbox:
     """Test validate_path with empty SANDBOX_DIR (no sandbox confinement)."""
 
@@ -469,3 +528,787 @@ class TestValidatePathEmptySandbox:
         assert validate_path("", valves) == "/"
         assert validate_path(".", valves) == "/"
         assert validate_path("/", valves) == "/"
+
+
+# ============================================================
+# _resolve_timezone
+# ============================================================
+class TestResolveTimezone:
+    def test_user_timezone_used(self):
+        from owuinc.owuinc import _resolve_timezone
+
+        assert str(_resolve_timezone({"timezone": "Europe/Berlin"})) == "Europe/Berlin"
+
+    def test_none_user_falls_back(self):
+        from owuinc.owuinc import _resolve_timezone
+
+        assert str(_resolve_timezone(None, "America/New_York")) == "America/New_York"
+
+    def test_missing_key_falls_back(self):
+        from owuinc.owuinc import _resolve_timezone
+
+        assert str(_resolve_timezone({}, "Europe/Paris")) == "Europe/Paris"
+
+    def test_empty_timezone_falls_back(self):
+        from owuinc.owuinc import _resolve_timezone
+
+        assert (
+            str(_resolve_timezone({"timezone": ""}, "Europe/Paris")) == "Europe/Paris"
+        )
+
+    def test_invalid_timezone_falls_back_utc(self):
+        from owuinc.owuinc import _resolve_timezone
+
+        assert str(_resolve_timezone({"timezone": "Mars/Olympus"})) == "UTC"
+
+
+# ============================================================
+# _get_parent_uid
+# ============================================================
+class TestGetParentUid:
+    @staticmethod
+    def _todo(props: str):
+        from icalendar import Calendar
+
+        cal = Calendar.from_ical(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//EN\r\n"
+            "BEGIN:VTODO\r\nUID:me\r\nSUMMARY:x\r\n"
+            + props
+            + "END:VTODO\r\nEND:VCALENDAR\r\n"
+        )
+        return cal.walk("VTODO")[0]
+
+    def test_no_related_to_returns_none(self):
+        from owuinc.owuinc import _get_parent_uid
+
+        assert _get_parent_uid(self._todo("")) is None
+
+    def test_missing_reltype_means_parent(self):
+        from owuinc.owuinc import _get_parent_uid
+
+        comp = self._todo("RELATED-TO:parent1\r\n")
+        assert _get_parent_uid(comp) == "parent1"
+
+    def test_explicit_parent_reltype(self):
+        from owuinc.owuinc import _get_parent_uid
+
+        comp = self._todo("RELATED-TO;RELTYPE=PARENT:parent2\r\n")
+        assert _get_parent_uid(comp) == "parent2"
+
+    def test_child_reltype_ignored(self):
+        from owuinc.owuinc import _get_parent_uid
+
+        comp = self._todo("RELATED-TO;RELTYPE=CHILD:other\r\n")
+        assert _get_parent_uid(comp) is None
+
+    def test_parent_found_after_child_reverse_relation(self):
+        from owuinc.owuinc import _get_parent_uid
+
+        comp = self._todo(
+            "RELATED-TO;RELTYPE=CHILD:caldav-xyz\r\n"
+            "RELATED-TO;RELTYPE=PARENT:real-parent\r\n"
+        )
+        assert _get_parent_uid(comp) == "real-parent"
+
+    def test_folded_long_uid_not_truncated(self):
+        """Regex-based extraction truncated folded (75-octet wrapped) UIDs."""
+        from owuinc.owuinc import _get_parent_uid
+
+        uid = "a" * 70 + "-" + "b" * 20
+        folded = f"RELATED-TO;RELTYPE=PARENT:{uid[:70]}\r\n {uid[70:]}\r\n"
+        assert _get_parent_uid(self._todo(folded)) == uid
+
+
+# ============================================================
+# _to_aware
+# ============================================================
+class TestToAware:
+    def test_date_becomes_midnight_aware(self):
+        from datetime import date
+        from zoneinfo import ZoneInfo
+
+        from owuinc.owuinc import _to_aware
+
+        result = _to_aware(date(2026, 9, 1), ZoneInfo("UTC"))
+        assert result.hour == 0 and result.tzinfo is not None
+
+    def test_naive_datetime_gets_tz(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from owuinc.owuinc import _to_aware
+
+        result = _to_aware(datetime(2026, 9, 1, 9, 0), ZoneInfo("UTC"))
+        assert result.tzinfo is not None
+
+    def test_aware_datetime_unchanged(self):
+        from datetime import datetime, timezone
+
+        from owuinc.owuinc import _to_aware
+
+        dt = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
+        assert _to_aware(dt, timezone.utc) == dt
+
+
+# ============================================================
+# _expand_occurrences
+# ============================================================
+class TestExpandOccurrences:
+    BASE = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
+
+    def test_daily_count_within_window(self):
+        from owuinc.owuinc import _expand_occurrences
+
+        res = _expand_occurrences(
+            "FREQ=DAILY;COUNT=5", self.BASE, self.BASE, self.BASE + timedelta(days=10)
+        )
+        assert [s for s, _ in res] == [self.BASE + timedelta(days=i) for i in range(5)]
+        assert all(r is None for _, r in res)
+
+    def test_occurrence_at_window_start_included(self):
+        """Old code used rrule.after(now, inc=False): an event starting
+        exactly now was skipped."""
+        from owuinc.owuinc import _expand_occurrences
+
+        res = _expand_occurrences(
+            "FREQ=DAILY", self.BASE, self.BASE, self.BASE + timedelta(days=2)
+        )
+        assert res[0][0] == self.BASE
+
+    def test_no_occurrences_outside_window(self):
+        from owuinc.owuinc import _expand_occurrences
+
+        res = _expand_occurrences(
+            "FREQ=WEEKLY", self.BASE, self.BASE, self.BASE + timedelta(days=3)
+        )
+        assert len(res) == 1
+
+    def test_exdate_removes_instance(self):
+        from owuinc.owuinc import _expand_occurrences
+
+        res = _expand_occurrences(
+            "FREQ=DAILY;COUNT=3",
+            self.BASE,
+            self.BASE,
+            self.BASE + timedelta(days=10),
+            exdates=[self.BASE + timedelta(days=1)],
+        )
+        assert [s for s, _ in res] == [self.BASE, self.BASE + timedelta(days=2)]
+
+    def test_override_replaces_instance(self):
+        from owuinc.owuinc import _expand_occurrences
+
+        moved = self.BASE + timedelta(hours=3)
+        res = _expand_occurrences(
+            "FREQ=DAILY;COUNT=2",
+            self.BASE,
+            self.BASE,
+            self.BASE + timedelta(days=10),
+            overrides={self.BASE: moved},
+        )
+        assert res[0] == (moved, self.BASE)
+        assert res[1][0] == self.BASE + timedelta(days=1)
+
+    def test_cancelled_override_drops_instance(self):
+        from owuinc.owuinc import _expand_occurrences
+
+        res = _expand_occurrences(
+            "FREQ=DAILY;COUNT=2",
+            self.BASE,
+            self.BASE,
+            self.BASE + timedelta(days=10),
+            overrides={self.BASE: None},
+        )
+        assert [s for s, _ in res] == [self.BASE + timedelta(days=1)]
+
+    def test_override_into_window_from_outside(self):
+        from owuinc.owuinc import _expand_occurrences
+
+        res = _expand_occurrences(
+            "FREQ=DAILY",
+            self.BASE,
+            self.BASE + timedelta(hours=1),
+            self.BASE + timedelta(hours=3),
+            overrides={self.BASE: self.BASE + timedelta(hours=2)},
+        )
+        assert res == [(self.BASE + timedelta(hours=2), self.BASE)]
+
+
+# ============================================================
+# _render_recurring_series
+# ============================================================
+class TestRenderRecurringSeries:
+    """Override/EXDATE matching on components shaped like Nextcloud serves
+    them: TZID representations that differ from the master's DTSTART,
+    floating vs aware values, overrides without DTEND, cancelled instances,
+    and all-day series."""
+
+    @staticmethod
+    def _ev(**props):
+        from icalendar import Event
+
+        e = Event()
+        for key, value in props.items():
+            # `rid` is shorthand for the RECURRENCE-ID property (not a valid
+            # python identifier as "recurrence-id").
+            e.add("recurrence-id" if key == "rid" else key, value)
+        return e
+
+    @staticmethod
+    def _rrule(text: str):
+        from icalendar import vRecur
+
+        return vRecur(text)
+
+    @staticmethod
+    def _render(comp, siblings, tz_name, base=None):
+        from zoneinfo import ZoneInfo
+
+        from owuinc.owuinc import _render_recurring_series
+
+        tz = ZoneInfo(tz_name)
+        window_start = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        return _render_recurring_series(
+            comp,
+            siblings,
+            tz,
+            window_start,
+            window_start + timedelta(days=30),
+            base or {},
+        )
+
+    def test_override_with_foreign_tzid_applies(self):
+        """Master in UTC, RECURRENCE-ID in America/Los_Angeles: the override
+        must still match its instance by absolute instant."""
+        la = ZoneInfo("America/Los_Angeles")
+        master = self._ev(
+            uid="s1",
+            summary="Standup",
+            dtstart=datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
+            dtend=datetime(2026, 10, 1, 13, 0, tzinfo=timezone.utc),
+            rrule=self._rrule("FREQ=DAILY;COUNT=4"),
+        )
+        # 10-02 12:00Z = 05:00 LA; moved to 15:00 LA, no DTEND on override.
+        override = self._ev(
+            uid="s1",
+            summary="Standup (moved)",
+            rid=datetime(2026, 10, 2, 5, 0, tzinfo=la),
+            dtstart=datetime(2026, 10, 2, 15, 0, tzinfo=la),
+        )
+        res = self._render(master, [master, override], "UTC")
+        assert [datetime.fromisoformat(r["dtstart"]) for r in res] == [
+            datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
+            datetime(2026, 10, 2, 15, 0, tzinfo=la),
+            datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc),
+            datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc),
+        ]
+        moved = res[1]
+        assert moved["summary"] == "Standup (moved)"
+        # No DTEND on the override: the master's 1h duration applies.
+        assert datetime.fromisoformat(moved["dtend"]) == datetime(
+            2026, 10, 2, 23, 0, tzinfo=timezone.utc
+        )
+
+    def test_floating_master_with_aware_override(self):
+        """Floating master DTSTART interpreted in the display tz; override
+        stored in UTC. 12:00 NY wall = 16:00Z (EDT)."""
+        master = self._ev(
+            uid="s2",
+            summary="Floaty",
+            dtstart=datetime(2026, 10, 1, 12, 0),
+            rrule=self._rrule("FREQ=DAILY;COUNT=3"),
+        )
+        override = self._ev(
+            uid="s2",
+            summary="Floaty (moved)",
+            rid=datetime(2026, 10, 2, 16, 0, tzinfo=timezone.utc),
+            dtstart=datetime(2026, 10, 2, 18, 0, tzinfo=timezone.utc),
+        )
+        res = self._render(master, [master, override], "America/New_York")
+        assert [datetime.fromisoformat(r["dtstart"]) for r in res] == [
+            datetime(2026, 10, 1, 16, 0, tzinfo=timezone.utc),
+            datetime(2026, 10, 2, 18, 0, tzinfo=timezone.utc),
+            datetime(2026, 10, 3, 16, 0, tzinfo=timezone.utc),
+        ]
+
+    def test_exdate_with_foreign_tzid_drops_instance(self):
+        la = ZoneInfo("America/Los_Angeles")
+        master = self._ev(
+            uid="s3",
+            summary="Ex",
+            dtstart=datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
+            dtend=datetime(2026, 10, 1, 13, 0, tzinfo=timezone.utc),
+            rrule=self._rrule("FREQ=DAILY;COUNT=4"),
+            # 12:00Z expressed in LA wall time
+            exdate=[datetime(2026, 10, 2, 5, 0, tzinfo=la)],
+        )
+        res = self._render(master, [master], "UTC")
+        assert sorted(datetime.fromisoformat(r["dtstart"]) for r in res) == [
+            datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
+            datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc),
+            datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc),
+        ]
+
+    def test_cancelled_instance_with_foreign_tzid(self):
+        la = ZoneInfo("America/Los_Angeles")
+        master = self._ev(
+            uid="s4",
+            summary="Ex",
+            dtstart=datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
+            dtend=datetime(2026, 10, 1, 13, 0, tzinfo=timezone.utc),
+            rrule=self._rrule("FREQ=DAILY;COUNT=3"),
+        )
+        override = self._ev(
+            uid="s4",
+            summary="Ex",
+            rid=datetime(2026, 10, 3, 5, 0, tzinfo=la),
+            dtstart=datetime(2026, 10, 3, 5, 0, tzinfo=la),
+            status="CANCELLED",
+        )
+        res = self._render(master, [master, override], "UTC")
+        assert [datetime.fromisoformat(r["dtstart"]) for r in res] == [
+            datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
+            datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc),
+        ]
+
+    def test_all_day_series_with_exdate_and_override(self):
+        from datetime import date
+
+        master = self._ev(
+            uid="s5",
+            summary="AllDay",
+            dtstart=date(2026, 10, 1),
+            rrule=self._rrule("FREQ=WEEKLY;COUNT=4"),
+            exdate=[date(2026, 10, 8)],
+        )
+        override = self._ev(
+            uid="s5",
+            summary="AllDay (moved)",
+            rid=date(2026, 10, 15),
+            dtstart=date(2026, 10, 20),
+        )
+        res = self._render(
+            master, [master, override], "UTC", base={"summary": "AllDay"}
+        )
+        assert [datetime.fromisoformat(r["dtstart"]) for r in res] == [
+            datetime(2026, 10, 1, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 10, 20, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 10, 22, 0, 0, tzinfo=timezone.utc),
+        ]
+        assert res[1]["summary"] == "AllDay (moved)"
+        assert all(r["summary"] == "AllDay" for r in res if r is not res[1])
+
+    def test_override_dtend_resets_duration(self):
+        master = self._ev(
+            uid="s6",
+            summary="Long",
+            dtstart=datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
+            dtend=datetime(2026, 10, 1, 13, 0, tzinfo=timezone.utc),
+            rrule=self._rrule("FREQ=DAILY;COUNT=2"),
+        )
+        override = self._ev(
+            uid="s6",
+            summary="Long",
+            rid=datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc),
+            dtstart=datetime(2026, 10, 2, 14, 0, tzinfo=timezone.utc),
+            dtend=datetime(2026, 10, 2, 16, 0, tzinfo=timezone.utc),
+        )
+        res = self._render(master, [master, override], "UTC")
+        assert datetime.fromisoformat(res[1]["dtend"]) == datetime(
+            2026, 10, 2, 16, 0, tzinfo=timezone.utc
+        )
+
+
+# ============================================================
+# _check_redos_risk
+# ============================================================
+class TestCheckRedosRisk:
+    def test_nested_quantifier_raises(self):
+        from owuinc.owuinc import _check_redos_risk
+
+        with pytest.raises(ValueError, match="nested quantifiers"):
+            _check_redos_risk("(a+)+b")
+
+    def test_plain_pattern_passes(self):
+        from owuinc.owuinc import _check_redos_risk
+
+        _check_redos_risk(r"ERROR: \w+")
+
+    def test_pattern_with_literal_space_quantifier_passes(self):
+        """re.compile('( )+') is valid; parsing with re.VERBOSE would
+        strip the space and fail with 'nothing to repeat' — validating a
+        different pattern than the one that runs."""
+        import re
+
+        from owuinc.owuinc import _check_redos_risk
+
+        re.compile("( )+")  # must be a valid runnable pattern
+        _check_redos_risk("( )+")
+
+    def test_hash_pattern_not_treated_as_comment(self):
+        from owuinc.owuinc import _check_redos_risk
+
+        _check_redos_risk("a+b#c")
+
+    def test_import_fallback_uses_length_cap(self, monkeypatch):
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name.startswith("re._"):
+                raise ImportError
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        from owuinc.owuinc import _check_redos_risk
+
+        _check_redos_risk("(a+)+")  # analysis degraded: short pattern allowed
+        with pytest.raises(ValueError, match="too long"):
+            _check_redos_risk("a" * 501)
+
+
+class TestCheckNotSandboxRoot:
+    def _tools(self, sandbox_dir):
+        t = Tools()
+        t.valves.SANDBOX_DIR = sandbox_dir
+        return t
+
+    def test_sandbox_root_denied(self):
+        t = self._tools("owuinc")
+        with pytest.raises(ValueError, match="sandbox root"):
+            t._check_not_sandbox_root("owuinc/")
+
+    def test_sandbox_root_without_slash_denied(self):
+        t = self._tools("owuinc")
+        with pytest.raises(ValueError, match="sandbox root"):
+            t._check_not_sandbox_root("/owuinc")
+
+    def test_child_path_allowed(self):
+        t = self._tools("owuinc")
+        t._check_not_sandbox_root("owuinc/notes.md")
+
+    def test_empty_sandbox_denies_account_root(self):
+        t = self._tools("")
+        with pytest.raises(ValueError, match="sandbox root"):
+            t._check_not_sandbox_root("/")
+        t._check_not_sandbox_root("notes.md")
+
+
+class TestCheckReadOnly:
+    def _tools(self, read_only):
+        t = Tools()
+        t.valves.READ_ONLY_PATHS = read_only
+        return t
+
+    def test_default_allows_all(self):
+        t = Tools()
+        for name in ("AGENTS.md", "SOUL.md", "IDENTITY.md", "MEMORY.md", "notes.md"):
+            t._check_read_only(name)
+
+    def test_only_the_injected_path_itself_is_protected(self):
+        t = self._tools("SOUL.md")
+        t._check_read_only("archive/SOUL.md")
+
+    def test_custom_list_with_directory(self):
+        t = self._tools("locked")
+        with pytest.raises(ValueError, match="read-only"):
+            t._check_read_only("locked/inner.md")
+
+    def test_empty_valve_allows_all(self):
+        t = self._tools("")
+        t._check_read_only("SOUL.md")
+
+
+class _FailingDavClient:
+    async def list_with_infos(self, path, recursive=False):
+        raise RuntimeError("server exploded")
+
+
+class _MissingDavClient:
+    async def list_with_infos(self, path, recursive=False):
+        from aiowebdav2.exceptions import RemoteResourceNotFoundError
+
+        raise RemoteResourceNotFoundError(path=path)
+
+
+class _StaticDavClient:
+    def __init__(self, infos):
+        self._infos = infos
+
+    async def list_with_infos(self, path, recursive=False):
+        return self._infos
+
+
+class TestCheckBlacklistedRecursive:
+    def _tools(self, blacklist):
+        t = Tools()
+        t.valves.SANDBOX_DIR = "owuinc"
+        t.valves.FILE_BLACKLIST = blacklist
+        return t
+
+    async def test_listing_error_fails_closed(self):
+        t = self._tools("secret")
+        with pytest.raises(ValueError, match="unable to verify protection state"):
+            await t._check_blacklisted_recursive(_FailingDavClient(), "owuinc/dir")
+
+    async def test_not_found_propagates(self):
+        from aiowebdav2.exceptions import RemoteResourceNotFoundError
+
+        t = self._tools("secret")
+        with pytest.raises(RemoteResourceNotFoundError):
+            await t._check_blacklisted_recursive(_MissingDavClient(), "owuinc/dir")
+
+    async def test_blacklisted_descendant_denies(self):
+        t = self._tools("dir/secret")
+        client = _StaticDavClient(
+            [
+                {"path": "owuinc/dir"},
+                {"path": "owuinc/dir/ok.txt"},
+                {"path": "owuinc/dir/secret/token.txt"},
+            ]
+        )
+        with pytest.raises(ValueError, match="Access denied"):
+            await t._check_blacklisted_recursive(client, "owuinc/dir")
+
+    async def test_clean_tree_allowed(self):
+        t = self._tools("secret")
+        client = _StaticDavClient(
+            [{"path": "owuinc/dir"}, {"path": "owuinc/dir/ok.txt"}]
+        )
+        await t._check_blacklisted_recursive(client, "owuinc/dir")
+
+    async def test_empty_blacklist_skips_listing(self):
+        t = self._tools("")
+        await t._check_blacklisted_recursive(_FailingDavClient(), "owuinc/dir")
+
+
+class _ROFileClient:
+    """is_dir -> False, so the recursive read-only scan must skip listing."""
+
+    def __init__(self):
+        self.list_called = False
+
+    async def is_dir(self, path):
+        return False
+
+    async def list_files(self, path, recursive=False):
+        self.list_called = True
+        return []
+
+
+class _ROStaticClient:
+    def __init__(self, is_dir=True, files=None):
+        self._is_dir = is_dir
+        self._files = files or []
+
+    async def is_dir(self, path):
+        return self._is_dir
+
+    async def list_files(self, path, recursive=False):
+        return self._files
+
+
+class _ROFailingClient:
+    async def is_dir(self, path):
+        return True
+
+    async def list_files(self, path, recursive=False):
+        raise RuntimeError("server exploded")
+
+
+class _ROMissingClient:
+    async def is_dir(self, path):
+        from aiowebdav2.exceptions import RemoteResourceNotFoundError
+
+        raise RemoteResourceNotFoundError(path=path)
+
+
+class TestCheckReadOnlyRecursive:
+    def _tools(self, read_only):
+        t = Tools()
+        t.valves.SANDBOX_DIR = "owuinc"
+        t.valves.READ_ONLY_PATHS = read_only
+        return t
+
+    async def test_protected_target_denies(self):
+        t = self._tools("vault/MEMORY.md")
+        with pytest.raises(ValueError, match="read-only"):
+            await t._check_read_only_recursive(
+                _ROStaticClient(), "owuinc/vault/MEMORY.md"
+            )
+
+    async def test_protected_descendant_denies(self):
+        t = self._tools("vault/MEMORY.md")
+        client = _ROStaticClient(
+            files=[
+                "/owuinc/vault",
+                "/owuinc/vault/notes.txt",
+                "/owuinc/vault/MEMORY.md",
+            ]
+        )
+        with pytest.raises(ValueError, match="read-only"):
+            await t._check_read_only_recursive(client, "owuinc/vault")
+
+    async def test_nested_protected_path_denies(self):
+        t = self._tools("vault/sub/inner.txt")
+        client = _ROStaticClient(
+            files=["/owuinc/vault/sub/", "/owuinc/vault/sub/inner.txt"]
+        )
+        with pytest.raises(ValueError, match="read-only"):
+            await t._check_read_only_recursive(client, "owuinc/vault")
+
+    async def test_clean_tree_allowed(self):
+        t = self._tools("vault/MEMORY.md")
+        client = _ROStaticClient(files=["/owuinc/vault", "/owuinc/vault/notes.txt"])
+        await t._check_read_only_recursive(client, "owuinc/vault")
+
+    async def test_file_target_skips_listing(self):
+        t = self._tools("other.md")
+        client = _ROFileClient()
+        await t._check_read_only_recursive(client, "owuinc/vault/notes.txt")
+        assert client.list_called is False
+
+    async def test_listing_error_fails_closed(self):
+        t = self._tools("vault/MEMORY.md")
+        with pytest.raises(ValueError, match="unable to verify protection state"):
+            await t._check_read_only_recursive(_ROFailingClient(), "owuinc/vault")
+
+    async def test_not_found_propagates(self):
+        from aiowebdav2.exceptions import RemoteResourceNotFoundError
+
+        t = self._tools("vault/MEMORY.md")
+        with pytest.raises(RemoteResourceNotFoundError):
+            await t._check_read_only_recursive(_ROMissingClient(), "owuinc/vault")
+
+    async def test_missing_ok_allows_absent_destination(self):
+        t = self._tools("vault/MEMORY.md")
+        await t._check_read_only_recursive(
+            _ROMissingClient(), "owuinc/newname.txt", missing_ok=True
+        )
+
+    async def test_missing_ok_still_denies_protected_descendant(self):
+        t = self._tools("vault/MEMORY.md")
+        client = _ROStaticClient(
+            files=[
+                "/owuinc/vault",
+                "/owuinc/vault/notes.txt",
+                "/owuinc/vault/MEMORY.md",
+            ]
+        )
+        with pytest.raises(ValueError, match="read-only"):
+            await t._check_read_only_recursive(client, "owuinc/vault", missing_ok=True)
+
+    async def test_missing_ok_fails_closed_on_listing_error(self):
+        t = self._tools("vault/MEMORY.md")
+        with pytest.raises(ValueError, match="unable to verify protection state"):
+            await t._check_read_only_recursive(
+                _ROFailingClient(), "owuinc/vault", missing_ok=True
+            )
+
+    async def test_empty_read_only_skips_listing(self):
+        t = self._tools("")
+        await t._check_read_only_recursive(_ROFailingClient(), "owuinc/vault")
+
+
+class TestParseReminderUnits:
+    def test_weeks(self):
+        from owuinc.owuinc import parse_reminders
+
+        assert parse_reminders(["2w"])[0]["minutes"] == 20160
+        assert parse_reminders(["1week"])[0]["minutes"] == 10080
+
+    def test_non_string_raises_value_error_not_attribute_error(self):
+        from owuinc.owuinc import parse_reminders
+
+        with pytest.raises(ValueError):
+            parse_reminders([15])
+
+
+class TestGlobMatch:
+    def test_basename_pattern_matches_any_depth(self):
+        from owuinc.owuinc import _glob_match
+
+        assert _glob_match("c.py", "*.py")
+        assert _glob_match("a/b/c.py", "*.py")
+
+    def test_single_star_does_not_cross_directories(self):
+        from owuinc.owuinc import _glob_match
+
+        assert _glob_match("a/b.py", "*/b.py")
+        assert not _glob_match("a/b/c.py", "a/*.py")
+        assert _glob_match("a/b/c.py", "a/*/c.py")
+
+    def test_double_star_spans_any_depth(self):
+        from owuinc.owuinc import _glob_match
+
+        assert _glob_match("docs/deep/a.md", "docs/**/*.md")
+        assert _glob_match("docs/a.md", "docs/**/*.md")
+        assert _glob_match("a.md", "**/*.md")
+        assert _glob_match("x/a.md", "**/*.md")
+
+    def test_plain_slash_pattern_is_depth_exact(self):
+        from owuinc.owuinc import _glob_match
+
+        assert _glob_match("docs/a.md", "docs/*.md")
+        assert not _glob_match("docs/deep/a.md", "docs/*.md")
+
+    def test_character_class(self):
+        from owuinc.owuinc import _glob_match
+
+        assert _glob_match("f1.txt", "f[0-9].txt")
+        assert not _glob_match("fx.txt", "f[0-9].txt")
+        assert _glob_match("fx.txt", "f[!0-9].txt")
+
+
+class TestExpandBraces:
+    def test_single_group(self):
+        from owuinc.owuinc import _expand_braces
+
+        assert sorted(_expand_braces("*.{py,js}")) == ["*.js", "*.py"]
+
+    def test_multiple_groups(self):
+        from owuinc.owuinc import _expand_braces
+
+        assert sorted(_expand_braces("{a,b}.{1,2}")) == ["a.1", "a.2", "b.1", "b.2"]
+
+    def test_no_braces_is_identity(self):
+        from owuinc.owuinc import _expand_braces
+
+        assert _expand_braces("plain.txt") == ["plain.txt"]
+        assert _expand_braces("unclosed{") == ["unclosed{"]
+
+
+class TestHrefRel:
+    def _tools(self):
+        from owuinc.owuinc import Tools
+
+        t = Tools()
+        t.valves.SANDBOX_DIR = "owuinc"
+        return t
+
+    def test_rooted_href_strips_prefix(self):
+        t = self._tools()
+        assert t._href_rel("remote.php/dav/files/u/owuinc/docs/a.md") == "docs/a.md"
+
+    def test_prefix_only_in_string_is_stripped(self):
+        t = self._tools()
+        # A root-rooted href that does not start at the prefix: the only
+        # sandbox-anchored reading is a mid-string strip.
+        assert t._href_rel("//remote.php/dav/files/u/owuinc/a.md") == "a.md"
+
+    def test_trailing_slash_removed(self):
+        t = self._tools()
+        assert t._href_rel("remote.php/dav/files/u/owuinc/docs/") == "docs"
+
+    def test_prefix_absent_keeps_full_path(self):
+        t = self._tools()
+        # A sandbox-relative href carrying no prefix: the whole path must
+        # survive so blacklist matching on subpaths keeps working (the old
+        # basename fallback let 'secrets/creds' slip past a 'secrets' entry).
+        assert t._href_rel("secrets/creds") == "secrets/creds"
+        assert t._href_rel("docs/a.md") == "docs/a.md"
+
+    def test_plain_name_is_identity(self):
+        t = self._tools()
+        assert t._href_rel("a.md") == "a.md"
