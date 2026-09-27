@@ -1,9 +1,10 @@
 {
+    "version": "2.0.0",
     "tasks": [
         {
             "label": "Run Pre-Commit Hooks",
             "type": "shell",
-            "command": "uv pre-commit run --all-files",
+            "command": "uv run pre-commit run --all-files",
             "problemMatcher": []
         },
         {

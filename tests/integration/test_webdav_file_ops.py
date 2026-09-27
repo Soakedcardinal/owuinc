@@ -258,6 +258,22 @@ class TestRm:
         assert listing["result"] == "True"
         assert not any("rmdir" in p for p in listing["data"])
 
+    @pytest.mark.asyncio
+    async def test_rm_missing_path_names_requested_path(self, webdav_tools):
+        """The missing-path error is not polluted by the guard's listing slash.
+
+        With a blacklist configured the guard PROPFINDs "<path>/" first, and the
+        raw client 404 for a file then reads "missing.txt/ not found".
+        """
+        webdav_tools.valves.FILE_BLACKLIST = "unrelated"
+        try:
+            for p in ("rm_missing_file.txt", "rm_missing_dir"):
+                entry = (await webdav_tools.rm([p]))["data"][0]
+                assert entry["result"] == "False"
+                assert entry["details"].endswith(f"{p} not found")
+        finally:
+            webdav_tools.valves.FILE_BLACKLIST = ""
+
 
 class TestMv:
     @pytest.mark.asyncio
@@ -482,6 +498,66 @@ class TestFileBlacklist:
         assert any("allowed" in p for p in listing["data"])
 
         webdav_tools.valves.FILE_BLACKLIST = ""
+
+
+class TestDescendantProtection:
+    """rm/mv of a directory must be denied when a blacklisted descendant is
+    inside it. Real servers report full WebDAV hrefs ('remote.php/dav/...')
+    in listings, so these regression tests pin the protection against the
+    un-anchored href shape, not just sandbox-anchored mock listings."""
+
+    @pytest.mark.asyncio
+    async def test_rm_denied_when_blacklisted_descendant_inside(self, webdav_tools):
+        await webdav_tools.mkdir("dp_norm")
+        await webdav_tools.mkdir("dp_norm/secretdir")
+        await webdav_tools.write("dp_norm/secretdir/token.txt", "x")
+        webdav_tools.valves.FILE_BLACKLIST = "dp_norm/secretdir"
+        try:
+            result = await webdav_tools.rm(["dp_norm"])
+            entry = result["data"][0]
+            assert entry["result"] == "False"
+            assert entry["details"] == "Access denied"
+        finally:
+            webdav_tools.valves.FILE_BLACKLIST = ""
+        # The tree must still be intact (cat the blacklisted file with the
+        # blacklist cleared, since cat on a blacklisted path is itself denied).
+        left = await webdav_tools.cat("dp_norm/secretdir/token.txt")
+        assert left["result"] == "True"
+
+    @pytest.mark.asyncio
+    async def test_mv_denied_when_blacklisted_descendant_inside(self, webdav_tools):
+        await webdav_tools.mkdir("dp_mv")
+        await webdav_tools.mkdir("dp_mv/secretdir")
+        await webdav_tools.write("dp_mv/secretdir/token.txt", "x")
+        webdav_tools.valves.FILE_BLACKLIST = "dp_mv/secretdir"
+        try:
+            result = await webdav_tools.mv("dp_mv", "dp_mv_moved")
+            assert result["result"] == "False"
+        finally:
+            webdav_tools.valves.FILE_BLACKLIST = ""
+
+    @pytest.mark.asyncio
+    async def test_rm_denied_when_blacklisted_descendant_inside_root_sandbox(
+        self, webdav_tools
+    ):
+        original = webdav_tools.valves.SANDBOX_DIR
+        webdav_tools.valves.SANDBOX_DIR = "."
+        try:
+            await webdav_tools.mkdir("dp_rootbox")
+            await webdav_tools.mkdir("dp_rootbox/secretdir")
+            await webdav_tools.write("dp_rootbox/secretdir/token.txt", "x")
+            webdav_tools.valves.FILE_BLACKLIST = "dp_rootbox/secretdir"
+            try:
+                result = await webdav_tools.rm(["dp_rootbox"])
+                entry = result["data"][0]
+                assert entry["result"] == "False"
+                assert entry["details"] == "Access denied"
+            finally:
+                webdav_tools.valves.FILE_BLACKLIST = ""
+            left = await webdav_tools.cat("dp_rootbox/secretdir/token.txt")
+            assert left["result"] == "True"
+        finally:
+            webdav_tools.valves.SANDBOX_DIR = original
 
 
 class TestNestedWriteWithoutParent:
@@ -812,6 +888,73 @@ class TestEmptySandbox:
             webdav_tools.valves.SANDBOX_DIR = original
 
 
+class TestDotSandbox:
+    """'.' is the UI-reachable way to select the Nextcloud root (the valve
+    UI will not save a blank value). It must behave exactly like an empty
+    SANDBOX_DIR against a real WebDAV server."""
+
+    @pytest.mark.asyncio
+    async def test_dot_sandbox_write_and_read(self, webdav_tools):
+        original = webdav_tools.valves.SANDBOX_DIR
+        webdav_tools.valves.SANDBOX_DIR = "."
+        try:
+            result = await webdav_tools.write("dotbox_test.txt", "root sandbox")
+            assert result["result"] == "True"
+            read_result = await webdav_tools.cat("dotbox_test.txt")
+            assert read_result["result"] == "True"
+            assert read_result["data"] == "root sandbox"
+        finally:
+            webdav_tools.valves.SANDBOX_DIR = original
+
+    @pytest.mark.asyncio
+    async def test_dot_sandbox_ls_root(self, webdav_tools):
+        original = webdav_tools.valves.SANDBOX_DIR
+        webdav_tools.valves.SANDBOX_DIR = "."
+        try:
+            await webdav_tools.write("dotbox_file.txt", "data")
+            result = await webdav_tools.ls("")
+            assert result["result"] == "True"
+            assert "dotbox_file.txt" in result["data"]
+        finally:
+            webdav_tools.valves.SANDBOX_DIR = original
+
+    @pytest.mark.asyncio
+    async def test_dot_sandbox_ls_hides_blacklisted(self, webdav_tools):
+        original = webdav_tools.valves.SANDBOX_DIR
+        webdav_tools.valves.SANDBOX_DIR = "."
+        try:
+            await webdav_tools.mkdir("dotbox_bl")
+            await webdav_tools.write("dotbox_bl/hidden.txt", "nope")
+            await webdav_tools.write("dotbox_visible.txt", "ok")
+            webdav_tools.valves.FILE_BLACKLIST = "dotbox_bl"
+            try:
+                listing = await webdav_tools.ls("", detail=True)
+                assert listing["result"] == "True"
+                assert any("dotbox_visible.txt" in e for e in listing["data"])
+                assert not any("dotbox_bl" in e for e in listing["data"])
+            finally:
+                webdav_tools.valves.FILE_BLACKLIST = ""
+        finally:
+            webdav_tools.valves.SANDBOX_DIR = original
+
+    @pytest.mark.asyncio
+    async def test_dot_sandbox_mkdir_find_rm(self, webdav_tools):
+        original = webdav_tools.valves.SANDBOX_DIR
+        webdav_tools.valves.SANDBOX_DIR = "."
+        try:
+            mkdir_result = await webdav_tools.mkdir("dotbox_dir")
+            assert mkdir_result["result"] == "True"
+            await webdav_tools.write("dotbox_dir/inner.txt", "inner")
+            find_result = await webdav_tools.find("inner.txt")
+            assert find_result["result"] == "True"
+            assert "dotbox_dir/inner.txt" in find_result["data"]
+            rm_result = await webdav_tools.rm(["dotbox_dir"])
+            assert rm_result["result"] == "True"
+            assert all(r["result"] == "True" for r in rm_result["data"])
+        finally:
+            webdav_tools.valves.SANDBOX_DIR = original
+
+
 class TestBinaryFileHandling:
     """Binary files are explicitly rejected with a clear error."""
 
@@ -883,11 +1026,11 @@ class TestBinaryFileHandling:
         assert len(data["matches"]) >= 1
 
 
-class TestWebDavLocking:
-    """Test that edit() and append() use WebDAV locking."""
+class TestOptimisticConcurrency:
+    """edit()/append() use ETag + If-Match instead of WebDAV locking."""
 
     @pytest.mark.asyncio
-    async def test_edit_holds_lock_during_operation(self, webdav_tools):
+    async def test_edit_applies_change(self, webdav_tools):
         await webdav_tools.write("lockedit.txt", "original content here")
         result = await webdav_tools.edit("lockedit.txt", "original", "modified")
         assert result["result"] == "True"
@@ -895,7 +1038,7 @@ class TestWebDavLocking:
         assert content["data"] == "modified content here"
 
     @pytest.mark.asyncio
-    async def test_append_holds_lock(self, webdav_tools):
+    async def test_append_appends(self, webdav_tools):
         await webdav_tools.write("lockappend.txt", "line1\n")
         result = await webdav_tools.append("lockappend.txt", "line2\n")
         assert result["result"] == "True"
@@ -910,20 +1053,242 @@ class TestWebDavLocking:
         assert content["data"] == "first line"
 
     @pytest.mark.asyncio
-    async def test_edit_conflict_when_locked(self, webdav_tools):
-        await webdav_tools.write("lockconflict.txt", "a b c")
+    async def test_append_existing_preserves_content_and_inserts_newline(
+        self, webdav_tools
+    ):
+        """Append against the real server keeps prior bytes and separates lines."""
+        await webdav_tools.write("lockappend_keep.txt", "keep-me")
+        result = await webdav_tools.append("lockappend_keep.txt", "two")
+        assert result["result"] == "True"
+        content = await webdav_tools.cat("lockappend_keep.txt")
+        assert content["data"] == "keep-me\ntwo"
+
+    @pytest.mark.asyncio
+    async def test_conditional_create_rejects_existing(self, webdav_tools):
+        """_conditional_create must 412 (False) when the target already exists,
+        proving the If-None-Match create guard is enforced by the server."""
         from owuinc.owuinc import _webdav_path, validate_path
 
+        await webdav_tools.write("lockrace_create.txt", "winner")
         client = webdav_tools._webdav_client()
         try:
             res_path = _webdav_path(
-                validate_path("lockconflict.txt", webdav_tools.valves)
+                validate_path("lockrace_create.txt", webdav_tools.valves)
             )
-            lock = await client.lock(res_path, timeout=10)
-            result = await webdav_tools.edit("lockconflict.txt", "a", "x")
-            assert result["result"] == "False"
-            assert "locked" in result["details"].lower()
-            # Release the lock
-            await lock.close()
+            assert (
+                await webdav_tools._conditional_create(client, res_path, b"loser")
+                is False
+            )
+            content = await webdav_tools.cat("lockrace_create.txt")
+            assert content["data"] == "winner"
         finally:
             await client.close()
+
+    @pytest.mark.asyncio
+    async def test_edit_missing_file_is_not_found(self, webdav_tools):
+        result = await webdav_tools.edit("lock_missing_edit.txt", "a", "b")
+        assert result["result"] == "False"
+        assert "file not found" in result["details"]
+
+    @pytest.mark.asyncio
+    async def test_stale_etag_put_is_rejected(self, webdav_tools):
+        """The server must reject If-Match writes when the ETag is stale."""
+        from aiowebdav2.exceptions import ResponseErrorCodeError
+
+        from owuinc.owuinc import _webdav_path, validate_path
+
+        await webdav_tools.write("etagrace.txt", "v1")
+        client = webdav_tools._webdav_client()
+        try:
+            res_path = _webdav_path(validate_path("etagrace.txt", webdav_tools.valves))
+            exists, etag = await webdav_tools._get_etag_state(client, res_path)
+            assert exists, "server should report the resource as present"
+            assert etag, "server should expose a getetag"
+            await webdav_tools.write("etagrace.txt", "external")
+            with pytest.raises(ResponseErrorCodeError) as excinfo:
+                await client.execute_request(
+                    "upload",
+                    res_path,
+                    data=b"late write",
+                    headers_ext={"If-Match": etag},
+                )
+            assert excinfo.value.code == 412
+            content = await webdav_tools.cat("etagrace.txt")
+            assert content["data"] == "external"
+        finally:
+            await client.close()
+
+
+class TestSandboxSelfProtection:
+    """Batch C: rm/mv cannot target the sandbox root; READ_ONLY_PATHS blocks
+    writes to listed paths while reads stay allowed."""
+
+    @pytest.mark.asyncio
+    async def test_rm_dot_denied_sandbox_survives(self, webdav_tools):
+        await webdav_tools.write("survives.txt", "x")
+        res = await webdav_tools.rm(["."])
+        assert res["data"][0]["result"] == "False"
+        assert "sandbox root" in res["data"][0]["details"]
+        ls = await webdav_tools.ls(".")
+        assert "survives.txt" in str(ls["data"])
+
+    @pytest.mark.asyncio
+    async def test_rm_slash_denied(self, webdav_tools):
+        res = await webdav_tools.rm(["/"])
+        assert res["data"][0]["result"] == "False"
+        assert "sandbox root" in res["data"][0]["details"]
+
+    @pytest.mark.asyncio
+    async def test_rm_empty_string_denied(self, webdav_tools):
+        res = await webdav_tools.rm([""])
+        assert res["data"][0]["result"] == "False"
+        assert "sandbox root" in res["data"][0]["details"]
+
+    @pytest.mark.asyncio
+    async def test_rm_mixed_list_protects_only_root(self, webdav_tools):
+        await webdav_tools.write("doomed.txt", "x")
+        res = await webdav_tools.rm(["doomed.txt", "."])
+        assert res["data"][0]["result"] == "True"
+        assert res["data"][1]["result"] == "False"
+        assert "sandbox root" in res["data"][1]["details"]
+
+    @pytest.mark.asyncio
+    async def test_mv_into_root_denied(self, webdav_tools):
+        await webdav_tools.write("mvsrc.txt", "x")
+        res = await webdav_tools.mv("mvsrc.txt", ".")
+        assert res["result"] == "False"
+        assert "sandbox root" in res["details"]
+
+    @pytest.mark.asyncio
+    async def test_mv_sandbox_root_as_source_denied(self, webdav_tools):
+        res = await webdav_tools.mv(".", "elsewhere")
+        assert res["result"] == "False"
+        assert "sandbox root" in res["details"]
+
+    @pytest.mark.asyncio
+    async def test_read_only_blocks_mutations_allows_reads(self, webdav_tools):
+        webdav_tools.valves.READ_ONLY_PATHS = ""
+        await webdav_tools.write("locked.md", "secret soul")
+        await webdav_tools.write("donor.txt", "donor")
+        webdav_tools.valves.READ_ONLY_PATHS = "locked.md"
+
+        w = await webdav_tools.write("locked.md", "evil")
+        assert w["result"] == "False" and "read-only" in w["details"]
+        a = await webdav_tools.append("locked.md", "evil")
+        assert a["result"] == "False" and "read-only" in a["details"]
+        e = await webdav_tools.edit("locked.md", "secret", "evil")
+        assert e["result"] == "False" and "read-only" in e["details"]
+        r = await webdav_tools.rm(["locked.md"])
+        assert (
+            r["data"][0]["result"] == "False" and "read-only" in r["data"][0]["details"]
+        )
+        mv_src = await webdav_tools.mv("locked.md", "freed.md")
+        assert mv_src["result"] == "False" and "read-only" in mv_src["details"]
+        mv_dst = await webdav_tools.mv("donor.txt", "locked.md")
+        assert mv_dst["result"] == "False" and "read-only" in mv_dst["details"]
+        c = await webdav_tools.cp("donor.txt", "locked.md")
+        assert c["result"] == "False" and "read-only" in c["details"]
+
+        cat = await webdav_tools.cat("locked.md")
+        assert cat["data"] == "secret soul"
+
+
+class TestReadOnlyRecursiveProtection:
+    """Destructive ops must not reach a protected file nested under the target.
+
+    _check_read_only only guards the exact target path, so without recursive
+    enforcement rm/mv could delete or relocate a directory that contains a
+    protected file (e.g. an injected MEMORY.md), and cp/mv into such a directory
+    could clobber the protected file it holds. These tests use a nested protected
+    path so the directory itself is not on the list, only its child.
+    """
+
+    async def _seed(self, webdav_tools):
+        webdav_tools.valves.READ_ONLY_PATHS = ""
+        await webdav_tools.mkdir("vault")
+        await webdav_tools.write("vault/MEMORY.md", "core")
+        await webdav_tools.write("vault/notes.txt", "scratch")
+        webdav_tools.valves.READ_ONLY_PATHS = "vault/MEMORY.md"
+
+    async def _seed_donor(self, webdav_tools):
+        webdav_tools.valves.READ_ONLY_PATHS = ""
+        await webdav_tools.mkdir("donor")
+        await webdav_tools.write("donor/MEMORY.md", "evil")
+        await webdav_tools.write("donor/other.txt", "junk")
+        webdav_tools.valves.READ_ONLY_PATHS = "vault/MEMORY.md"
+
+    @pytest.mark.asyncio
+    async def test_rm_dir_containing_protected_child_denied(self, webdav_tools):
+        await self._seed(webdav_tools)
+        res = await webdav_tools.rm(["vault"])
+        assert res["data"][0]["result"] == "False"
+        assert "read-only" in res["data"][0]["details"]
+        keep = await webdav_tools.cat("vault/MEMORY.md")
+        assert keep["data"] == "core"
+
+    @pytest.mark.asyncio
+    async def test_mv_dir_containing_protected_child_denied(self, webdav_tools):
+        await self._seed(webdav_tools)
+        res = await webdav_tools.mv("vault", "vault_renamed")
+        assert res["result"] == "False"
+        assert "read-only" in res["details"]
+        keep = await webdav_tools.cat("vault/MEMORY.md")
+        assert keep["data"] == "core"
+
+    @pytest.mark.asyncio
+    async def test_rm_protected_file_directly_still_denied(self, webdav_tools):
+        await self._seed(webdav_tools)
+        res = await webdav_tools.rm(["vault/MEMORY.md"])
+        assert res["data"][0]["result"] == "False"
+        assert "read-only" in res["data"][0]["details"]
+
+    @pytest.mark.asyncio
+    async def test_rm_dir_without_protected_child_allowed(self, webdav_tools):
+        await self._seed(webdav_tools)
+        await webdav_tools.mkdir("clean")
+        await webdav_tools.write("clean/scratch.txt", "x")
+        res = await webdav_tools.rm(["clean"])
+        assert res["data"][0]["result"] == "True"
+        gone = await webdav_tools.cat("clean/scratch.txt")
+        assert gone["result"] == "False"
+
+    @pytest.mark.asyncio
+    async def test_rm_empty_read_only_allows_deletion(self, webdav_tools):
+        await self._seed(webdav_tools)
+        webdav_tools.valves.READ_ONLY_PATHS = ""
+        res = await webdav_tools.rm(["vault"])
+        assert res["data"][0]["result"] == "True"
+        gone = await webdav_tools.cat("vault/MEMORY.md")
+        assert gone["result"] == "False"
+
+    @pytest.mark.asyncio
+    async def test_cp_into_dir_containing_protected_child_denied(self, webdav_tools):
+        await self._seed(webdav_tools)
+        await self._seed_donor(webdav_tools)
+        res = await webdav_tools.cp("donor", "vault")
+        assert res["result"] == "False"
+        assert "read-only" in res["details"]
+        keep = await webdav_tools.cat("vault/MEMORY.md")
+        assert keep["data"] == "core"
+
+    @pytest.mark.asyncio
+    async def test_mv_into_dir_containing_protected_child_denied(self, webdav_tools):
+        await self._seed(webdav_tools)
+        await self._seed_donor(webdav_tools)
+        res = await webdav_tools.mv("donor", "vault")
+        assert res["result"] == "False"
+        assert "read-only" in res["details"]
+        keep = await webdav_tools.cat("vault/MEMORY.md")
+        assert keep["data"] == "core"
+        donor = await webdav_tools.cat("donor/MEMORY.md")
+        assert donor["data"] == "evil"
+
+    @pytest.mark.asyncio
+    async def test_cp_into_dir_without_protected_child_allowed(self, webdav_tools):
+        await self._seed(webdav_tools)
+        await self._seed_donor(webdav_tools)
+        await webdav_tools.mkdir("safe")
+        res = await webdav_tools.cp("donor", "safe")
+        assert res["result"] == "True"
+        copied = await webdav_tools.cat("safe/MEMORY.md")
+        assert copied["data"] == "evil"

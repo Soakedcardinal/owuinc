@@ -1,5 +1,8 @@
 line-length = 1000
 
+# vulture_whitelist.py is vulture data (bare name references), not code.
+extend-exclude = ["vulture_whitelist.py"]
+
 [lint]
 select = ["E", "W", "F", "I"]
 ignore = ["E203"]
