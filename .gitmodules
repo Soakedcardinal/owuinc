@@ -1,0 +1,3 @@
+[submodule "third_party/open-webui"]
+	path = third_party/open-webui
+	url = https://github.com/open-webui/open-webui.git
