@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "owuinc"
-version = "3.8.0"
+version = "4.0.0"
 description = "Manage files, tasks, and calendars via WebDAV and CalDAV."
 readme = "README.md"
 license = {text = "MIT"}
@@ -12,13 +12,13 @@ requires-python = ">=3.11"
 
 # what the plugin runs on
 dependencies = [
-    "caldav>=3.0.0",
-    "icalendar",
-    "aiowebdav2",
-    "pydantic",
-    "tiktoken",
-    "aiohttp",
-    "python-dateutil",
+    "caldav>=3.3.1",
+    "icalendar>=7.3.0",
+    "aiowebdav2>=0.6.2",
+    "pydantic>=2",
+    "tiktoken>=0.13",
+    "aiohttp>=3.14",
+    "python-dateutil>=2.9",
 ]
 
 # only for you
@@ -31,10 +31,23 @@ dev = [
     "radicale",
     "wsgidav",
     "cheroot",
+    "ruff",
+    "black",
+    "mypy",
+    "types-python-dateutil",
+    "vulture>=2.16",
 ]
 
 [tool.setuptools.packages.find]
 include = ["owuinc*"]
+
+[tool.black]
+target-version = ["py311"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["owuinc", "startup_context_injector.py", "tests"]
+disable_error_code = ["annotation-unchecked"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

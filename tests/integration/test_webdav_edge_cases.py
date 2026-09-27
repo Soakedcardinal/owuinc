@@ -84,6 +84,28 @@ class TestGlobBraceExpansion:
         files = result["data"]
         assert len(files) == 2
 
+    @pytest.mark.asyncio
+    async def test_grep_include_multi_brace(self, webdav_tools):
+        """grep's include filter expands multiple brace groups like find does.
+
+        Regression: grep had its own single-group expander, so
+        'k{1,2}{a,b}.{py,js}' kept '{a,b}' literal in each candidate and
+        silently matched nothing.
+        """
+        await webdav_tools.write(PFX + "k1a.py", "needle")
+        await webdav_tools.write(PFX + "k2b.js", "needle")
+        await webdav_tools.write(PFX + "zq.txt", "needle")
+
+        result = await webdav_tools.grep(
+            "needle", path=PFX, include="k{1,2}{a,b}.{py,js}"
+        )
+        assert result["result"] == "True"
+        files = {m["file"] for m in result["data"]["matches"]}
+        assert len(files) == 2
+        assert any(f.endswith("k1a.py") for f in files)
+        assert any(f.endswith("k2b.js") for f in files)
+        assert not any("zq.txt" in f for f in files)
+
 
 class TestLsEdgeCases:
     """Test ls on nonexistent directories and on files."""

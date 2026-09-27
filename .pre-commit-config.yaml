@@ -1,20 +1,29 @@
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.7
+  - repo: local
     hooks:
       - id: ruff
-        args: ["--fix"]
+        name: ruff
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+        # vulture_whitelist.py is vulture data (bare name references), not code
+        exclude: vulture_whitelist\.py
 
-  - repo: https://github.com/psf/black-pre-commit-mirror
-    rev: 26.5.1
-    hooks:
       - id: black
+        name: black
+        entry: uv run black
+        language: system
+        types: [python]
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.3.1
-    hooks:
       - id: mypy
-        language_version: python3
-        additional_dependencies:
-          - pydantic
-          - types-python-dateutil
+        name: mypy
+        entry: uv run mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: vulture
+        name: vulture
+        entry: uv run vulture owuinc/owuinc.py startup_context_injector.py vulture_whitelist.py
+        language: system
+        pass_filenames: false
