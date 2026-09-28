@@ -2607,6 +2607,7 @@ class Tools:
             # copy and advances the master to its next occurrence. If the
             # series is exhausted (COUNT down to one, UNTIL in the past) or
             # malformed, fall through to a plain completion.
+            series_ended_fallback = False
             if "RRULE" in comp and not entire_series:
                 # caldav's "safe" mode files the done occurrence as a
                 # standalone todo whose link to the master is lost. Re-run
@@ -2646,6 +2647,12 @@ class Tools:
                     except (ValueError, NotImplementedError):
                         pass
 
+                # Both fallbacks above failed on known-unsupported recurrence
+                # (malformed or exotic RRULE); the plain completion below ends
+                # the whole series. Say so: a bare label would read as an
+                # ordinary one-off completion.
+                series_ended_fallback = True
+
             if "RRULE" in comp:
                 comp.pop("rrule", None)  # a completed series must not recur
             for key, value in (
@@ -2658,7 +2665,7 @@ class Tools:
                 comp.add(key, value)
 
             await todo.save()
-            if entire_series:
+            if entire_series or series_ended_fallback:
                 return f"{label} (series ended)"
             return label
         finally:

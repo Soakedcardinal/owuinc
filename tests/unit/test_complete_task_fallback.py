@@ -105,6 +105,9 @@ class TestRecurringCompletionFallback:
         assert todo.save_called is True
         assert "RRULE" not in todo.component
         assert todo.component.get("status") == "COMPLETED"
+        # the fallback ends the whole series; the reply must say so instead
+        # of a bare label that reads as an ordinary one-off completion
+        assert "series ended" in result["data"]
 
     async def test_notimplemented_recurrence_still_falls_back(self):
         todo = FakeTodo(complete_exc=NotImplementedError("exotic recurrence"))
@@ -113,6 +116,7 @@ class TestRecurringCompletionFallback:
         assert todo.save_called is True
         assert "RRULE" not in todo.component
         assert todo.component.get("status") == "COMPLETED"
+        assert "series ended" in result["data"]
 
     async def test_entire_series_ends_series(self):
         todo = FakeTodo()
