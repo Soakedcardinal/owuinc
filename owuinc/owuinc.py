@@ -2254,11 +2254,14 @@ class Tools:
             self._check_blacklisted(self._get_rel_path(dst_full))
             await self._check_read_only_recursive(client, dst_full, missing_ok=True)
             await self._recursive_cp(client, src_full, dst_full, copied)
-        except Exception:
+        except Exception as e:
             if copied:
+                # Embed str(e): _safe reports str() of this ValueError, so
+                # the cause must be in the message for the model to see why
+                # the copy failed. `from e` preserves it for tracebacks.
                 raise ValueError(
-                    f"partial copy: {len(copied)} path(s) copied before failure"
-                )
+                    f"partial copy: {len(copied)} path(s) copied before failure: {e}"
+                ) from e
             raise
         finally:
             await client.close()
