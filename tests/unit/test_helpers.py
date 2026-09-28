@@ -807,6 +807,35 @@ class TestExpandOccurrences:
         )
         assert res == [(self.BASE + timedelta(hours=2), self.BASE)]
 
+    def test_override_rescheduled_out_of_window_dropped(self):
+        """An override moving an in-window instance beyond the window end
+        must not leak the new start into the result (the first loop bounds
+        the original start, not the rescheduled one)."""
+        from owuinc.owuinc import _expand_occurrences
+
+        far = self.BASE + timedelta(days=19)
+        res = _expand_occurrences(
+            "FREQ=WEEKLY",
+            self.BASE,
+            self.BASE,
+            self.BASE + timedelta(days=3),
+            overrides={self.BASE: far},
+        )
+        assert res == []
+
+    def test_override_rescheduled_before_window_dropped(self):
+        from owuinc.owuinc import _expand_occurrences
+
+        early = self.BASE - timedelta(days=19)
+        res = _expand_occurrences(
+            "FREQ=WEEKLY",
+            self.BASE,
+            self.BASE,
+            self.BASE + timedelta(days=3),
+            overrides={self.BASE: early},
+        )
+        assert res == []
+
 
 # ============================================================
 # _render_recurring_series

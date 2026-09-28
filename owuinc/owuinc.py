@@ -851,6 +851,8 @@ def _expand_occurrences(
             if new is None:
                 continue
             start, replaced = new, start
+            if not (window_start <= start <= window_end):
+                continue
         if start in seen:
             continue
         seen.add(start)
