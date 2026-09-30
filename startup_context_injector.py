@@ -157,8 +157,19 @@ def _normalize_sandbox_dir(raw: str) -> str:
     button resets to the pydantic default ("owuinc"), not the root. "." is
     therefore the UI-reachable way to select the root and is treated
     identically to an empty value.
+
+    Values containing a '..' segment are rejected before collapsing: the
+    prefix is admin-set, but validate_path only checks the read path, never
+    the prefix, so '../evil' would point WebDAV requests outside the files
+    root. 'owuinc/..' is rejected too, so it cannot silently normalize to
+    the root sandbox.
     """
-    value = os.path.normpath(str(raw or "").strip()).strip("/")
+    value = str(raw or "").strip()
+    if any(seg == ".." for seg in value.split("/")):
+        raise ValueError(
+            f"SANDBOX_DIR {raw!r} contains '..': traversal outside the files root is not allowed"
+        )
+    value = os.path.normpath(value).strip("/")
     if value in ("", "."):
         return ""
     return value
@@ -321,6 +332,12 @@ class Filter:
         The server revalidates the cached ETag on every call: unchanged files
         return 304 with no body (content taken from cache), changed files are
         re-downloaded in full. Never serves stale content.
+
+        A 304 to an unconditional GET (no cached entry) is a server bug: the
+        empty body is not read into the cache — instead the request is retried
+        once without the conditional header, and a second 304 means the file
+        is skipped rather than cached as ("", etag), an entry that would serve
+        an empty file until its real ETag changes.
         """
         wp = _webdav_path(path)
         key = (str(client.get_url("")), wp)
@@ -328,10 +345,16 @@ class Filter:
         headers = {"If-None-Match": cached[0]} if cached else {}
         try:
             response = await client.execute_request("download", wp, headers_ext=headers)
+            if response.status == 304 and cached is not None:
+                _ETAG_CACHE.move_to_end(key)
+                return cached[1]
+            if response.status == 304 and cached is None:
+                response.release()
+                response = await client.execute_request("download", wp)
+                if response.status == 304:
+                    response.release()
+                    return None
             try:
-                if response.status == 304 and cached is not None:
-                    _ETAG_CACHE.move_to_end(key)
-                    return cached[1]
                 data = await response.read()
             finally:
                 # Return the connection to the pool. Left alone, the response is

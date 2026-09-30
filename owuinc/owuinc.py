@@ -349,7 +349,15 @@ def _invalidate_caches(valves) -> None:
         return
     base = getattr(valves, "NEXTCLOUD_BASE_URL", "")
     _CALENDAR_URL_CACHE.pop((base, getattr(valves, "NEXTCLOUD_USERNAME", "")), None)
-    sandbox = _normalize_sandbox_dir(getattr(valves, "SANDBOX_DIR", ""))
+    try:
+        sandbox = _normalize_sandbox_dir(getattr(valves, "SANDBOX_DIR", ""))
+    except ValueError:
+        # An escaping value is rejected everywhere else; drop anything this
+        # user has ever verified rather than leaving a stale entry behind.
+        user = getattr(valves, "WEBDAV_USERNAME", "")
+        for key in [k for k in _SANDBOX_VERIFIED if k[:2] == (base, user)]:
+            _SANDBOX_VERIFIED.discard(key)
+        return
     _SANDBOX_VERIFIED.discard((base, getattr(valves, "WEBDAV_USERNAME", ""), sandbox))
 
 
@@ -501,7 +509,14 @@ def _glob_match(rel_path: str, pattern: str) -> bool:
     n = len(pattern)
     while i < n:
         if pattern.startswith("**/", i):
-            parts.append("(?:.*/)?")
+            if i == 0 or pattern[i - 1] == "/":
+                parts.append("(?:.*/)?")
+            else:
+                # 'a**/b': the globstar is glued to a name, so it is not a
+                # segment boundary — the separator slash is mandatory and
+                # must not vanish (that would make the pattern match 'ab').
+                parts.append(".*")
+                parts.append("/")
             i += 3
         elif pattern.startswith("**", i):
             parts.append(".*")
@@ -601,8 +616,19 @@ def _normalize_sandbox_dir(raw: str) -> str:
     button resets to the pydantic default ("owuinc"), not the root. "." is
     therefore the UI-reachable way to select the root and is treated
     identically to an empty value.
+
+    Values containing a '..' segment are rejected before collapsing: the
+    prefix is admin-set, but validate_path only checks the user path, never
+    the prefix, so '../evil' would point WebDAV requests outside the files
+    root. 'owuinc/..' is rejected too, so it cannot silently normalize to
+    the root sandbox.
     """
-    value = os.path.normpath(str(raw or "").strip()).strip("/")
+    value = str(raw or "").strip()
+    if any(seg == ".." for seg in value.split("/")):
+        raise ValueError(
+            f"SANDBOX_DIR {raw!r} contains '..': traversal outside the files root is not allowed"
+        )
+    value = os.path.normpath(value).strip("/")
     if value in ("", "."):
         return ""
     return value
@@ -680,43 +706,68 @@ def validate_path(path, valves):
 
 
 def parse_reminders(reminders: list | None = None) -> list:
-    """Parse reminder strings like '15min', '1h', '3d', '2w' into dicts."""
+    """Parse reminder strings like '15min', '1h', '3d', '2w' into dicts.
+
+    Units can compound ('1w3d', '1 hour 30min') and use fractions ('2.5
+    weeks'); the total is summed in minutes and kept integral when it is
+    one. Every digit must pair with a unit, so bare numbers, unknown units
+    and unattached digits still raise.
+    """
     if not reminders:
         return []
 
     parsed = []
     for r in reminders:
         r = str(r).strip().lower()
-        minutes = 0
-        matched = False
-
         if r in ("0", "0min", "0 min"):
-            matched = True
-        elif r.endswith(("w", "wk", "wks", "week", "weeks")):
-            m = re.search(r"\d+", r)
-            if m is not None:
-                minutes = int(m.group()) * 10080
-                matched = True
-        elif r.endswith(("min", "mins", "minutes")):
-            m = re.search(r"\d+", r)
-            if m is not None:
-                minutes = int(m.group())
-                matched = True
-        elif r.endswith(("h", "hr", "hour", "hours")):
-            m = re.search(r"\d+", r)
-            if m is not None:
-                minutes = int(m.group()) * 60
-                matched = True
-        elif r.endswith(("d", "day", "days")):
-            m = re.search(r"\d+", r)
-            if m is not None:
-                minutes = int(m.group()) * 1440
-                matched = True
+            parsed.append({"minutes": 0, "action": "DISPLAY"})
+            continue
 
-        if not matched:
+        minutes = 0.0
+        covered: set[int] = set()
+        for m in _REMINDER_TOKEN.finditer(r):
+            unit_minutes = _REMINDER_UNIT_MINUTES.get(m.group(2))
+            if unit_minutes is None:
+                raise ValueError(f"unrecognized reminder format: {r!r}")
+            minutes += float(m.group(1)) * unit_minutes
+            covered.update(range(m.start(), m.end()))
+        # Every non-space character must belong to a number+unit token, so
+        # bare numbers ('15'), unknown units ('15sec', 'PT15M') and digits
+        # without a unit ('2w3') are rejected instead of silently dropped.
+        if not covered or any(
+            not r[i].isspace() for i in range(len(r)) if i not in covered
+        ):
             raise ValueError(f"unrecognized reminder format: {r!r}")
-        parsed.append({"minutes": minutes, "action": "DISPLAY"})
+        whole = int(minutes)
+        parsed.append(
+            {"minutes": whole if whole == minutes else minutes, "action": "DISPLAY"}
+        )
     return parsed
+
+
+# One number+unit token; a unit word must follow every number, so '15' and
+# 'PT15M' (unit 'm') are rejected rather than silently read as minutes.
+_REMINDER_TOKEN = re.compile(r"(\d+(?:\.\d+)?)\s*([a-z]+)")
+
+_REMINDER_UNIT_MINUTES = {
+    "min": 1,
+    "mins": 1,
+    "minute": 1,
+    "minutes": 1,
+    "h": 60,
+    "hr": 60,
+    "hrs": 60,
+    "hour": 60,
+    "hours": 60,
+    "d": 1440,
+    "day": 1440,
+    "days": 1440,
+    "w": 10080,
+    "wk": 10080,
+    "wks": 10080,
+    "week": 10080,
+    "weeks": 10080,
+}
 
 
 def _as_date_only(value: object) -> date | None:
@@ -767,28 +818,46 @@ def _resolve_timezone(user: dict | None, default: str = "UTC") -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
-def _parse_date_loose(value: str) -> date:
-    """Parse an ISO date or datetime string, returning just the date part."""
+def _parse_date_loose(value: str, tz: ZoneInfo) -> date:
+    """Parse an ISO date or datetime string into the user's date part.
+
+    A plain date passes through; a datetime is read in the user's timezone,
+    so an offset-stamped value (e.g. a UTC-stamped datetime derived from a
+    stored midnight-crossing due date) yields the user's local date rather
+    than the value's own.
+    """
     try:
         return date.fromisoformat(value)
     except ValueError:
-        return datetime.fromisoformat(value).date()
+        dt = datetime.fromisoformat(value)
+        return dt.astimezone(tz).date() if dt.tzinfo else dt.date()
 
 
-def _task_due_matches(due_prop, want: date) -> bool:
-    """True if a task's DUE property falls on the given date."""
+def _task_due_matches(due_prop, want: date, tz: ZoneInfo) -> bool:
+    """True if a task's DUE property falls on the given date, read in tz."""
     if due_prop is None:
         return False
     dt = due_prop.dt
-    return (dt.date() if isinstance(dt, datetime) else dt) == want
+    if isinstance(dt, datetime):
+        # A stored midnight-crossing datetime (UTC 00:30 is 17:30 the day
+        # before in a tz behind UTC) reads as the user's local date,
+        # matching how the user's hint date was parsed.
+        if dt.tzinfo:
+            dt = dt.astimezone(tz)
+        return dt.date() == want
+    return dt == want
 
 
-def _event_starts_on(dtstart_prop, want: date) -> bool:
-    """True if an event's DTSTART falls on the given date."""
+def _event_starts_on(dtstart_prop, want: date, tz: ZoneInfo) -> bool:
+    """True if an event's DTSTART falls on the given date, read in tz."""
     if dtstart_prop is None:
         return False
     dt = dtstart_prop.dt
-    return (dt.date() if isinstance(dt, datetime) else dt) == want
+    if isinstance(dt, datetime):
+        if dt.tzinfo:
+            dt = dt.astimezone(tz)
+        return dt.date() == want
+    return dt == want
 
 
 def _get_parent_uid(component) -> str | None:
@@ -851,6 +920,8 @@ def _expand_occurrences(
             if new is None:
                 continue
             start, replaced = new, start
+            if not (window_start <= start <= window_end):
+                continue
         if start in seen:
             continue
         seen.add(start)
@@ -1140,10 +1211,10 @@ class Tools:
         matches = [
             t
             for t in todos
-            if norm_identifier == str(t.component["summary"]).strip().lower()
+            if norm_identifier == str(t.component.get("summary") or "").strip().lower()
         ]
         if not matches:
-            raise Exception(f"parent task with summary {identifier!r} not found")
+            raise Exception(f"parent task with uid or summary {identifier!r} not found")
         if len(matches) > 1:
             options = []
             for t in matches:
@@ -1166,6 +1237,7 @@ class Tools:
         due: str | None = None,
         description_contains: str | None = None,
         todos=None,
+        tz: ZoneInfo | None = None,
     ):
         """Find a task by summary, narrowing on due/description if ambiguous.
 
@@ -1173,6 +1245,10 @@ class Tools:
         candidate by due date and description snippet only; a UID is only
         surfaced by add_task()'s return or tasks() with include_uid=True,
         so the summary disambiguation itself never surfaces one.
+
+        `tz` is the user's timezone (falling back to DEFAULT_TIMEZONE): the
+        due hint and the stored DUE are both read in it, so a midnight-
+        crossing due date narrows on the user's local date.
         """
         norm_summary = summary.strip().lower()
         if todos is None:
@@ -1180,15 +1256,18 @@ class Tools:
         matches = [
             t
             for t in todos
-            if norm_summary == str(t.component["summary"]).strip().lower()
+            if norm_summary == str(t.component.get("summary") or "").strip().lower()
         ]
         if not matches:
             raise Exception(f"no task named {summary!r} found")
 
         if len(matches) > 1 and due:
-            want = _parse_date_loose(due)
+            user_tz = tz or _resolve_timezone(None, self.valves.DEFAULT_TIMEZONE)
+            want = _parse_date_loose(due, user_tz)
             narrowed = [
-                t for t in matches if _task_due_matches(t.component.get("due"), want)
+                t
+                for t in matches
+                if _task_due_matches(t.component.get("due"), want, user_tz)
             ]
             if narrowed:
                 matches = narrowed
@@ -1224,27 +1303,35 @@ class Tools:
         summary: str,
         on_date: str | None = None,
         description_contains: str | None = None,
+        tz: ZoneInfo | None = None,
     ):
         """Find an event by summary, narrowing on start date/description if
         ambiguous. Raises if not found or still ambiguous. Candidates are
         described by start time and description only; a UID is only surfaced
         by create_calendar_event()'s return or calendar_events() with
         include_uid=True, so this disambiguation never surfaces one.
+
+        `tz` is the user's timezone (falling back to DEFAULT_TIMEZONE): the
+        start hint and the stored DTSTART are both read in it, so a
+        midnight-crossing start narrows on the user's local date.
         """
         norm_summary = summary.strip().lower()
         events = await cal.events()
         matches = [
             e
             for e in events
-            if norm_summary == str(e.component["summary"]).strip().lower()
+            if norm_summary == str(e.component.get("summary") or "").strip().lower()
         ]
         if not matches:
             raise NotFoundError(f"no event named {summary!r} found")
 
         if len(matches) > 1 and on_date:
-            want = _parse_date_loose(on_date)
+            user_tz = tz or _resolve_timezone(None, self.valves.DEFAULT_TIMEZONE)
+            want = _parse_date_loose(on_date, user_tz)
             narrowed = [
-                e for e in matches if _event_starts_on(e.component.get("dtstart"), want)
+                e
+                for e in matches
+                if _event_starts_on(e.component.get("dtstart"), want, user_tz)
             ]
             if narrowed:
                 matches = narrowed
@@ -1901,13 +1988,18 @@ class Tools:
                 filename = os.path.basename(rel)
 
                 if patterns_to_match:
-                    matched = False
-                    for pat in patterns_to_match:
-                        pattern_name = pat.split("/")[-1] if "/" in pat else pat
-                        if fnmatch.fnmatch(filename, pattern_name):
-                            matched = True
-                            break
-                    if not matched:
+                    # Same relative view as find: include patterns scope to
+                    # the search dir, so 'sub/*.py' matches only under sub/
+                    # instead of every .py anywhere.
+                    if rel.startswith(search_rel + "/"):
+                        rel_to_target = rel[len(search_rel) + 1 :]
+                    elif search_rel:
+                        rel_to_target = filename
+                    else:
+                        rel_to_target = rel
+                    if not any(
+                        _glob_match(rel_to_target, pat) for pat in patterns_to_match
+                    ):
                         return
 
                 if os.path.splitext(filename)[1].lower() in _BINARY_EXTS:
@@ -2252,11 +2344,14 @@ class Tools:
             self._check_blacklisted(self._get_rel_path(dst_full))
             await self._check_read_only_recursive(client, dst_full, missing_ok=True)
             await self._recursive_cp(client, src_full, dst_full, copied)
-        except Exception:
+        except Exception as e:
             if copied:
+                # Embed str(e): _safe reports str() of this ValueError, so
+                # the cause must be in the message for the model to see why
+                # the copy failed. `from e` preserves it for tracebacks.
                 raise ValueError(
-                    f"partial copy: {len(copied)} path(s) copied before failure"
-                )
+                    f"partial copy: {len(copied)} path(s) copied before failure: {e}"
+                ) from e
             raise
         finally:
             await client.close()
@@ -2474,6 +2569,7 @@ class Tools:
         new_url: str | None = None,
         new_categories: list[str] | None = None,
         new_related_to: str | None = None,
+        __user__: dict = {},
         __event_emitter__=None,
     ) -> None:
         """Edit a task. Target it by uid (exact) or by summary. Only provided
@@ -2485,6 +2581,7 @@ class Tools:
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
 
+        zi = _resolve_timezone(__user__, self.valves.DEFAULT_TIMEZONE)
         client = await self._caldav_client()
         try:
             principal = await client.principal()
@@ -2503,6 +2600,7 @@ class Tools:
                     due=due,
                     description_contains=description_contains,
                     todos=todos,
+                    tz=zi,
                 )
             else:
                 raise ValueError("provide uid or summary")
@@ -2516,7 +2614,9 @@ class Tools:
             if new_categories is not None:
                 todo.component["categories"] = new_categories
             if new_priority is not None:
-                todo.component["priority"] = max(0, min(9, new_priority))
+                # Coerce like add_task, so a model-supplied "5" is clamped
+                # instead of raising TypeError on the min/max comparison.
+                todo.component["priority"] = max(0, min(9, int(new_priority)))
             if new_url is not None:
                 todo.component["url"] = new_url
 
@@ -2579,11 +2679,16 @@ class Tools:
         try:
             principal = await client.principal()
             cal = await self._get_calendar(principal, list_name)
+            zi = _resolve_timezone(__user__, self.valves.DEFAULT_TIMEZONE)
             if uid:
                 todo = await self._find_task_by_uid(cal, uid)
             elif summary:
                 todo = await self._find_task_by_summary(
-                    cal, summary, due=due, description_contains=description_contains
+                    cal,
+                    summary,
+                    due=due,
+                    description_contains=description_contains,
+                    tz=zi,
                 )
             else:
                 raise ValueError("provide uid or summary")
@@ -2605,6 +2710,7 @@ class Tools:
             # copy and advances the master to its next occurrence. If the
             # series is exhausted (COUNT down to one, UNTIL in the past) or
             # malformed, fall through to a plain completion.
+            series_ended_fallback = False
             if "RRULE" in comp and not entire_series:
                 # caldav's "safe" mode files the done occurrence as a
                 # standalone todo whose link to the master is lost. Re-run
@@ -2644,6 +2750,12 @@ class Tools:
                     except (ValueError, NotImplementedError):
                         pass
 
+                # Both fallbacks above failed on known-unsupported recurrence
+                # (malformed or exotic RRULE); the plain completion below ends
+                # the whole series. Say so: a bare label would read as an
+                # ordinary one-off completion.
+                series_ended_fallback = True
+
             if "RRULE" in comp:
                 comp.pop("rrule", None)  # a completed series must not recur
             for key, value in (
@@ -2656,7 +2768,7 @@ class Tools:
                 comp.add(key, value)
 
             await todo.save()
-            if entire_series:
+            if entire_series or series_ended_fallback:
                 return f"{label} (series ended)"
             return label
         finally:
@@ -2670,6 +2782,7 @@ class Tools:
         due: str | None = None,
         description_contains: str | None = None,
         list_name: str | None = None,
+        __user__: dict = {},
         __event_emitter__=None,
     ) -> None:
         """Delete a task, by uid (exact) or by summary. If more than one task
@@ -2680,6 +2793,7 @@ class Tools:
         if not is_whitelisted(self.valves.TASK_LIST_WHITELIST, list_name):
             raise Exception(f"{list_name!r} not whitelisted")
 
+        zi = _resolve_timezone(__user__, self.valves.DEFAULT_TIMEZONE)
         client = await self._caldav_client()
         try:
             principal = await client.principal()
@@ -2688,7 +2802,11 @@ class Tools:
                 todo = await self._find_task_by_uid(cal, uid)
             elif summary:
                 todo = await self._find_task_by_summary(
-                    cal, summary, due=due, description_contains=description_contains
+                    cal,
+                    summary,
+                    due=due,
+                    description_contains=description_contains,
+                    tz=zi,
                 )
             else:
                 raise ValueError("provide uid or summary")
@@ -2850,6 +2968,7 @@ class Tools:
                     summary,
                     on_date=on_date,
                     description_contains=description_contains,
+                    tz=zi,
                 )
             else:
                 raise ValueError("provide uid or summary")
@@ -3122,6 +3241,7 @@ class Tools:
         on_date: str | None = None,
         description_contains: str | None = None,
         calendar_name: str | None = None,
+        __user__: dict = {},
         __event_emitter__=None,
     ) -> None:
         """Delete an event, by uid (exact) or by summary."""
@@ -3129,6 +3249,7 @@ class Tools:
         if not is_whitelisted(self.valves.CALENDAR_WHITELIST, calendar_name):
             raise Exception(f"{calendar_name!r} not in whitelist")
 
+        zi = _resolve_timezone(__user__, self.valves.DEFAULT_TIMEZONE)
         client = await self._caldav_client()
         try:
             principal = await client.principal()
@@ -3141,6 +3262,7 @@ class Tools:
                     summary,
                     on_date=on_date,
                     description_contains=description_contains,
+                    tz=zi,
                 )
             else:
                 raise ValueError("provide uid or summary")

@@ -546,6 +546,49 @@ class TestEtagConditionalDownload:
         assert await f._download_file(GoneClient(), "AGENTS.md") is None
         assert _ETAG_CACHE == {}
 
+    async def test_uncached_304_is_not_poisoned_by_empty_body(self):
+        """A 304 with no cache entry must not cache ('', etag); the retry
+        fetches the real body and the cache carries it."""
+
+        class Uncached304Client(self.FakeClient):
+            async def execute_request(self, action, path, headers_ext=None):
+                self.calls.append(dict(headers_ext or {}))
+                if len(self.calls) == 1:
+                    return TestEtagConditionalDownload.Resp(304)
+                return TestEtagConditionalDownload.Resp(200, b"real", '"E1"')
+
+        f = startup_context_injector.Filter()
+        client = Uncached304Client()
+        assert await f._download_file(client, "AGENTS.md") == "real"
+        assert client.calls[0] == {}
+        assert client.calls[1] == {}
+        # The cache entry must pair the real body with the ETag, never ('', etag).
+        assert list(_ETAG_CACHE.values()) == [('"E1"', "real")]
+
+    async def test_uncached_304_poisons_nothing_when_retry_also_304s(self):
+        """A second 304 means the server is lying: the file is skipped and
+        the empty body is never cached as a permanently empty file."""
+
+        class Always304Client(self.FakeClient):
+            async def execute_request(self, action, path, headers_ext=None):
+                self.calls.append(dict(headers_ext or {}))
+                return TestEtagConditionalDownload.Resp(304)
+
+        f = startup_context_injector.Filter()
+        client = Always304Client()
+        assert await f._download_file(client, "AGENTS.md") is None
+        assert len(client.calls) == 2
+        assert _ETAG_CACHE == {}
+
+    async def test_cached_304_still_serves_cache(self):
+        """The normal path is unchanged: a cached ETag revalidated with 304
+        serves the cached body without a second request."""
+        f = startup_context_injector.Filter()
+        client = self.FakeClient()
+        assert await f._download_file(client, "AGENTS.md") == "hello"
+        assert await f._download_file(client, "AGENTS.md") == "hello"
+        assert len(client.calls) == 2
+
 
 class TestInjectorValveAdditions:
     def test_priority_and_blacklist_defaults(self):

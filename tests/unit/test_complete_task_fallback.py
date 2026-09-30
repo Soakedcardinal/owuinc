@@ -61,7 +61,9 @@ def _tools(todo):
     async def _get_calendar(principal, name):
         return object()
 
-    async def _find_task_by_summary(cal, summary, due=None, description_contains=None):
+    async def _find_task_by_summary(
+        cal, summary, due=None, description_contains=None, tz=None
+    ):
         return todo
 
     t._caldav_client = _caldav_client
@@ -105,6 +107,9 @@ class TestRecurringCompletionFallback:
         assert todo.save_called is True
         assert "RRULE" not in todo.component
         assert todo.component.get("status") == "COMPLETED"
+        # the fallback ends the whole series; the reply must say so instead
+        # of a bare label that reads as an ordinary one-off completion
+        assert "series ended" in result["data"]
 
     async def test_notimplemented_recurrence_still_falls_back(self):
         todo = FakeTodo(complete_exc=NotImplementedError("exotic recurrence"))
@@ -113,6 +118,7 @@ class TestRecurringCompletionFallback:
         assert todo.save_called is True
         assert "RRULE" not in todo.component
         assert todo.component.get("status") == "COMPLETED"
+        assert "series ended" in result["data"]
 
     async def test_entire_series_ends_series(self):
         todo = FakeTodo()
