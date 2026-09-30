@@ -4,7 +4,7 @@ author: Soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Manage files, tasks, and calendars via WebDAV and CalDAV.
 requirements: caldav>=3.3.1,icalendar>=7.3.0,aiowebdav2>=0.6.2,pydantic>=2,tiktoken>=0.13,aiohttp>=3.14,python-dateutil>=2.9
-version: 4.0.0
+version: 4.0.1
 license: MIT
 """
 
