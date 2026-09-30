@@ -563,6 +563,15 @@ class TestNormalizeSandboxDir:
         assert _normalize_sandbox_dir("...") == "..."
         assert _normalize_sandbox_dir("..hidden") == "..hidden"
 
+    def test_parent_segments_raise(self):
+        """A '..' segment is rejected before collapsing: the prefix is admin
+        trust, but validate_path checks only the user path, never itself."""
+        from owuinc.owuinc import _normalize_sandbox_dir
+
+        for raw in ("..", "../evil", "owuinc/..", "owuinc/../evil"):
+            with pytest.raises(ValueError):
+                _normalize_sandbox_dir(raw)
+
 
 class TestValidatePathDotSandbox:
     """A SANDBOX_DIR of '.' (the UI-reachable root selector) behaves
@@ -1362,6 +1371,37 @@ class TestParseReminderUnits:
         assert parse_reminders(["2w"])[0]["minutes"] == 20160
         assert parse_reminders(["1week"])[0]["minutes"] == 10080
 
+    def test_fractional_values_are_not_truncated(self):
+        """'2.5 weeks' is 2.5 weeks, not the leading '2' the old
+        re.search(r'\\d+') grabbed."""
+        from owuinc.owuinc import parse_reminders
+
+        assert parse_reminders(["2.5 weeks"]) == [
+            {"minutes": 25200, "action": "DISPLAY"}
+        ]
+        assert parse_reminders(["1.5h"]) == [{"minutes": 90, "action": "DISPLAY"}]
+
+    def test_fractional_minutes_stay_fractional(self):
+        from owuinc.owuinc import parse_reminders
+
+        assert parse_reminders(["1.5min"]) == [{"minutes": 1.5, "action": "DISPLAY"}]
+
+    def test_compound_values_sum_units(self):
+        """'1w3d' sums both units instead of stopping at the first number."""
+        from owuinc.owuinc import parse_reminders
+
+        assert parse_reminders(["1w3d"]) == [{"minutes": 14400, "action": "DISPLAY"}]
+        assert parse_reminders(["1 hour 30min"]) == [
+            {"minutes": 90, "action": "DISPLAY"}
+        ]
+
+    def test_unattached_digits_still_raise(self):
+        """Digits without a unit are rejected, not silently dropped."""
+        from owuinc.owuinc import parse_reminders
+
+        with pytest.raises(ValueError, match="unrecognized reminder format"):
+            parse_reminders(["2w3"])
+
     def test_non_string_raises_value_error_not_attribute_error(self):
         from owuinc.owuinc import parse_reminders
 
@@ -1404,6 +1444,26 @@ class TestGlobMatch:
         assert not _glob_match("fx.txt", "f[0-9].txt")
         assert _glob_match("fx.txt", "f[!0-9].txt")
 
+    def test_glued_globstar_requires_the_separator(self):
+        """'a**/b' is not a segment boundary, so the slash cannot vanish:
+        'ab' must not match the degenerate '^a(?:.*/)?b$' compilation."""
+        from owuinc.owuinc import _glob_match
+
+        assert _glob_match("a/b.py", "a**/b.py")
+        assert _glob_match("a/x/b.py", "a**/b.py")
+        assert _glob_match("a/x/y/b.py", "a**/b.py")
+        assert not _glob_match("ab.py", "a**/b.py")
+        assert not _glob_match("ab", "a**/b")
+
+    def test_boundary_globstar_still_collapses_slash(self):
+        from owuinc.owuinc import _glob_match
+
+        assert _glob_match("a.md", "**/*.md")
+        assert _glob_match("a/x/y/b.md", "a/**/b.md")
+        assert not _glob_match("a.md", "a/**/b.md")  # the literal slash stays
+        assert not _glob_match("ab.md", "a/**/b.md")
+        assert _glob_match("a/b.md", "a/**/b.md")
+
 
 class TestExpandBraces:
     def test_single_group(self):
@@ -1421,6 +1481,77 @@ class TestExpandBraces:
 
         assert _expand_braces("plain.txt") == ["plain.txt"]
         assert _expand_braces("unclosed{") == ["unclosed{"]
+
+
+class TestDisambiguationDateTz:
+    """The summary-disambiguation date hints read both sides in the user's
+    timezone, so a midnight-crossing value picks the user's local date."""
+
+    LA = ZoneInfo("America/Los_Angeles")
+
+    def _due(self, dt):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(dt=dt)
+
+    def test_stored_midnight_crossing_due_reads_as_user_date(self):
+        from datetime import date, datetime, timezone
+
+        from owuinc.owuinc import _task_due_matches
+
+        # 2026-09-27 00:30Z is 2026-09-26 17:30 in Los Angeles.
+        dt = datetime(2026, 9, 27, 0, 30, tzinfo=timezone.utc)
+        assert not _task_due_matches(self._due(dt), date(2026, 9, 27), self.LA)
+        assert _task_due_matches(self._due(dt), date(2026, 9, 26), self.LA)
+
+    def test_naive_stored_due_keeps_wall_date(self):
+        from datetime import date, datetime
+
+        from owuinc.owuinc import _task_due_matches
+
+        dt = datetime(2026, 9, 26, 23, 30)
+        assert _task_due_matches(self._due(dt), date(2026, 9, 26), self.LA)
+        assert not _task_due_matches(self._due(dt), date(2026, 9, 27), self.LA)
+
+    def test_all_day_due_still_matches(self):
+        from datetime import date
+
+        from owuinc.owuinc import _task_due_matches
+
+        assert _task_due_matches(
+            self._due(date(2026, 9, 26)), date(2026, 9, 26), self.LA
+        )
+        assert not _task_due_matches(
+            self._due(date(2026, 9, 26)), date(2026, 9, 27), self.LA
+        )
+
+    def test_missing_due_never_matches(self):
+        from datetime import date
+
+        from owuinc.owuinc import _task_due_matches
+
+        assert not _task_due_matches(None, date(2026, 9, 26), self.LA)
+
+    def test_parse_date_loose_offsets_read_in_user_tz(self):
+        from datetime import date
+
+        from owuinc.owuinc import _parse_date_loose
+
+        # A UTC-stamped datetime the model may derive from a stored
+        # midnight-crossing due date maps to the user's local date.
+        assert _parse_date_loose("2026-09-27T00:30+00:00", self.LA) == date(2026, 9, 26)
+        # A plain date and a naive wall datetime pass through unchanged.
+        assert _parse_date_loose("2026-09-26", self.LA) == date(2026, 9, 26)
+        assert _parse_date_loose("2026-09-26T23:30", self.LA) == date(2026, 9, 26)
+
+    def test_event_start_reads_as_user_date(self):
+        from datetime import date, datetime, timezone
+
+        from owuinc.owuinc import _event_starts_on
+
+        dt = datetime(2026, 9, 27, 0, 30, tzinfo=timezone.utc)
+        assert _event_starts_on(self._due(dt), date(2026, 9, 26), self.LA)
+        assert not _event_starts_on(self._due(dt), date(2026, 9, 27), self.LA)
 
 
 class TestHrefRel:

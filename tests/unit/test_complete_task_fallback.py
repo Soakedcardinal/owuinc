@@ -61,7 +61,9 @@ def _tools(todo):
     async def _get_calendar(principal, name):
         return object()
 
-    async def _find_task_by_summary(cal, summary, due=None, description_contains=None):
+    async def _find_task_by_summary(
+        cal, summary, due=None, description_contains=None, tz=None
+    ):
         return todo
 
     t._caldav_client = _caldav_client
