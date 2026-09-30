@@ -190,6 +190,32 @@ class TestGrep:
         assert result["data"]["matches"] == []
         assert result["data"]["skipped"] == []
 
+    @pytest.mark.asyncio
+    async def test_grep_subdir_include_scopes_to_dir(self, webdav_tools):
+        """A dir-scoped include like 'grepdir/*.py' matches only under
+        grepdir/, mirroring find's _glob_match semantics."""
+        await webdav_tools.mkdir("grepdir")
+        await webdav_tools.write("grepdir/marked.py", "def foo():\n    return 42")
+        await webdav_tools.write("grep_outside.py", "def foo():\n    return 42")
+
+        result = await webdav_tools.grep("def foo", include="grepdir/*.py")
+        assert result["result"] == "True", result
+        matches = result["data"]["matches"]
+        assert [m["file"] for m in matches] == ["grepdir/marked.py"]
+
+    @pytest.mark.asyncio
+    async def test_grep_bare_include_still_matches_any_depth(self, webdav_tools):
+        """A basename include like '*.py' (no '/') still matches at any depth."""
+        await webdav_tools.mkdir("grepdeep")
+        await webdav_tools.write("grepdeep/deep.py", "def foo():\n    return 42")
+
+        result = await webdav_tools.grep("def foo", include="*.py")
+        assert result["result"] == "True", result
+        matches = result["data"]["matches"]
+        # The shared server keeps files from earlier tests; the point is that
+        # the basename include still reaches into a directory at any depth.
+        assert "grepdeep/deep.py" in [m["file"] for m in matches]
+
 
 class TestAppend:
     @pytest.mark.asyncio

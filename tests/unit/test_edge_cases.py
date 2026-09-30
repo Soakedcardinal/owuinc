@@ -470,6 +470,91 @@ class TestMvAndCpOverwriteConsistency:
 
 
 # ============================================================
+# cp: partial-failure reporting
+# ============================================================
+class TestCpPartialFailure:
+    """cp's partial-copy error must not swallow the underlying cause."""
+
+    class _CpClient:
+        """src dir with two files; the copy of `fail` raises."""
+
+        def __init__(self, fail=None):
+            self.fail = fail  # dst suffix whose copy raises, or None
+            self.copied = []
+
+        async def is_dir(self, path):
+            return path.endswith("/src")
+
+        async def mkdir(self, path, recursive=False):
+            pass
+
+        async def list_files(self, path):
+            return ["/src/a.txt", "/src/b.txt"]
+
+        async def copy(self, remote_path_from, remote_path_to):
+            self.copied.append(remote_path_to)
+            if self.fail and remote_path_to.endswith(self.fail):
+                raise PermissionError("403 Forbidden: quota exceeded")
+
+        async def close(self):
+            pass
+
+    def _tools(self, fail=None):
+        from owuinc.owuinc import Tools
+
+        client = TestCpPartialFailure._CpClient(fail)
+
+        class _StubbedTools(Tools):
+            def _webdav_client(self):
+                return client
+
+            async def _ensure_sandbox(self, client):
+                pass
+
+            async def _check_blacklisted_recursive(self, client, path):
+                pass
+
+            async def _check_read_only_recursive(self, client, path, missing_ok=False):
+                pass
+
+        t = _StubbedTools()
+        t.client = client
+        return t
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_details_include_cause(self):
+        t = self._tools(fail="/b.txt")
+        res = await t.cp("src", "dst")
+        assert res["result"] == "False"
+        # N counts the one successful leaf; the 403 cause survives in details.
+        assert "partial copy: 1 path(s) copied before failure" in res["details"]
+        assert "403 Forbidden: quota exceeded" in res["details"]
+
+    @pytest.mark.asyncio
+    async def test_dirs_counted_only_on_success(self):
+        """Regression: a failing child must not add dir entries to _copied."""
+        t = self._tools(fail="/b.txt")
+        copied: list[str] = []
+        with pytest.raises(PermissionError):
+            await t._recursive_cp(t.client, "/src", "/dst", copied)
+        assert copied == ["/dst/a.txt"]  # leaf only, no dir entries
+
+        t2 = self._tools()
+        copied2: list[str] = []
+        await t2._recursive_cp(t2.client, "/src", "/dst", copied2)
+        assert copied2 == ["/dst/a.txt", "/dst/b.txt", "/dst"]  # dir on success
+
+    @pytest.mark.asyncio
+    async def test_failure_without_progress_keeps_original_cause(self):
+        # Fail on the very first leaf: no partial progress, no wrapper message.
+        t = self._tools(fail="/a.txt")
+        res = await t.cp("src", "dst")
+        assert res["result"] == "False"
+        assert "partial copy" not in res["details"]
+        assert "403 Forbidden: quota exceeded" in res["details"]
+
+
+# ============================================================
 # edit and append: race conditions
 # ============================================================
 class TestEditAppendRaceCondition:

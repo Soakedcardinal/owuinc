@@ -127,6 +127,27 @@ class TestResolveTaskUid:
         with pytest.raises(Exception):
             await Tools()._resolve_task_uid(cal, "nope")
 
+    async def test_absent_identifier_error_names_uid_or_summary(self):
+        """The caller may pass either a uid or a summary; the error must not
+        claim 'summary' when a missing uid was given."""
+        cal = FakeCal(todos=[FakeObj(UID="abc", SUMMARY="Foo")])
+        with pytest.raises(Exception, match="uid or summary.*not found"):
+            await Tools()._resolve_task_uid(cal, "nope")
+
+    async def test_summaryless_todos_do_not_match(self):
+        """A malformed VTODO without SUMMARY must not crash the lookup on a
+        bare 'summary' KeyError, nor match a summary search: only the real
+        summary carrier resolves."""
+        cal = FakeCal(todos=[FakeObj(UID="abc"), FakeObj(UID="u2", SUMMARY="Foo")])
+        assert await Tools()._resolve_task_uid(cal, "  foo ") == "u2"
+        # The exact UID of the summaryless todo still wins over any summary.
+        assert await Tools()._resolve_task_uid(cal, "abc") == "abc"
+
+    async def test_summaryless_todos_never_match_summaries(self):
+        cal = FakeCal(todos=[FakeObj(UID="u1"), FakeObj(UID="u2", SUMMARY="Foo")])
+        with pytest.raises(Exception, match="not found"):
+            await Tools()._resolve_task_uid(cal, "  nope ")
+
 
 class TestCrudRequiresTarget:
     """Each CRUD tool refuses when neither uid nor summary is given."""

@@ -521,3 +521,105 @@ class TestValveDescriptions:
     def test_task_whitelist_description(self):
         desc = Tools.Valves.model_fields["TASK_LIST_WHITELIST"].description
         assert "default-deny" in desc.lower()
+
+
+# ---------------------------------------------------------------------------
+# edit_task: new_priority coercion
+# ---------------------------------------------------------------------------
+
+
+class _PriorityComp:
+    def __init__(self, **props):
+        self._d = {k.lower(): v for k, v in props.items()}
+
+    def get(self, key, default=None):
+        return self._d.get(key.lower(), default)
+
+    def __getitem__(self, key):
+        return self._d[key.lower()]
+
+    def __setitem__(self, key, value):
+        self._d[key.lower()] = value
+
+    def __contains__(self, key):
+        return key.lower() in self._d
+
+
+class _PriorityTodo:
+    def __init__(self):
+        self.component = _PriorityComp(UID="u1", SUMMARY="Standup")
+        self.save_called = False
+
+    async def save(self):
+        self.save_called = True
+
+
+class TestEditTaskPriorityCoercion:
+    """edit_task coerces new_priority like add_task does, so a model-supplied
+    string is clamped instead of raising TypeError on the min/max comparison."""
+
+    def _tools(self, todo):
+        t = Tools()
+        t.valves.TASK_LIST_WHITELIST = "Tasks"
+
+        class FakeCal:
+            async def todos(self, *a, **k):
+                return [todo]
+
+        class FakeClient:
+            async def principal(self):
+                return object()
+
+            async def close(self):
+                pass
+
+        async def _caldav_client():
+            return FakeClient()
+
+        async def _get_calendar(principal, name):
+            return FakeCal()
+
+        t._caldav_client = _caldav_client
+        t._get_calendar = _get_calendar
+        return t
+
+    @pytest.mark.asyncio
+    async def test_string_priority_is_clamped_not_type_error(self):
+        todo = _PriorityTodo()
+        t = self._tools(todo)
+        res = await t.edit_task(
+            summary="Standup", new_priority="5", __user__={"timezone": "UTC"}
+        )
+        assert res["result"] == "True"
+        assert todo.save_called
+        assert todo.component["priority"] == 5
+
+    @pytest.mark.asyncio
+    async def test_out_of_range_string_priority_is_clamped(self):
+        todo = _PriorityTodo()
+        t = self._tools(todo)
+        res = await t.edit_task(
+            summary="Standup", new_priority="12", __user__={"timezone": "UTC"}
+        )
+        assert res["result"] == "True"
+        assert todo.component["priority"] == 9
+
+    @pytest.mark.asyncio
+    async def test_non_numeric_priority_fails_loudly(self):
+        todo = _PriorityTodo()
+        t = self._tools(todo)
+        res = await t.edit_task(
+            summary="Standup", new_priority="urgent", __user__={"timezone": "UTC"}
+        )
+        assert res["result"] == "False"
+        assert not todo.save_called
+
+    @pytest.mark.asyncio
+    async def test_integer_priority_is_clamped(self):
+        todo = _PriorityTodo()
+        t = self._tools(todo)
+        res = await t.edit_task(
+            summary="Standup", new_priority=-3, __user__={"timezone": "UTC"}
+        )
+        assert res["result"] == "True"
+        assert todo.component["priority"] == 0

@@ -67,9 +67,9 @@ Change them if you want to use different (isolated) calendar or task list.
 
 ```text
 Task Priorities: 1 = high, 9 = low, 0 = none
-Calendar Functions: Provide `start` and `end` arguments as an ISO 8601-style string without a timezone offset, e.g. `2026-02-01T15:30`.
-Default `calendar_name`: `Personal`
-Default `list_name`: `Tasks`
+Calendar Functions: Provide start and end arguments as an ISO 8601-style string without a timezone offset, e.g. 2026-02-01T15:30.
+Default calendar_name: Personal
+Default list_name: Tasks
 ```
 
 > **Note**: Update the defaults in the prompt if you changed the calendar or task list valves in Step 2.
