@@ -4,7 +4,7 @@ author: Soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Injects files from nextcloud as system instructions on every request.
 requirements: aiowebdav2>=0.6.2,aiohttp>=3.14,tiktoken>=0.13,tzdata>=2026.4,pydantic>=2
-version: 4.0.0
+version: 4.0.1
 license: MIT
 """
 
