@@ -1,4 +1,10 @@
-"""Unit tests for ETag + If-Match optimistic concurrency in append/edit.
+"""Unit tests for race injection in append/edit optimistic concurrency.
+
+Complements the integration suite (real Radicale/WsgiDAV): races and error
+classification cannot be reproduced against a compliant server, so a fake
+client injects them deterministically. Basic happy paths (append existing,
+create-on-missing, no-etag fail-closed, stale-etag rejection) live in
+tests/integration/ and are NOT duplicated here.
 
 The fake client models a real WebDAV server's three distinct resource states:
 missing, present-with-etag and present-without-etag. "ETag is None" is never
@@ -142,57 +148,6 @@ def _tools(client):
     return t
 
 
-class TestAppendWithEtag:
-    async def test_preserves_content_and_sends_if_match(self):
-        client = FakeClient(exists=True, content=b"one\n", etag='"e1"')
-        t = _tools(client)
-        res = await t.append("file.txt", "two")
-        assert res["result"] == "True"
-        assert client.content == b"one\ntwo"
-        assert len(client.puts) == 1
-        assert client.puts[0][1]["If-Match"] == '"e1"'
-        assert client.puts[0][0] == b"one\ntwo"
-
-    async def test_no_trailing_newline_inserts_one(self):
-        client = FakeClient(exists=True, content=b"one", etag='"e1"')
-        t = _tools(client)
-        res = await t.append("file.txt", "two")
-        assert res["result"] == "True"
-        assert client.content == b"one\ntwo"
-
-    async def test_existing_trailing_newline_not_doubled(self):
-        client = FakeClient(exists=True, content=b"one\n", etag='"e1"')
-        t = _tools(client)
-        res = await t.append("file.txt", "two\n")
-        assert res["result"] == "True"
-        assert client.content == b"one\ntwo\n"
-
-
-class TestAppendNoEtag:
-    async def test_fails_closed_and_preserves_existing(self):
-        client = FakeClient(exists=True, content=b"one\n", server_no_etag=True)
-        t = _tools(client)
-        res = await t.append("file.txt", "two")
-        assert res["result"] == "False"
-        assert "ETag" in res["details"]
-        assert client.content == b"one\n"
-        assert client.puts == []
-        assert client.creates == []
-
-
-class TestAppendMissing:
-    async def test_creates_with_if_none_match(self):
-        client = FakeClient(exists=False)
-        t = _tools(client)
-        res = await t.append("file.txt", "fresh")
-        assert res["result"] == "True"
-        assert client.content == b"fresh"
-        assert client.exists is True
-        assert len(client.creates) == 1
-        assert client.creates[0][1].get("If-None-Match") == "*"
-        assert "If-Match" not in client.creates[0][1]
-
-
 class TestAppendConflictRetry:
     async def test_412_retry_rereads_with_new_etag(self):
         client = FakeClient(
@@ -240,23 +195,7 @@ class TestAppendConcurrentCreate:
         assert "If-Match" in client.puts[0][1]
 
 
-class TestEditConcurrency:
-    async def test_no_etag_fails_closed_and_preserves(self):
-        client = FakeClient(exists=True, content=b"alpha", server_no_etag=True)
-        t = _tools(client)
-        res = await t.edit("file.txt", "alpha", "ALPHA")
-        assert res["result"] == "False"
-        assert "ETag" in res["details"]
-        assert client.content == b"alpha"
-        assert client.puts == []
-
-    async def test_missing_file_is_not_found(self):
-        client = FakeClient(exists=False)
-        t = _tools(client)
-        res = await t.edit("file.txt", "a", "b")
-        assert res["result"] == "False"
-        assert "file not found" in res["details"]
-
+class TestEditConflictRetry:
     async def test_retry_rereads_after_conflict(self):
         client = FakeClient(
             exists=True,

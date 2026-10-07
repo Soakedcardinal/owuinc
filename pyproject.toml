@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "owuinc"
-version = "4.0.1"
+version = "4.0.2"
 description = "Manage files, tasks, and calendars via WebDAV and CalDAV."
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 
 # what the plugin runs on
 dependencies = [
@@ -17,7 +17,9 @@ dependencies = [
     "aiowebdav2>=0.6.2",
     "pydantic>=2",
     "tiktoken>=0.13",
-    "aiohttp>=3.14",
+    # open-webui pins aiohttp==3.13.5 and the plugin runs inside its process,
+    # so the floor must stay at or below the server's pin
+    "aiohttp>=3.13",
     "python-dateutil>=2.9",
 ]
 
@@ -31,6 +33,10 @@ dev = [
     "radicale",
     "wsgidav",
     "cheroot",
+    "httpx",
+    # real server for tests/integration/owui; needs python <3.13 and pulls
+    # torch/transformers, so only for the dev venv, never the runtime
+    "open-webui==0.11.4",
     "ruff",
     "black",
     "mypy",
@@ -45,7 +51,9 @@ include = ["owuinc*"]
 target-version = ["py311"]
 
 [tool.mypy]
-python_version = "3.11"
+# dev venv runs 3.12 (open-webui needs <3.13); the 3.11 floor is enforced by
+# requires-python and the CI test job
+python_version = "3.12"
 files = ["owuinc", "startup_context_injector.py", "tests"]
 disable_error_code = ["annotation-unchecked"]
 

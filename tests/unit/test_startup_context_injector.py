@@ -354,12 +354,17 @@ class TestRequestStatusEmission:
 
         return emitter
 
-    async def test_emits_on_turn_start(self, monkeypatch):
+    async def test_emits_one_compact_event_on_turn_start(self, monkeypatch):
         f = self._filter(monkeypatch)
         events = []
         body = {"messages": [{"role": "user", "content": "hi"}]}
         await f.request(body, __event_emitter__=self._emitter(events))
-        assert any("Context injected" in e["data"]["description"] for e in events)
+        # One summary line, not one status row per file.
+        assert len(events) == 1
+        assert (
+            events[0]["data"]["description"] == "Context injected: 1 tokens in 1 files"
+        )
+        assert events[0]["data"]["done"] is True
 
     async def test_silent_on_tool_continuation(self, monkeypatch):
         f = self._filter(monkeypatch)

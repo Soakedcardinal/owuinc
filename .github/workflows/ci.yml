@@ -30,6 +30,6 @@ jobs:
         python-version: '3.11'
         cache: 'pip'
     - name: Install dependencies
-      run: pip install -e . && pip install pytest pytest-asyncio radicale wsgidav cheroot
+      run: pip install -e . && pip install pytest pytest-asyncio radicale wsgidav cheroot httpx
     - name: Run tests
       run: pytest

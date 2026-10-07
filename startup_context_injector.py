@@ -3,8 +3,8 @@ title: startup_context_injector
 author: Soakedcardinal
 git_url: https://github.com/soakedcardinal/owuinc
 description: Injects files from nextcloud as system instructions on every request.
-requirements: aiowebdav2>=0.6.2,aiohttp>=3.14,tiktoken>=0.13,tzdata>=2026.4,pydantic>=2
-version: 4.0.1
+requirements: aiowebdav2>=0.6.2,aiohttp>=3.13,tiktoken>=0.13,tzdata>=2026.4,pydantic>=2
+version: 4.0.2
 license: MIT
 """
 
@@ -575,16 +575,21 @@ class Filter:
 
             content = "\n\n".join(contexts)
 
-            for info in injected_info:
-                await self._emit_status(
-                    emit,
-                    f"{info['name']} ({info['tokens']} tokens)",
-                    done=False,
-                )
+            # One compact status line instead of one row per file: the UI
+            # collapses status history, but each row is clamped to a single
+            # line and a file-per-row report stacks up over a long chat. The
+            # per-file breakdown goes to the log instead, where space is free.
             total = sum(f["tokens"] for f in injected_info)
+            if emit is not None:
+                logger.info(
+                    "injected context: %d tokens in %d files (%s)",
+                    total,
+                    len(injected_info),
+                    ", ".join(f"{f['name']} {f['tokens']}" for f in injected_info),
+                )
             await self._emit_status(
                 emit,
-                f"Context injected: {total} tokens ({len(injected_info)} files)",
+                f"Context injected: {total} tokens in {len(injected_info)} files",
                 True,
             )
 
