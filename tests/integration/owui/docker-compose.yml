@@ -1,0 +1,14 @@
+services:
+  owui:
+    # Pin a released tag in CI. Filter/outlet/API behavior differs between versions.
+    image: ${OWUI_IMAGE:-ghcr.io/open-webui/open-webui:v0.11.4}
+    ports: ["3000:8080"]
+    extra_hosts: ["host.docker.internal:host-gateway"]   # lets the container reach the mock on the host
+    environment:
+      WEBUI_SECRET_KEY: test-secret
+      WEBUI_ADMIN_EMAIL: admin@test.local        # headless admin, created on first boot
+      WEBUI_ADMIN_PASSWORD: admin-password
+      ENABLE_OLLAMA_API: "false"                 # mock is the only provider
+      OPENAI_API_BASE_URL: http://host.docker.internal:9999/v1
+      OPENAI_API_KEY: dummy
+    # no volumes: every `up` is a clean database
