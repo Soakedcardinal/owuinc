@@ -2,6 +2,7 @@ __pycache__
 .mypy_cache
 .pytest_cache
 .venv
+.venv-owui
 owuinc.egg-info
 uv.lock
 .coverage

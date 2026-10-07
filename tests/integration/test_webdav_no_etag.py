@@ -25,7 +25,8 @@ import pytest_asyncio
 
 logger = logging.getLogger(__name__)
 
-NO_ETAG_PORT = 5234
+# distinct from 5232 (Radicale), 5233 (WsgiDAV), 5234 (OpenWebUI)
+NO_ETAG_PORT = 5235
 
 
 def _wait_for_server(url: str, timeout: float = 10) -> None:
